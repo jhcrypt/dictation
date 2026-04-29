@@ -19,15 +19,51 @@ try:
     from pynput import keyboard
     from pynput.keyboard import Controller, Key
     from faster_whisper import WhisperModel
-    from symspellpy import SymSpell, Verbosity
-    import pkg_resources
 except ImportError as e:
     print(f"\nMissing dependency: {e}")
-    print("Run:  pip install sounddevice pynput numpy faster-whisper symspellpy\n")
+    print("Run:  pip install sounddevice pynput numpy faster-whisper\n")
     sys.exit(1)
 
+# ── Symspell (optional — graceful fallback if not installed) ──────────────────
+try:
+    from symspellpy import SymSpell, Verbosity
+    _sym = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+    _DICT = os.path.expanduser(
+        "~/miniconda3/lib/python3.11/site-packages/symspellpy/frequency_dictionary_en_82_765.txt"
+    )
+    if os.path.exists(_DICT):
+        _sym.load_dictionary(_DICT, term_index=0, count_index=1)
+        USE_SYMSPELL = True
+        print("[symspell] loaded OK")
+    else:
+        USE_SYMSPELL = False
+        print("[symspell] dictionary not found, skipping correction")
+except ImportError:
+    USE_SYMSPELL = False
+    print("[symspell] not installed, skipping correction")
+
+
+def symspell_correct(text):
+    if not USE_SYMSPELL:
+        return text
+    words = text.split()
+    corrected = []
+    for word in words:
+        suggestions = _sym.lookup(word.lower(), Verbosity.CLOSEST,
+                                  max_edit_distance=2)
+        if suggestions:
+            # Preserve original capitalisation
+            s = suggestions[0].term
+            if word[0].isupper():
+                s = s.capitalize()
+            corrected.append(s)
+        else:
+            corrected.append(word)
+    return " ".join(corrected)
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
-MODEL       = "base.en"
+MODEL       = "small.en"
 DEVICE      = "cpu"
 COMPUTE     = "int8"
 SAMPLE_RATE = 48000
@@ -39,35 +75,8 @@ recording    = False
 audio_frames = []
 typer        = Controller()
 whisper      = None
-sym_spell    = None
 app          = None
 current_keys = set()
-
-
-# ── SymSpell setup ────────────────────────────────────────────────────────────
-def load_symspell():
-    global sym_spell
-    sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-    dict_path = pkg_resources.resource_filename(
-        "symspellpy", "frequency_dictionary_en_82_765.txt"
-    )
-    sym_spell.load_dictionary(dict_path, term_index=0, count_index=1)
-
-
-def correct_text(text):
-    if not sym_spell:
-        return text
-    corrected = []
-    for word in text.split():
-        # Keep punctuation attached words as-is if they look intentional
-        clean = word.strip(".,!?;:'\"")
-        suffix = word[len(clean):]
-        suggestions = sym_spell.lookup(clean, Verbosity.CLOSEST, max_edit_distance=2)
-        if suggestions and suggestions[0].distance <= 1:
-            corrected.append(suggestions[0].term + suffix)
-        else:
-            corrected.append(word)
-    return " ".join(corrected)
 
 
 # ── Active app name ───────────────────────────────────────────────────────────
@@ -88,9 +97,8 @@ def audio_callback(indata, frames, time_info, status):
 def save_wav(frames, path):
     audio = np.concatenate(frames, axis=0)
     target_rate = 16000
-    ratio = target_rate / SAMPLE_RATE
-    target_len = int(len(audio) * ratio)
-    resampled = np.interp(
+    target_len  = int(len(audio) * target_rate / SAMPLE_RATE)
+    resampled   = np.interp(
         np.linspace(0, len(audio)-1, target_len),
         np.arange(len(audio)),
         audio[:, 0]
@@ -104,29 +112,37 @@ def save_wav(frames, path):
 
 def transcribe_and_type(wav_path, raw_frames):
     audio = np.concatenate(raw_frames, axis=0)
-    rms = np.sqrt(np.mean(audio**2))
+    rms   = np.sqrt(np.mean(audio**2))
     if rms < 0.01:
         app.set_state("idle")
         return
+
     app.set_state("transcribing")
     segments, _ = whisper.transcribe(
         wav_path,
         beam_size=5,
         language="en",
-        initial_prompt="Transcribe spoken words accurately. Include punctuation.",
+        initial_prompt="Transcribe spoken English accurately with correct spelling.",
         condition_on_previous_text=False,
     )
-    text = " ".join(seg.text for seg in segments).strip()
-    if text:
-        text = correct_text(text)
-        app.set_transcript(text)
-        time.sleep(0.15)
-        typer.type(text)
-        time.sleep(4.0)
+    raw_text = " ".join(seg.text for seg in segments).strip()
+    if not raw_text:
+        app.set_state("idle")
+        return
+
+    text = symspell_correct(raw_text)
+    print(f"[raw]       {raw_text!r}")
+    if text != raw_text:
+        print(f"[corrected] {text!r}")
+
+    app.set_transcript(text)
+    time.sleep(0.15)
+    typer.type(text)
+    time.sleep(4.0)
     app.set_state("idle")
 
 
-# ── Hotkey ────────────────────────────────────────────────────────────────────
+# ── Hotkey: hold Ctrl+S to record, release S to stop ─────────────────────────
 def on_press(key):
     global recording, audio_frames
     if key in current_keys:
@@ -167,6 +183,8 @@ def _process(frames):
 
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
+import tkinter as tk
+
 class DictationApp:
     BG         = "#1c1c1c"
     TEXT_WHITE = "#ffffff"
@@ -178,7 +196,7 @@ class DictationApp:
     H          = 52
 
     def __init__(self, root):
-        self.root      = root
+        self.root       = root
         self._blink_job = None
         self._blink_on  = True
         self._drag_x    = 0
@@ -215,34 +233,32 @@ class DictationApp:
         self.dot = self.canvas.create_oval(20, H//2-6, 32, H//2+6,
                                            fill=self.TEXT_DIM, outline="")
         self.canvas.create_line(46, 14, 46, H-14, fill="#303030", width=1)
-
         self.label = self.canvas.create_text(
             58, H//2, text="Loading model...",
             font=("Helvetica Neue", 13),
             fill=self.TEXT_DIM, anchor="w", width=260
         )
-
         self.appname = self.canvas.create_text(
             W-32, H//2, text="",
             font=("Helvetica Neue", 11),
             fill=self.TEXT_DIM, anchor="e"
         )
-
         self.canvas.create_text(W-14, H//2, text="✕",
                                 font=("Helvetica", 10),
                                 fill=self.TEXT_DIM, anchor="center", tags="close")
-        self.canvas.tag_bind("close", "<Button-1>", lambda e: self._quit())
+        self.canvas.tag_bind("close", "<Button-1>", lambda e: os._exit(0))
         self.canvas.tag_bind("close", "<Enter>",
                              lambda e: self.canvas.itemconfig("close", fill=self.TEXT_WHITE))
         self.canvas.tag_bind("close", "<Leave>",
                              lambda e: self.canvas.itemconfig("close", fill=self.TEXT_DIM))
 
     def _make_draggable(self):
-        self.canvas.bind("<ButtonPress-1>",  lambda e: setattr(self, '_drag_x', e.x_root - self.root.winfo_x()) or setattr(self, '_drag_y', e.y_root - self.root.winfo_y()))
-        self.canvas.bind("<B1-Motion>",      lambda e: self.root.geometry(f"+{e.x_root - self._drag_x}+{e.y_root - self._drag_y}"))
-
-    def _quit(self):
-        os._exit(0)
+        self.canvas.bind("<ButtonPress-1>",
+                         lambda e: (setattr(self, '_drag_x', e.x_root - self.root.winfo_x()),
+                                    setattr(self, '_drag_y', e.y_root - self.root.winfo_y())))
+        self.canvas.bind("<B1-Motion>",
+                         lambda e: self.root.geometry(
+                             f"+{e.x_root-self._drag_x}+{e.y_root-self._drag_y}"))
 
     def capture_active_app(self):
         threading.Thread(target=lambda: self.root.after(
@@ -259,16 +275,16 @@ class DictationApp:
 
         if state == "idle":
             self.canvas.itemconfig(self.dot,   fill=self.TEXT_DIM)
-            self.canvas.itemconfig(self.label, text="Hold Ctrl+S to dictate", fill=self.TEXT_DIM)
+            self.canvas.itemconfig(self.label, text="Hold Ctrl+S to dictate",
+                                   fill=self.TEXT_DIM)
         elif state == "recording":
             self.canvas.itemconfig(self.dot,   fill=self.RED)
-            self.canvas.itemconfig(self.label, text="Recording...  release to stop", fill=self.TEXT_WHITE)
+            self.canvas.itemconfig(self.label, text="Recording...  release to stop",
+                                   fill=self.TEXT_WHITE)
             self._blink()
         elif state == "transcribing":
             self.canvas.itemconfig(self.dot,   fill=self.BLUE)
             self.canvas.itemconfig(self.label, text="Transcribing...", fill=self.BLUE)
-        elif state == "loading":
-            self.canvas.itemconfig(self.label, text="Loading model...", fill=self.TEXT_DIM)
 
     def set_transcript(self, text):
         self.root.after(0, self._show_transcript, text)
@@ -287,7 +303,6 @@ class DictationApp:
 # ── Backend ───────────────────────────────────────────────────────────────────
 def start_backend(stream):
     global whisper
-    load_symspell()
     whisper = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
     app.set_state("idle")
     with keyboard.Listener(on_press=on_press, on_release=on_release):
@@ -298,7 +313,6 @@ def start_backend(stream):
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     global app
-    import tkinter as tk
 
     root = tk.Tk()
     app  = DictationApp(root)
@@ -316,5 +330,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import tkinter as tk
     main()
