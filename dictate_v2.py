@@ -260,6 +260,32 @@ def transcribe_and_type(wav_path, raw_frames):
         app.show_message("Select all", "#0a84ff")
         app.set_state("idle")
         return
+    # Copy that
+    if lower in ("copy that", "copy last"):
+        if last_text:
+            subprocess.run(["osascript", "-e", f'set the clipboard to "{last_text}"'], timeout=2)
+            app.show_message("Copied!", "#0a84ff")
+        else:
+            app.show_message("Nothing to copy", "#ff9f0a")
+        app.set_state("idle")
+        return
+    # Copy all
+    if lower == "copy all":
+        with typer.pressed(Key.cmd):
+            typer.press("a"); typer.release("a")
+        time.sleep(0.05)
+        with typer.pressed(Key.cmd):
+            typer.press("c"); typer.release("c")
+        app.show_message("Copied all!", "#0a84ff")
+        app.set_state("idle")
+        return
+    # Paste
+    if lower in ("paste", "paste that"):
+        with typer.pressed(Key.cmd):
+            typer.press("v"); typer.release("v")
+        app.show_message("Pasted!", "#0a84ff")
+        app.set_state("idle")
+        return
 
     text = symspell_correct(raw_text)
     if text != raw_text:
