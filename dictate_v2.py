@@ -193,6 +193,74 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
+    # Voice command check — strip all punctuation before matching
+    lower = re.sub(r"[^a-z0-9 ]", "", raw_text.lower()).strip()
+    print(f"[cmd] {lower!r}")
+
+    # Scratch
+    if lower in ("scratch that", "undo that", "delete that"):
+        _scratch_last()
+        app.set_state("idle")
+        return
+
+    # Punctuation commands
+    PUNCT_COMMANDS = {
+        "period":            ".",
+        "full stop":         ".",
+        "comma":             ",",
+        "exclamation point": "!",
+        "exclamation mark":  "!",
+        "question mark":     "?",
+        "colon":             ":",
+        "semicolon":         ";",
+        "ellipsis":          "...",
+        "open paren":        "(",
+        "close paren":       ")",
+        "dash":              " — ",
+        "hyphen":            "-",
+    }
+    if lower in PUNCT_COMMANDS:
+        typer.type(PUNCT_COMMANDS[lower])
+        app.show_message(PUNCT_COMMANDS[lower], "#0a84ff")
+        app.set_state("idle")
+        return
+
+    # New line — Shift+Enter for chat apps, plain Enter elsewhere
+    if lower in ("new line", "newline", "next line"):
+        chat_apps = ("claude", "slack", "discord", "messages", "teams", "whatsapp", "telegram")
+        active = get_active_app_name().lower()
+        if any(a in active for a in chat_apps):
+            typer.press(Key.shift)
+            typer.press(Key.enter)
+            typer.release(Key.enter)
+            typer.release(Key.shift)
+        else:
+            typer.press(Key.enter)
+            typer.release(Key.enter)
+        app.show_message("New line", "#0a84ff")
+        app.set_state("idle")
+        return
+    # New paragraph
+    if lower == "new paragraph":
+        for _ in range(2):
+            typer.press(Key.enter); typer.release(Key.enter)
+        app.show_message("New paragraph", "#0a84ff")
+        app.set_state("idle")
+        return
+    # Tab
+    if lower in ("tab", "indent"):
+        typer.press(Key.tab); typer.release(Key.tab)
+        app.show_message("Tab", "#0a84ff")
+        app.set_state("idle")
+        return
+    # Select all
+    if lower == "select all":
+        with typer.pressed(Key.cmd):
+            typer.press("a"); typer.release("a")
+        app.show_message("Select all", "#0a84ff")
+        app.set_state("idle")
+        return
+
     text = symspell_correct(raw_text)
     if text != raw_text:
         print(f"[corrected] {text!r}")
@@ -235,8 +303,10 @@ def on_press(key):
 
     record_key = get_record_key()
     ctrl = Key.ctrl in current_keys or Key.ctrl_l in current_keys or Key.ctrl_r in current_keys
-    is_z = hasattr(key, "char") and key.char == "z"
+    is_z     = hasattr(key, "char") and key.char == "z"
     is_comma = hasattr(key, "char") and key.char == ","
+
+    print(f"[key] {repr(key)}")  # debug — remove later
 
     if key == record_key and not recording:
         recording    = True
@@ -291,21 +361,11 @@ class DictationApp:
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.96)
-        self.root.configure(bg=self.BG)
+        self.root.configure(bg=self.PILL)
         self.root.resizable(False, False)
 
         sw = self.root.winfo_screenwidth()
         self.root.geometry(f"{self.W}x{self.H}+{sw//2 - self.W//2}+24")
-
-        try:
-            import objc
-            from AppKit import NSApplication
-            self.root.update_idletasks()
-            for win in NSApplication.sharedApplication().windows():
-                win.setCornerMask_(0b1111)
-                win.setOpaque_(False)
-        except Exception:
-            pass
 
         self._build()
         self._make_draggable()
@@ -322,9 +382,9 @@ class DictationApp:
     def _build(self):
         W, H = self.W, self.H
         self.canvas = tk.Canvas(self.root, width=W, height=H,
-                                bg=self.BG, highlightthickness=0)
+                                bg=self.PILL, highlightthickness=0)
         self.canvas.pack()
-        self._pill(2, 2, W-2, H-2, 14, fill=self.PILL, outline="")
+        self._pill(0, 0, W, H, 14, fill=self.PILL, outline="")
         self.dot = self.canvas.create_oval(20, H//2-6, 32, H//2+6,
                                            fill=self.TEXT_DIM, outline="")
         self.canvas.create_line(46, 14, 46, H-14, fill="#303030", width=1)
@@ -485,4 +545,6 @@ def main():
     root.mainloop()
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()
