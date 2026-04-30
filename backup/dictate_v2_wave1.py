@@ -160,13 +160,6 @@ def save_wav(frames, path):
 
 def paste_text(text):
     try:
-        # Save existing clipboard
-        prev = subprocess.check_output(
-            ["osascript", "-e", "the clipboard as text"], timeout=2
-        ).decode().strip()
-    except Exception:
-        prev = None
-    try:
         clean = text.replace("\\", "\\\\").replace('"', '\\"')
         subprocess.run(
             ["osascript", "-e", f'set the clipboard to "{clean}"'],
@@ -177,22 +170,11 @@ def paste_text(text):
         typer.press("v")
         typer.release("v")
         typer.release(Key.cmd)
-        time.sleep(0.15)
+        time.sleep(0.1)
+        typer.type(" ")
     except Exception as e:
         print(f"[paste] error: {e}")
         typer.type(text + " ")
-        return
-    finally:
-        # Restore previous clipboard
-        if prev is not None:
-            try:
-                prev_clean = prev.replace("\\", "\\\\").replace('"', '\\"')
-                subprocess.run(
-                    ["osascript", "-e", f'set the clipboard to "{prev_clean}"'],
-                    timeout=2
-                )
-            except Exception:
-                pass
 
 def transcribe_and_type(wav_path, raw_frames):
     global last_text, cancelled
@@ -448,7 +430,7 @@ class DictationApp:
                                            fill=self.TEXT_DIM, outline="")
         self.canvas.create_line(46, 14, 46, H-14, fill="#303030", width=1)
         self.label = self.canvas.create_text(
-            80, H//2, text="Loading model...",
+            58, H//2, text="Loading model...",
             font=("Helvetica Neue", 13),
             fill=self.TEXT_DIM, anchor="w", width=260
         )
@@ -534,42 +516,26 @@ class DictationApp:
         self.canvas.itemconfig(self.dot, state="hidden")
         H = self.H
         self._bars = []
-        n_bars = 14
-        bar_w  = 3
-        gap    = 2
-        total  = n_bars * (bar_w + gap) - gap
-        start_x = 8  # left side where the dot was
-        for i in range(n_bars):
-            x = start_x + i * (bar_w + gap)
-            bar = self.canvas.create_rectangle(x, H//2-1, x+bar_w, H//2+1,
+        for i in range(5):
+            x = 20 + i * 7
+            bar = self.canvas.create_rectangle(x, H//2-2, x+4, H//2+2,
                                                fill=self.RED, outline="")
             self._bars.append(bar)
-        self._wave_phase = 0.0
-        self._wave_job = self.root.after(30, self._animate_wave)
+        self._wave_job = self.root.after(60, self._animate_wave)
 
     def _animate_wave(self):
         if not hasattr(self, '_bars') or not self._bars:
             return
-        import math
         H = self.H
-        n = len(self._bars)
-        rms   = get_current_rms()
-        scale = min(1.0, rms * 18 + 0.15)
-        self._wave_phase += 0.18
-
-        # Gradient colors: bright red center, dim toward edges
-        center = n / 2
+        rms = get_current_rms()
+        scale = min(1.0, rms * 20)
+        import math, random
         for i, bar in enumerate(self._bars):
-            dist   = abs(i - center) / center          # 0 at center, 1 at edges
-            height = int((H//2 - 6) * scale * (math.sin(self._wave_phase + i * 0.55) * 0.5 + 0.5) * (1 - dist * 0.5))
-            height = max(2, height)
-            # Fade color: bright red center -> dark red edges
-            brightness = int(255 * (1 - dist * 0.65))
-            color = f"#{brightness:02x}{int(brightness*0.18):02x}{int(brightness*0.12):02x}"
-            x1, _, x2, _ = self.canvas.coords(bar)
-            self.canvas.coords(bar, x1, H//2 - height, x2, H//2 + height)
-            self.canvas.itemconfig(bar, fill=color)
-        self._wave_job = self.root.after(30, self._animate_wave)
+            height = 3 + int((8 + random.uniform(-1, 1)) * scale + math.sin(time.time() * 8 + i) * 3 * scale)
+            height = max(2, min(height, H//2 - 4))
+            x = 20 + i * 7
+            self.canvas.coords(bar, x, H//2 - height, x+4, H//2 + height)
+        self._wave_job = self.root.after(60, self._animate_wave)
 
     def stop_wave(self):
         if hasattr(self, '_wave_job') and self._wave_job:
