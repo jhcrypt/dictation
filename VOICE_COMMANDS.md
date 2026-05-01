@@ -1,5 +1,11 @@
 # Voice Commands
 
+## Snippets
+| Say | Action |
+|-----|--------|
+| "create snippet" | Start creating a new snippet (3-step voice flow) |
+| "[trigger word]" | Expands to the saved snippet text |
+
 ## Text Editing
 | Say | Action |
 |-----|--------|

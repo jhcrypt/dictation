@@ -85,6 +85,7 @@ DEFAULT_SETTINGS = {
     "sample_rate":  48000,
     "hotkey_label": "Right Command",
     "show_hud":     True,
+    "toggle_mode":  False,
 }
 
 def load_settings():
@@ -131,9 +132,52 @@ audio_frames = []
 last_text    = ""
 typer        = Controller()
 whisper      = None
-app          = None
-current_keys = set()
-cancelled    = False
+app             = None
+current_keys    = set()
+cancelled       = False
+snippet_state   = None  # None | 'waiting_trigger' | 'waiting_content'
+snippet_trigger = ""
+
+# ── Snippets ─────────────────────────────────────────────────────────────────
+SNIPPETS_FILE = os.path.expanduser("~/.dictation_snippets.json")
+
+def load_snippets():
+    if os.path.exists(SNIPPETS_FILE):
+        try:
+            with open(SNIPPETS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def apply_snippets(text):
+    snippets = load_snippets()
+    lower = text.strip().lower().rstrip(".,!?")
+    for trigger, expansion in snippets.items():
+        if lower == trigger.lower():
+            return expansion
+    return text
+
+# ── History ───────────────────────────────────────────────────────────────────
+HISTORY_FILE = os.path.expanduser("~/.dictation_history.json")
+
+def save_history(text, app_name):
+    try:
+        history = []
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE) as f:
+                history = json.load(f)
+        history.append({
+            "text":      text,
+            "app":       app_name,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "model":     settings.get("model", "unknown"),
+        })
+        history = history[-500:]
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+    except Exception:
+        pass
 
 # ── Active app ────────────────────────────────────────────────────────────────
 def get_active_app_name():
@@ -153,9 +197,14 @@ def get_active_app_icon():
         if not app:
             return None
         icon = ws.iconForFile_(app.bundleURL().path())
-        icon.setSize_((24, 24))
+        icon.setSize_((48, 48))
         data = bytes(icon.TIFFRepresentation())
-        img  = Image.open(io.BytesIO(data)).resize((24, 24), Image.LANCZOS).convert("RGBA")
+        img  = Image.open(io.BytesIO(data)).convert("RGBA")
+        # Crop transparent padding so all icons fill the same space
+        bbox = img.getbbox()
+        if bbox:
+            img = img.crop(bbox)
+        img = img.resize((32, 32), Image.LANCZOS)
         return ImageTk.PhotoImage(img)
     except Exception:
         return None
@@ -229,7 +278,7 @@ def paste_text(text):
                 pass
 
 def transcribe_and_type(wav_path, raw_frames):
-    global last_text, cancelled
+    global last_text, cancelled, snippet_state, snippet_trigger
 
     if cancelled:
         cancelled = False
@@ -256,6 +305,45 @@ def transcribe_and_type(wav_path, raw_frames):
 
     # Voice command check — strip all punctuation before matching
     lower = re.sub(r"[^a-z0-9 ]", "", raw_text.lower()).strip()
+    print(f"[cmd] {lower!r}")
+
+    # Snippet recording flow
+    if snippet_state == "waiting_trigger":
+        RESERVED_CMDS = {
+            "create snippet","new snippet","add snippet","make snippet",
+            "scratch that","undo that","delete that","new line","new paragraph",
+            "tab","indent","select all","copy that","copy last","copy all",
+            "paste","paste that","period","comma","question mark"
+        }
+        candidate = re.sub(r"[^a-z0-9 ]", "", raw_text.lower()).strip()
+        if any(p in candidate for p in ("create snippet","new snippet","add snippet","make snippet")):
+            app.show_message("That's a command, not a trigger. Try again.", "#ff9f0a")
+            app.set_state("idle")
+            return
+        snippet_trigger = candidate
+        snippet_state   = "waiting_content"
+        print(f"[snippet] trigger='{snippet_trigger}' — waiting for content")
+        app.show_snippet_step(2, snippet_trigger)
+        return
+    if snippet_state == "waiting_content":
+        snippets = load_snippets()
+        # Fix common spoken email/URL patterns
+        fixed = raw_text.strip()
+        fixed = fixed.replace(' at ', '@').replace(' dot ', '.').replace(' dot', '.')
+        snippets[snippet_trigger] = fixed
+        with open(SNIPPETS_FILE, "w") as f:
+            json.dump(snippets, f, indent=2)
+        snippet_state   = None
+        snippet_trigger = ""
+        print(f"[snippet] saved — snippets now: {snippets}")
+        app.show_snippet_step(3)
+        app.set_state("idle")
+        return
+    if lower in ("create snippet", "new snippet", "add snippet", "make snippet", "create a snippet"):
+        snippet_state = "waiting_trigger"
+        print(f"[snippet] triggered — waiting for trigger word")
+        app.show_snippet_step(1)
+        return
 
     # Scratch
     if lower in ("scratch that", "undo that", "delete that"):
@@ -349,6 +437,10 @@ def transcribe_and_type(wav_path, raw_frames):
 
     text = symspell_correct(raw_text)
     text = words_to_digits(text)
+    text = apply_snippets(text)
+
+    active_app = get_active_app_name()
+    threading.Thread(target=save_history, args=(text, active_app), daemon=True).start()
 
     last_text = text
     app.set_transcript(text)
@@ -389,7 +481,7 @@ def on_press(key):
     record_key = get_record_key()
     ctrl = Key.ctrl in current_keys or Key.ctrl_l in current_keys or Key.ctrl_r in current_keys
     is_z     = hasattr(key, "char") and key.char == "z"
-    is_comma = hasattr(key, "char") and key.char == ","
+    is_comma = hasattr(key, "char") and key.char in (",", "d")
 
     if key == record_key and not recording:
         recording    = True
@@ -399,6 +491,14 @@ def on_press(key):
         app.set_state("recording")
         app.root.after(0, app.start_wave)
         threading.Thread(target=play_sound, args=("start",), daemon=True).start()
+    elif key == record_key and recording and settings.get("toggle_mode", False):
+        recording = False
+        threading.Thread(target=play_sound, args=("stop",), daemon=True).start()
+        frames = list(audio_frames)
+        if frames:
+            threading.Thread(target=_process, args=(frames,), daemon=True).start()
+        else:
+            app.set_state("idle")
     elif key == Key.esc:
         recording = False
         cancelled = True
@@ -413,7 +513,7 @@ def on_press(key):
 def on_release(key):
     global recording
     current_keys.discard(key)
-    if key == get_record_key() and recording:
+    if key == get_record_key() and recording and not settings.get("toggle_mode", False):
         recording = False
         threading.Thread(target=play_sound, args=("stop",), daemon=True).start()
         frames = list(audio_frames)
@@ -624,12 +724,12 @@ class DictationApp:
             fill=self.TEXT_DIM, anchor="w", width=260
         )
         self.appname = self.canvas.create_text(
-            W-32, H//2, text="",
+            W-38, H//2, text="",
             font=("Helvetica Neue", 11),
             fill=self.TEXT_DIM, anchor="e"
         )
         self.appicon = self.canvas.create_image(
-            W-32, H//2, anchor="e"
+            W-22, H//2, anchor="e"
         )
         self.canvas.create_text(W-14, H//2, text="✕",
                                 font=("Helvetica", 10),
@@ -705,6 +805,27 @@ class DictationApp:
         self.canvas.itemconfig(self.dot,   fill=self.GREEN)
         self.canvas.itemconfig(self.label, text=short, fill=self.TEXT_WHITE)
 
+    def show_snippet_step(self, step, trigger=""):
+        self.root.after(0, self._show_snippet_step, step, trigger)
+
+    def _show_snippet_step(self, step, trigger=""):
+        if self._msg_timer:
+            self.root.after_cancel(self._msg_timer)
+        if step == 1:
+            self.canvas.itemconfig(self.dot,   fill=self.BLUE)
+            self.canvas.itemconfig(self.label, text="Step 1: Say ONLY the trigger word/phrase",
+                                   fill=self.BLUE)
+        elif step == 2:
+            self.canvas.itemconfig(self.dot,   fill=self.BLUE)
+            short = trigger if len(trigger) <= 20 else trigger[:17] + "..."
+            self.canvas.itemconfig(self.label,
+                                   text=f"Step 2: '{short}' saved — say the full content",
+                                   fill=self.BLUE)
+        elif step == 3:
+            self.canvas.itemconfig(self.dot,   fill=self.GREEN)
+            self.canvas.itemconfig(self.label, text="Snippet saved!", fill=self.GREEN)
+            self._msg_timer = self.root.after(3000, lambda: self._apply_state("idle"))
+
     def show_message(self, msg, color=None):
         self.root.after(0, self._show_msg, msg, color or self.ORANGE)
 
@@ -713,7 +834,7 @@ class DictationApp:
             self.root.after_cancel(self._msg_timer)
         self.canvas.itemconfig(self.dot,   fill=color)
         self.canvas.itemconfig(self.label, text=msg, fill=color)
-        self._msg_timer = self.root.after(2000, lambda: self._apply_state("idle"))
+        self._msg_timer = self.root.after(5000, lambda: self._apply_state("idle"))
 
     def _blink(self):
         self._blink_on = not self._blink_on
@@ -772,65 +893,229 @@ class DictationApp:
             self._bars = []
         self.canvas.itemconfig(self.dot, state="normal")
 
+    def _show_snippets(self, parent=None):
+        swin = tk.Toplevel(self.root)
+        swin.title("Manage Snippets")
+        swin.geometry("520x480")
+        swin.configure(bg="#1a1a1a")
+        swin.attributes("-topmost", True)
+
+        tk.Label(swin, text="Snippets", bg=self.BG, fg=self.TEXT_WHITE,
+                 font=("Helvetica Neue", 14, "bold")).pack(pady=(12,4))
+        tk.Label(swin, text="Say the trigger word while dictating to expand",
+                 bg=self.BG, fg=self.TEXT_DIM,
+                 font=("Helvetica Neue", 10)).pack()
+
+        # Scrollable list
+        frame = tk.Frame(swin, bg="#1a1a1a")
+        frame.pack(fill="both", expand=True, padx=16, pady=8)
+
+        canvas = tk.Canvas(frame, bg="#1a1a1a", highlightthickness=0)
+        scroll = tk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        inner  = tk.Frame(canvas, bg="#1a1a1a")
+
+        inner.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+        canvas.create_window((0,0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        snippets = load_snippets()
+        entries  = {}
+
+        def refresh():
+            for w in inner.winfo_children():
+                w.destroy()
+            entries.clear()
+            snips = load_snippets()
+            for trigger, content in snips.items():
+                row = tk.Frame(inner, bg=self.BG)
+                row.pack(fill="x", pady=3)
+                tk.Label(row, text=trigger, bg="#2a2a2a", fg=self.BLUE,
+                         font=("Helvetica Neue", 11, "bold"),
+                         width=16, anchor="w", padx=6).pack(side="left")
+                var = tk.StringVar(value=content)
+                e   = tk.Entry(row, textvariable=var, bg="#2a2a2a", fg=self.TEXT_WHITE,
+                               font=("Helvetica Neue", 11), relief="flat",
+                               insertbackground="white", width=26)
+                e.pack(side="left", padx=4)
+                entries[trigger] = var
+
+                def delete(t=trigger):
+                    s = load_snippets()
+                    del s[t]
+                    with open(SNIPPETS_FILE, "w") as f:
+                        json.dump(s, f, indent=2)
+                    refresh()
+
+                tk.Button(row, text="✕", command=delete,
+                          bg=self.RED, fg="white", font=("Helvetica Neue", 10),
+                          relief="flat", padx=6).pack(side="left", padx=2)
+
+        refresh()
+
+        def save_all():
+            snips = load_snippets()
+            for trigger, var in entries.items():
+                snips[trigger] = var.get()
+            with open(SNIPPETS_FILE, "w") as f:
+                json.dump(snips, f, indent=2)
+            self.show_message("Snippets saved!", self.GREEN)
+            swin.destroy()
+
+        # Add new snippet
+        add_frame = tk.Frame(swin, bg="#1a1a1a")
+        add_frame.pack(fill="x", padx=16, pady=(0,4))
+        tk.Label(add_frame, text="New trigger:", bg="#1a1a1a", fg=self.TEXT_DIM,
+                 font=("Helvetica Neue", 11)).pack(side="left")
+        new_trigger_var = tk.StringVar()
+        tk.Entry(add_frame, textvariable=new_trigger_var, bg="#2a2a2a", fg=self.TEXT_WHITE,
+                 font=("Helvetica Neue", 11), relief="flat",
+                 insertbackground="white", width=14).pack(side="left", padx=4)
+        tk.Label(add_frame, text="Content:", bg="#1a1a1a", fg=self.TEXT_DIM,
+                 font=("Helvetica Neue", 11)).pack(side="left")
+        new_content_var = tk.StringVar()
+        tk.Entry(add_frame, textvariable=new_content_var, bg="#2a2a2a", fg=self.TEXT_WHITE,
+                 font=("Helvetica Neue", 11), relief="flat",
+                 insertbackground="white", width=16).pack(side="left", padx=4)
+
+        def add_new():
+            t = new_trigger_var.get().strip().lower()
+            c = new_content_var.get().strip()
+            if t and c:
+                s = load_snippets()
+                s[t] = c
+                with open(SNIPPETS_FILE, "w") as f:
+                    json.dump(s, f, indent=2)
+                new_trigger_var.set("")
+                new_content_var.set("")
+                refresh()
+
+        tk.Button(add_frame, text="Add", command=add_new,
+                  bg="#0a84ff", fg="white", font=("Helvetica Neue", 11),
+                  relief="flat", padx=10, pady=4, cursor="hand2").pack(side="left", padx=4)
+
+        btn_frame = tk.Frame(swin, bg="#1a1a1a")
+        btn_frame.pack(pady=8, fill="x", padx=16)
+        tk.Button(btn_frame, text="Save Changes", command=save_all,
+                  bg="#0a84ff", fg="white", font=("Helvetica Neue", 12, "bold"),
+                  relief="flat", padx=20, pady=8, cursor="hand2").pack(side="right", padx=4)
+        tk.Button(btn_frame, text="Close", command=swin.destroy,
+                  bg="#2a2a2a", fg="#aaaaaa", font=("Helvetica Neue", 12),
+                  relief="flat", padx=20, pady=8, cursor="hand2").pack(side="right", padx=4)
+
     def open_settings(self):
         self.root.after(0, self._show_settings)
 
     def _show_settings(self):
         win = tk.Toplevel(self.root)
         win.title("Dictation Settings")
-        win.geometry("340x280")
-        win.configure(bg=self.BG)
+        win.geometry("400x500")
+        win.configure(bg="#1a1a1a")
         win.resizable(False, False)
         win.attributes("-topmost", True)
 
+        style = ttk.Style(win)
+        style.theme_use("clam")
+        style.configure("TCombobox",
+            fieldbackground="#2a2a2a", background="#2a2a2a",
+            foreground="white", arrowcolor="white",
+            selectbackground="#0a84ff", selectforeground="white",
+            bordercolor="#444444", lightcolor="#2a2a2a", darkcolor="#2a2a2a")
+        style.map("TCombobox",
+            fieldbackground=[("readonly","#2a2a2a")],
+            foreground=[("readonly","white")],
+            background=[("readonly","#2a2a2a")])
+
+        def section(text):
+            tk.Label(win, text=text, bg="#1a1a1a", fg="#666666",
+                     font=("Helvetica Neue", 10, "bold")).pack(
+                     anchor="w", padx=20, pady=(16,4))
+            tk.Frame(win, bg="#333333", height=1).pack(fill="x", padx=20)
+
         def row(label, widget_fn):
-            f = tk.Frame(win, bg=self.BG)
-            f.pack(fill="x", padx=16, pady=6)
-            tk.Label(f, text=label, bg=self.BG, fg=self.TEXT_DIM,
-                     font=("Helvetica Neue", 11), width=14, anchor="w").pack(side="left")
-            widget_fn(f).pack(side="left", fill="x", expand=True)
+            f = tk.Frame(win, bg="#1a1a1a")
+            f.pack(fill="x", padx=20, pady=5)
+            tk.Label(f, text=label, bg="#1a1a1a", fg="#aaaaaa",
+                     font=("Helvetica Neue", 12), width=13, anchor="w").pack(side="left")
+            widget_fn(f).pack(side="right")
 
+        def toggle_row(label, var):
+            f = tk.Frame(win, bg="#1a1a1a")
+            f.pack(fill="x", padx=20, pady=5)
+            tk.Label(f, text=label, bg="#1a1a1a", fg="#aaaaaa",
+                     font=("Helvetica Neue", 12), anchor="w").pack(side="left")
+            # Custom toggle switch look
+            cb = tk.Checkbutton(f, variable=var, bg="#1a1a1a",
+                               activebackground="#1e1e1e",
+                               selectcolor="#0a84ff",
+                               relief="flat", cursor="hand2")
+            cb.pack(side="right")
+
+        section("TRANSCRIPTION")
         model_var = tk.StringVar(value=settings["model"])
-        row("Model", lambda f: ttk.Combobox(f, textvariable=model_var,
-            values=["tiny.en","base.en","small.en","medium.en"],
-            state="readonly", width=16))
+        def model_w(f):
+            cb = ttk.Combobox(f, textvariable=model_var,
+                values=["tiny.en","base.en","small.en","medium.en"],
+                state="readonly", width=14, font=("Helvetica Neue", 12))
+            return cb
+        row("Model", model_w)
 
+        section("HOTKEYS")
         hotkey_var = tk.StringVar(value=settings.get("hotkey_label", "Right Command"))
-        row("Record Key", lambda f: ttk.Combobox(f, textvariable=hotkey_var,
-            values=list(HOTKEY_OPTIONS.keys()),
-            state="readonly", width=20))
+        def hotkey_w(f):
+            return ttk.Combobox(f, textvariable=hotkey_var,
+                values=list(HOTKEY_OPTIONS.keys()),
+                state="readonly", width=18, font=("Helvetica Neue", 12))
+        row("Record Key", hotkey_w)
 
+        for action, k in [("Cancel", "Escape"), ("Scratch", "Ctrl+Z"), ("Settings", "Ctrl+D")]:
+            f = tk.Frame(win, bg="#1a1a1a")
+            f.pack(fill="x", padx=20, pady=3)
+            tk.Label(f, text=action, bg="#1a1a1a", fg="#aaaaaa",
+                     font=("Helvetica Neue", 12), anchor="w").pack(side="left")
+            tk.Label(f, text=k, bg="#2a2a2a", fg="#ffffff",
+                     font=("Helvetica Neue", 11), padx=10, pady=3,
+                     relief="flat").pack(side="right")
+
+        section("DISPLAY")
         hud_var = tk.BooleanVar(value=settings.get("show_hud", True))
-        f = tk.Frame(win, bg=self.BG)
-        f.pack(fill="x", padx=16, pady=6)
-        tk.Label(f, text="Show HUD", bg=self.BG, fg=self.TEXT_DIM,
-                 font=("Helvetica Neue", 11), width=14, anchor="w").pack(side="left")
-        tk.Checkbutton(f, variable=hud_var, bg=self.BG, fg=self.TEXT_WHITE,
-                       selectcolor=self.BG, activebackground=self.BG).pack(side="left")
+        toggle_row("Show HUD", hud_var)
+        toggle_var = tk.BooleanVar(value=settings.get("toggle_mode", False))
+        toggle_row("Toggle Mode", toggle_var)
 
-        tk.Label(win, text="Fixed Hotkeys", bg=self.BG, fg=self.TEXT_WHITE,
-                 font=("Helvetica Neue", 12, "bold")).pack(anchor="w", padx=16, pady=(12,4))
-        for action, k in [("Cancel","Escape"),("Scratch","Ctrl+Z"),("Settings","Ctrl+,")]:
-            f = tk.Frame(win, bg=self.BG)
-            f.pack(fill="x", padx=16, pady=2)
-            tk.Label(f, text=action, bg=self.BG, fg=self.TEXT_DIM,
-                     font=("Helvetica Neue", 11), width=10, anchor="w").pack(side="left")
-            tk.Label(f, text=k, bg="#2a2a2a", fg=self.TEXT_WHITE,
-                     font=("Helvetica Neue", 11), padx=8, pady=2).pack(side="left")
+        # Bottom buttons
+        btn_frame = tk.Frame(win, bg="#1a1a1a")
+        btn_frame.pack(fill="x", padx=20, pady=20, side="bottom")
 
         def save_and_close():
             settings["model"]        = model_var.get()
             settings["hotkey_label"] = hotkey_var.get()
             settings["show_hud"]     = hud_var.get()
+            settings["toggle_mode"]  = toggle_var.get()
             save_settings(settings)
             if menubar:
                 menubar._update_hud_label()
             win.destroy()
             self.show_message("Saved! Restart to apply.", self.GREEN)
 
-        tk.Button(win, text="Save", command=save_and_close,
-                  bg=self.BLUE, fg="white", font=("Helvetica Neue", 12),
-                  relief="flat", padx=16, pady=6).pack(pady=16)
+        def styled_btn(parent, text, cmd, primary=False):
+            color  = "#0a84ff" if primary else "#323232"
+            fcolor = "#ffffff"
+            b = tk.Button(parent, text=text, command=cmd,
+                          bg=color, fg=fcolor, activebackground=color,
+                          activeforeground=fcolor,
+                          font=("Helvetica Neue", 12, "bold" if primary else "normal"),
+                          relief="flat", bd=0,
+                          padx=20, pady=9, cursor="hand2",
+                          highlightthickness=0)
+            return b
+
+        styled_btn(btn_frame, "Manage Snippets",
+                   lambda: self._show_snippets(win)).pack(side="left")
+        styled_btn(btn_frame, "  Save  ",
+                   save_and_close, primary=True).pack(side="right")
 
 def reload_model():
     global whisper
