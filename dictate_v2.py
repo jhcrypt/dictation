@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 Local Whisper Dictation v2 - Intel Mac
 Hold Right Command to record, release to transcribe and type.
@@ -68,6 +68,7 @@ DEFAULT_SETTINGS = {
     "mic_device":   2,
     "sample_rate":  48000,
     "hotkey_label": "Right Command",
+    "show_hud":     True,
 }
 
 def load_settings():
@@ -204,9 +205,7 @@ def transcribe_and_type(wav_path, raw_frames):
 
     audio = np.concatenate(raw_frames, axis=0)
     rms = np.sqrt(np.mean(audio**2))
-    print(f"[debug] rms={rms:.4f}")
     if rms < 0.005:
-        print("[debug] too quiet, skipping")
         app.set_state("idle")
         return
 
@@ -218,14 +217,12 @@ def transcribe_and_type(wav_path, raw_frames):
         condition_on_previous_text=False,
     )
     raw_text = " ".join(seg.text for seg in segments).strip()
-    print(f"[raw] {raw_text!r}")
     if not raw_text:
         app.set_state("idle")
         return
 
     # Voice command check — strip all punctuation before matching
     lower = re.sub(r"[^a-z0-9 ]", "", raw_text.lower()).strip()
-    print(f"[cmd] {lower!r}")
 
     # Scratch
     if lower in ("scratch that", "undo that", "delete that"):
@@ -319,7 +316,7 @@ def transcribe_and_type(wav_path, raw_frames):
 
     text = symspell_correct(raw_text)
     if text != raw_text:
-        print(f"[corrected] {text!r}")
+        pass
 
     last_text = text
     app.set_transcript(text)
@@ -362,8 +359,6 @@ def on_press(key):
     is_z     = hasattr(key, "char") and key.char == "z"
     is_comma = hasattr(key, "char") and key.char == ","
 
-    print(f"[key] {repr(key)}")  # debug — remove later
-
     if key == record_key and not recording:
         recording    = True
         audio_frames = []
@@ -395,6 +390,131 @@ def on_release(key):
         else:
             app.set_state("idle")
 
+# ── Menu Bar ─────────────────────────────────────────────────────────────────
+class MenuBarApp:
+    ICONS = {
+        "idle":         "idle",
+        "recording":    "recording",
+        "transcribing": "transcribing",
+    }
+    ICON_DIR = os.path.dirname(os.path.abspath(__file__))
+
+    def __init__(self):
+        self._available = False
+        try:
+            from AppKit import NSStatusBar, NSVariableStatusItemLength, NSMenu, NSMenuItem, NSImage
+            from Foundation import NSObject
+            import objc
+
+            class MenuDelegate(NSObject):
+                def toggleHUD_(self, sender):
+                    settings["show_hud"] = not settings.get("show_hud", True)
+                    save_settings(settings)
+                    menubar._update_hud_label()
+                    if app:
+                        show = settings["show_hud"]
+                        threading.Thread(target=lambda: app.root.after(0, app.root.deiconify if show else app.root.withdraw), daemon=True).start()
+
+                def openSettings_(self, sender):
+                    if app:
+                        threading.Thread(target=lambda: app.root.after(0, app._show_settings), daemon=True).start()
+
+                def selectModel_(self, sender):
+                    new_model = sender.title()
+                    if new_model == settings.get("model"):
+                        return
+                    settings["model"] = new_model
+                    save_settings(settings)
+                    threading.Thread(target=reload_model, daemon=True).start()
+
+                def selectHotkey_(self, sender):
+                    settings["hotkey_label"] = sender.title()
+                    save_settings(settings)
+
+                def quitApp_(self, sender):
+                    os._exit(0)
+
+            self._delegate = MenuDelegate.alloc().init()
+
+            bar        = NSStatusBar.systemStatusBar()
+            self._item = bar.statusItemWithLength_(NSVariableStatusItemLength)
+            self._NSImage = NSImage
+            self._set_icon("idle")
+
+            self._menu = NSMenu.alloc().init()
+
+            self._status_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Status: Idle", None, "")
+            self._menu.addItem_(self._status_item)
+            self._menu.addItem_(NSMenuItem.separatorItem())
+
+            self._toggle_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Hide HUD", "toggleHUD:", "")
+            self._toggle_item.setTarget_(self._delegate)
+            self._menu.addItem_(self._toggle_item)
+
+            # Model submenu
+            model_menu = NSMenu.alloc().init()
+            model_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Model", None, "")
+            for m in ["tiny.en", "base.en", "small.en", "medium.en"]:
+                mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(m, "selectModel:", "")
+                mi.setTarget_(self._delegate)
+                if m == settings.get("model"):
+                    mi.setState_(1)
+                model_menu.addItem_(mi)
+            model_item.setSubmenu_(model_menu)
+            self._menu.addItem_(model_item)
+
+            # Hotkey submenu
+            hotkey_menu = NSMenu.alloc().init()
+            hotkey_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Record Key", None, "")
+            for k in ["Right Command", "Right Option", "Right Control", "F13", "F14", "F15"]:
+                hi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(k, "selectHotkey:", "")
+                hi.setTarget_(self._delegate)
+                if k == settings.get("hotkey_label"):
+                    hi.setState_(1)
+                hotkey_menu.addItem_(hi)
+            hotkey_item.setSubmenu_(hotkey_menu)
+            self._menu.addItem_(hotkey_item)
+
+            self._menu.addItem_(NSMenuItem.separatorItem())
+
+            quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit", "quitApp:", "")
+            quit_item.setTarget_(self._delegate)
+            self._menu.addItem_(quit_item)
+
+            self._item.setMenu_(self._menu)
+            self._available = True
+        except Exception as e:
+            print(f"[menubar] unavailable: {e}")
+            self._available = False
+
+    def _set_icon(self, state):
+        if not self._available:
+            return
+        path = os.path.join(self.ICON_DIR, f"icon_{state}.png")
+        if os.path.exists(path):
+            img = self._NSImage.alloc().initWithContentsOfFile_(path)
+            img.setSize_((18, 18))
+            img.setTemplate_(True)
+            self._item.button().setImage_(img)
+            self._item.button().setTitle_("")
+        else:
+            fallback = {"idle": "🎙️", "recording": "🔴", "transcribing": "⏳"}
+            self._item.button().setTitle_(fallback.get(state, "🎙️"))
+
+    def set_state(self, state):
+        if not self._available:
+            return
+        self._set_icon(state)
+        labels = {"idle": "Idle", "recording": "Recording...", "transcribing": "Transcribing..."}
+        self._status_item.setTitle_(f"Status: {labels.get(state, state.capitalize())}")
+
+    def _update_hud_label(self):
+        if not self._available:
+            return
+        self._toggle_item.setTitle_("Hide HUD" if settings.get("show_hud", True) else "Show HUD")
+
+menubar = None
+
 # ── GUI ───────────────────────────────────────────────────────────────────────
 class DictationApp:
     BG         = "#1c1c1c"
@@ -420,30 +540,46 @@ class DictationApp:
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.96)
-        self.root.configure(bg=self.PILL)
+        self.root.attributes("-transparent", True)
+        self.root.configure(bg="systemTransparent")
         self.root.resizable(False, False)
 
         sw = self.root.winfo_screenwidth()
-        self.root.geometry(f"{self.W}x{self.H}+{sw//2 - self.W//2}+24")
+        x  = settings.get("hud_x", sw//2 - self.W//2)
+        y  = settings.get("hud_y", 24)
+        self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
 
         self._build()
         self._make_draggable()
 
+        try:
+            from AppKit import NSApplication
+            self.root.update_idletasks()
+            for win in NSApplication.sharedApplication().windows():
+                win.setCornerRadius_(12)
+                win.setOpaque_(False)
+        except Exception:
+            pass
+
     def _pill(self, x1, y1, x2, y2, r, **kw):
         c = self.canvas
-        c.create_arc(x1,     y1,     x1+2*r, y1+2*r, start=90,  extent=90,  style="pieslice", **kw)
-        c.create_arc(x2-2*r, y1,     x2,     y1+2*r, start=0,   extent=90,  style="pieslice", **kw)
-        c.create_arc(x1,     y2-2*r, x1+2*r, y2,     start=180, extent=90,  style="pieslice", **kw)
-        c.create_arc(x2-2*r, y2-2*r, x2,     y2,     start=270, extent=90,  style="pieslice", **kw)
-        c.create_rectangle(x1+r, y1,   x2-r, y2, **kw)
-        c.create_rectangle(x1,   y1+r, x2,   y2-r, **kw)
+        # Single smooth rounded rectangle using create_polygon with smooth
+        points = [
+            x1+r, y1,   x2-r, y1,
+            x2,   y1,   x2,   y1+r,
+            x2,   y2-r, x2,   y2,
+            x2-r, y2,   x1+r, y2,
+            x1,   y2,   x1,   y2-r,
+            x1,   y1+r, x1,   y1,
+        ]
+        c.create_polygon(points, smooth=True, **kw)
 
     def _build(self):
         W, H = self.W, self.H
         self.canvas = tk.Canvas(self.root, width=W, height=H,
-                                bg=self.PILL, highlightthickness=0)
+                                bg="systemTransparent", highlightthickness=0)
         self.canvas.pack()
-        self._pill(0, 0, W, H, 14, fill=self.PILL, outline="")
+        self._pill(0, 0, W, H, 8, fill=self.PILL, outline="")
         self.dot = self.canvas.create_oval(20, H//2-6, 32, H//2+6,
                                            fill=self.TEXT_DIM, outline="")
         self.canvas.create_line(46, 14, 46, H-14, fill="#303030", width=1)
@@ -475,7 +611,12 @@ class DictationApp:
         def move(e):
             if not self._ready:
                 return
-            self.root.geometry(f"+{e.x_root-self._drag_x}+{e.y_root-self._drag_y}")
+            x = e.x_root - self._drag_x
+            y = e.y_root - self._drag_y
+            self.root.geometry(f"+{x}+{y}")
+            settings["hud_x"] = x
+            settings["hud_y"] = y
+            save_settings(settings)
         self.canvas.bind("<ButtonPress-1>", start)
         self.canvas.bind("<B1-Motion>",     move)
 
@@ -486,6 +627,8 @@ class DictationApp:
 
     def set_state(self, state):
         self.root.after(0, self._apply_state, state)
+        if menubar:
+            menubar.set_state(state)
 
     def _apply_state(self, state):
         if self._blink_job:
@@ -609,6 +752,14 @@ class DictationApp:
             values=list(HOTKEY_OPTIONS.keys()),
             state="readonly", width=20))
 
+        hud_var = tk.BooleanVar(value=settings.get("show_hud", True))
+        f = tk.Frame(win, bg=self.BG)
+        f.pack(fill="x", padx=16, pady=6)
+        tk.Label(f, text="Show HUD", bg=self.BG, fg=self.TEXT_DIM,
+                 font=("Helvetica Neue", 11), width=14, anchor="w").pack(side="left")
+        tk.Checkbutton(f, variable=hud_var, bg=self.BG, fg=self.TEXT_WHITE,
+                       selectcolor=self.BG, activebackground=self.BG).pack(side="left")
+
         tk.Label(win, text="Fixed Hotkeys", bg=self.BG, fg=self.TEXT_WHITE,
                  font=("Helvetica Neue", 12, "bold")).pack(anchor="w", padx=16, pady=(12,4))
         for action, k in [("Cancel","Escape"),("Scratch","Ctrl+Z"),("Settings","Ctrl+,")]:
@@ -622,13 +773,23 @@ class DictationApp:
         def save_and_close():
             settings["model"]        = model_var.get()
             settings["hotkey_label"] = hotkey_var.get()
+            settings["show_hud"]     = hud_var.get()
             save_settings(settings)
+            if menubar:
+                menubar._update_hud_label()
             win.destroy()
             self.show_message("Saved! Restart to apply.", self.GREEN)
 
         tk.Button(win, text="Save", command=save_and_close,
                   bg=self.BLUE, fg="white", font=("Helvetica Neue", 12),
                   relief="flat", padx=16, pady=6).pack(pady=16)
+
+def reload_model():
+    global whisper
+    app.set_state("loading")
+    app.show_message(f"Loading {settings['model']}...", "#0a84ff")
+    whisper = WhisperModel(settings["model"], device=DEVICE, compute_type=COMPUTE)
+    app.set_state("idle")
 
 # ── Backend ───────────────────────────────────────────────────────────────────
 def start_backend(stream):
@@ -642,9 +803,12 @@ def start_backend(stream):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    global app
+    global app, menubar
     root = tk.Tk()
     app  = DictationApp(root)
+
+    if not settings.get("show_hud", True):
+        root.withdraw()
 
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -654,6 +818,7 @@ def main():
         callback=audio_callback,
     )
     threading.Thread(target=start_backend, args=(stream,), daemon=True).start()
+    menubar = MenuBarApp()
     root.mainloop()
 
 if __name__ == "__main__":
