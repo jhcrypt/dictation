@@ -40,6 +40,22 @@ try:
 except ImportError:
     USE_SYMSPELL = False
 
+WORD_TO_NUM = {
+    "zero":"0","one":"1","two":"2","three":"3","four":"4",
+    "five":"5","six":"6","seven":"7","eight":"8","nine":"9",
+    "ten":"10","eleven":"11","twelve":"12","thirteen":"13",
+    "fourteen":"14","fifteen":"15","sixteen":"16","seventeen":"17",
+    "eighteen":"18","nineteen":"19","twenty":"20","thirty":"30",
+    "forty":"40","fifty":"50","sixty":"60","seventy":"70",
+    "eighty":"80","ninety":"90","hundred":"100","thousand":"1000",
+}
+
+def words_to_digits(text):
+    def replace(m):
+        return WORD_TO_NUM.get(m.group(0).lower(), m.group(0))
+    pattern = r'\b(' + '|'.join(WORD_TO_NUM.keys()) + r')\b'
+    return re.sub(pattern, replace, text, flags=re.IGNORECASE)
+
 def symspell_correct(text):
     if not USE_SYMSPELL:
         return text
@@ -126,6 +142,23 @@ def get_active_app_name():
         return subprocess.check_output(["osascript", "-e", script], timeout=1).decode().strip()
     except Exception:
         return ""
+
+def get_active_app_icon():
+    try:
+        from AppKit import NSWorkspace
+        from PIL import Image, ImageTk
+        import io
+        ws  = NSWorkspace.sharedWorkspace()
+        app = ws.frontmostApplication()
+        if not app:
+            return None
+        icon = ws.iconForFile_(app.bundleURL().path())
+        icon.setSize_((24, 24))
+        data = bytes(icon.TIFFRepresentation())
+        img  = Image.open(io.BytesIO(data)).resize((24, 24), Image.LANCZOS).convert("RGBA")
+        return ImageTk.PhotoImage(img)
+    except Exception:
+        return None
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
 def play_sound(name):
@@ -315,8 +348,7 @@ def transcribe_and_type(wav_path, raw_frames):
         return
 
     text = symspell_correct(raw_text)
-    if text != raw_text:
-        pass
+    text = words_to_digits(text)
 
     last_text = text
     app.set_transcript(text)
@@ -596,6 +628,9 @@ class DictationApp:
             font=("Helvetica Neue", 11),
             fill=self.TEXT_DIM, anchor="e"
         )
+        self.appicon = self.canvas.create_image(
+            W-32, H//2, anchor="e"
+        )
         self.canvas.create_text(W-14, H//2, text="✕",
                                 font=("Helvetica", 10),
                                 fill=self.TEXT_DIM, anchor="center", tags="close")
@@ -624,9 +659,19 @@ class DictationApp:
         self.canvas.bind("<B1-Motion>",     move)
 
     def capture_active_app(self):
-        threading.Thread(target=lambda: self.root.after(
-            0, lambda: self.canvas.itemconfig(self.appname, text=get_active_app_name())
-        ), daemon=True).start()
+        def _fetch():
+            icon = get_active_app_icon()
+            def _update():
+                if icon:
+                    self._app_icon = icon
+                    self.canvas.itemconfig(self.appicon, image=icon)
+                    self.canvas.itemconfig(self.appname, text="")
+                else:
+                    name = get_active_app_name()
+                    self.canvas.itemconfig(self.appicon, image="")
+                    self.canvas.itemconfig(self.appname, text=name)
+            self.root.after(0, _update)
+        threading.Thread(target=_fetch, daemon=True).start()
 
     def set_state(self, state):
         self.root.after(0, self._apply_state, state)
