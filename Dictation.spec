@@ -1,20 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-import os
-from PyInstaller.utils.hooks import collect_data_files
-
-symspell_datas = collect_data_files('symspellpy')
 
 a = Analysis(
     ['dictate_v2.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('icon_idle.png', '.'),
-        ('icon_recording.png', '.'),
-        ('icon_transcribing.png', '.'),
-    ] + symspell_datas,
-    hiddenimports=['symspellpy', 'pkg_resources'],
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -36,10 +28,10 @@ exe = EXE(
     upx=True,
     console=False,
     disable_windowed_traceback=False,
-    argv_emulation=True,
+    argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
-    entitlements_file='entitlements.plist',
+    entitlements_file=None,
 )
 coll = COLLECT(
     exe,

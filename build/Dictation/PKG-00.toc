@@ -8,8 +8,7 @@
   'PYZ': False,
   'SPLASH': True,
   'SYMLINK': False},
- [('pyi-macos-argv-emulation', '', 'OPTION'),
-  ('pyi-contents-directory _internal', '', 'OPTION'),
+ [('pyi-contents-directory _internal', '', 'OPTION'),
   ('PYZ-00.pyz',
    '/Users/artyzen22/Desktop/dictation/build/Dictation/PYZ-00.pyz',
    'PYZ'),
@@ -59,4 +58,4 @@
  [],
  'x86_64',
  None,
- 'entitlements.plist')
+ None)

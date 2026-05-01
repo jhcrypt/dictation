@@ -127,16 +127,20 @@ CHANNELS    = 1
 MIC_DEVICE  = 2
 
 # ── Globals ───────────────────────────────────────────────────────────────────
-recording    = False
-audio_frames = []
-last_text    = ""
-typer        = Controller()
-whisper      = None
+recording       = False
+audio_frames    = []
+last_text       = ""
+typer           = Controller()
+whisper         = None
 app             = None
 current_keys    = set()
 cancelled       = False
 snippet_state   = None  # None | 'waiting_trigger' | 'waiting_content'
 snippet_trigger = ""
+# History for undo/redo and re-insert
+dictation_history    = []
+history_index        = -1
+last_transcribed_text = ""  # fix: was undefined
 
 # ── Snippets ─────────────────────────────────────────────────────────────────
 SNIPPETS_FILE = os.path.expanduser("~/.dictation_snippets.json")
@@ -435,6 +439,24 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
+    # History commands
+    if lower in ("undo dictation", "undo last"):
+        _undo_last_dictation()
+        app.set_state("idle")
+        return
+    if lower in ("redo dictation", "redo last"):
+        _redo_dictation()
+        app.set_state("idle")
+        return
+    if lower in ("re-insert last", "insert last", "paste last"):
+        _reinsert_last()
+        app.set_state("idle")
+        return
+    if lower in ("show history", "dictation history", "view history"):
+        __show_history()
+        app.set_state("idle")
+        return
+
     text = symspell_correct(raw_text)
     text = words_to_digits(text)
     text = apply_snippets(text)
@@ -460,6 +482,106 @@ def _scratch_last():
         app.show_message("Scratched!", "#ff9f0a")
     else:
         app.show_message("Nothing to scratch", "#ff9f0a")
+
+def _add_to_history(text):
+    """Add text to in-memory dictation history for undo/redo"""
+    global dictation_history, history_index
+    # Truncate future if we're not at the end
+    if history_index < len(dictation_history) - 1:
+        dictation_history = dictation_history[:history_index + 1]
+    dictation_history.append(text)
+    history_index = len(dictation_history) - 1
+    # Keep history manageable
+    if len(dictation_history) > 50:
+        dictation_history = dictation_history[-50:]
+        history_index = 49
+
+def _undo_last_dictation():
+    """Undo the last dictation by deleting the text"""
+    global last_text, history_index
+    if last_text:
+        count = len(last_text) + 1
+        for _ in range(count):
+            typer.press(Key.backspace)
+            typer.release(Key.backspace)
+        history_index = max(-1, history_index - 1)
+        app.show_message("Undo!", "#0a84ff")
+    else:
+        app.show_message("Nothing to undo", "#ff9f0a")
+
+def _redo_dictation():
+    """Redo a previously undone dictation"""
+    global history_index
+    if history_index < len(dictation_history) - 1:
+        history_index += 1
+        text = dictation_history[history_index]
+        paste_text(text)
+        app.show_message("Redo!", "#0a84ff")
+    else:
+        app.show_message("Nothing to redo", "#ff9f0a")
+
+def _reinsert_last():
+    """Re-insert the last dictation at cursor position"""
+    global last_text
+    if last_text:
+        paste_text(last_text)
+        app.show_message("Re-inserted!", "#30d158")
+    else:
+        app.show_message("Nothing to re-insert", "#ff9f0a")
+
+def __show_history():
+    """Show dictation history in a popup window"""
+    def _show():
+        hwin = tk.Toplevel(app.root)
+        hwin.title("Dictation History")
+        hwin.geometry("500x400")
+        hwin.configure(bg="#1a1a1a")
+        hwin.attributes("-topmost", True)
+
+        tk.Label(hwin, text="Recent Dictations", bg="#1a1a1a", fg="#ffffff",
+                 font=("Helvetica Neue", 14, "bold")).pack(pady=(12, 4))
+
+        # Scrollable list
+        frame = tk.Frame(hwin, bg="#1a1a1a")
+        frame.pack(fill="both", expand=True, padx=16, pady=8)
+
+        canvas = tk.Canvas(frame, bg="#1a1a1a", highlightthickness=0)
+        scroll = tk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg="#1a1a1a")
+
+        inner.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        try:
+            if os.path.exists(HISTORY_FILE):
+                with open(HISTORY_FILE) as f:
+                    history = json.load(f)
+                for item in reversed(history[-100:]):
+                    row = tk.Frame(inner, bg="#1c1c1c")
+                    row.pack(fill="x", pady=2)
+                    tk.Label(row, text=item["text"][:60] + ("..." if len(item["text"]) > 60 else ""),
+                             bg="#2a2a2a", fg="#aaaaaa",
+                             font=("Helvetica Neue", 10),
+                             anchor="w", padx=8, pady=4).pack(fill="x")
+                    tk.Label(row, text=f"{item['app']} • {item['timestamp']}",
+                             bg="#1c1c1c", fg="#666666",
+                             font=("Helvetica Neue", 8)).pack(anchor="w", padx=8, pady=2)
+            else:
+                tk.Label(inner, text="No history yet", bg="#1a1a1a", fg="#666666",
+                         font=("Helvetica Neue", 11)).pack(pady=20)
+        except Exception:
+            tk.Label(inner, text="Error loading history", bg="#1a1a1a", fg="#ff3b30",
+                     font=("Helvetica Neue", 11)).pack(pady=20)
+
+        tk.Button(hwin, text="Close", command=hwin.destroy,
+                  bg="#2a2a2a", fg="#aaaaaa", font=("Helvetica Neue", 12),
+                  relief="flat", padx=20, pady=8, cursor="hand2").pack(pady=8)
+
+    app.root.after(0, _show)
 
 def _process(frames):
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -566,6 +688,10 @@ class MenuBarApp:
                 def quitApp_(self, sender):
                     os._exit(0)
 
+                def showHistory_(self, sender):
+                    if app:
+                        threading.Thread(target=lambda: app.root.after(0, _show_history), daemon=True).start()
+
             self._delegate = MenuDelegate.alloc().init()
 
             bar        = NSStatusBar.systemStatusBar()
@@ -606,6 +732,13 @@ class MenuBarApp:
                 hotkey_menu.addItem_(hi)
             hotkey_item.setSubmenu_(hotkey_menu)
             self._menu.addItem_(hotkey_item)
+
+            self._menu.addItem_(NSMenuItem.separatorItem())
+
+            # History item
+            hist_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Show History", "showHistory:", "")
+            hist_item.setTarget_(self._delegate)
+            self._menu.addItem_(hist_item)
 
             self._menu.addItem_(NSMenuItem.separatorItem())
 

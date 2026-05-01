@@ -1,5 +1,5 @@
 # Voice Commands
-
+You
 ## Snippets
 | Say | Action |
 |-----|--------|
@@ -42,6 +42,14 @@
 | "hyphen" | - |
 | "open paren" | ( |
 | "close paren" | ) |
+
+## History & Undo
+| Say | Action |
+|-----|--------|
+| "undo dictation" / "undo last" | Delete the last dictated text |
+| "redo dictation" / "redo last" | Re-insert a previously undone dictation |
+| "re-insert last" / "insert last" / "paste last" | Re-insert last dictation at cursor |
+| "show history" / "dictation history" / "view history" | Open history window to view past dictations |
 
 ## Hotkeys
 | Shortcut | Action |
