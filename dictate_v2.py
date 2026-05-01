@@ -25,6 +25,9 @@ except ImportError as e:
     print(f"\nMissing dependency: {e}")
     sys.exit(1)
 
+import os
+os.environ["OMP_NUM_THREADS"] = "1"  # suppress OMP fork warning
+
 import tkinter as tk
 from tkinter import ttk
 
@@ -129,7 +132,7 @@ MIC_DEVICE  = 2
 # ── Wake word config ─────────────────────────────────────────────────────────
 WAKE_WORD         = "hey cryptic"
 WAKE_ENABLED      = True
-WAKE_CHUNK_SECS   = 1.2    # seconds of audio to check for wake word
+WAKE_CHUNK_SECS   = 2.5    # seconds of audio to check for wake word
 WAKE_THRESHOLD    = 0.003  # min RMS to bother transcribing wake chunk
 WAKE_MODEL_SIZE   = "tiny.en"  # fast model just for wake detection
 
@@ -154,6 +157,8 @@ wake_listening    = False   # True when idle and listening for wake word
 wake_frames       = []      # rolling buffer for wake detection
 wake_lock         = threading.Lock()
 wake_whisper      = None    # separate tiny model for fast wake detection
+
+
 
 # ── Snippets ─────────────────────────────────────────────────────────────────
 SNIPPETS_FILE = os.path.expanduser("~/.dictation_snippets.json")
@@ -240,7 +245,6 @@ def get_current_rms():
     return float(np.sqrt(np.mean(audio_frames[-1]**2)))
 
 def audio_callback(indata, frames, time_info, status):
-    global wake_frames
     if recording:
         audio_frames.append(indata.copy())
     elif WAKE_ENABLED and not recording and not cancelled:
@@ -263,32 +267,45 @@ def save_wav(frames, path):
         wf.writeframes((resampled * 32767).astype(np.int16).tobytes())
 
 def paste_text(text):
+    """Paste using pure AppleScript - restores clipboard after paste."""
+    # Force release any stuck modifier keys
+    for k in (Key.cmd, Key.cmd_r, Key.ctrl, Key.shift, Key.alt):
+        try:
+            typer.release(k)
+        except Exception:
+            pass
+
+    # Save existing clipboard first
     try:
-        # Save existing clipboard
         prev = subprocess.check_output(
             ["osascript", "-e", "the clipboard as text"], timeout=2
         ).decode().strip()
     except Exception:
         prev = None
+
     try:
         clean = text.replace("\\", "\\\\").replace('"', '\\"')
         subprocess.run(
             ["osascript", "-e", f'set the clipboard to "{clean}"'],
             timeout=2
         )
-        time.sleep(0.1)
-        typer.press(Key.cmd)
-        typer.press("v")
-        typer.release("v")
-        typer.release(Key.cmd)
-        time.sleep(0.15)
+        time.sleep(0.05)
+        subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to keystroke "v" using command down'],
+            timeout=2
+        )
+        time.sleep(0.05)
+        subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to keystroke " "'],
+            timeout=2
+        )
     except Exception as e:
         print(f"[paste] error: {e}")
-        typer.type(text + " ")
-        return
     finally:
         # Restore previous clipboard
-        if prev is not None:
+        if prev:
             try:
                 prev_clean = prev.replace("\\", "\\\\").replace('"', '\\"')
                 subprocess.run(
@@ -313,6 +330,14 @@ def transcribe_and_type(wav_path, raw_frames):
         return
 
     app.set_state("transcribing")
+    # Check RMS — skip if audio is too quiet (prevents hallucination)
+    audio_check = np.concatenate(raw_frames, axis=0)
+    rms_check = float(np.sqrt(np.mean(audio_check**2)))
+    if rms_check < 0.008:
+        print(f"[transcribe] skipping — audio too quiet (rms={rms_check:.4f})")
+        app.set_state("idle")
+        return
+
     segments, _ = whisper.transcribe(
         wav_path,
         beam_size=5,
@@ -600,123 +625,131 @@ def _show_history():
 
     app.root.after(0, _show)
 
+_wake_cooldown_until = 0.0  # module-level shared cooldown
+_wake_active = threading.Event()  # set when recording, cleared when idle
+
+def _trigger_wake():
+    """Activate recording after wake word detected."""
+    global recording, audio_frames, cancelled, _wake_cooldown_until
+    if recording:
+        return
+    if time.time() < _wake_cooldown_until:
+        return
+    with wake_lock:
+        wake_frames.clear()
+    audio_frames = []
+    time.sleep(0.3)
+    audio_frames = []
+    cancelled    = False
+    recording    = True
+    _wake_active.set()
+    _wake_cooldown_until = time.time() + 12.0
+    app.capture_active_app()
+    app.set_state("recording")
+    app.root.after(0, app.start_wave)
+    app.root.after(100, lambda: app.canvas.itemconfig(
+        app.label, text="Recording...  press ⌘ to stop", fill=app.TEXT_WHITE))
+    threading.Thread(target=play_sound, args=("start",), daemon=True).start()
+
+
 def _wake_word_loop():
-    """Continuously checks audio for wake word when not recording."""
-    global wake_listening, wake_frames, recording, audio_frames, cancelled, wake_whisper
+    """Wake word detection using openwakeword."""
+    global recording
 
-    # Load tiny model for fast wake detection
-    print("[wake] loading tiny model for wake detection...")
-    wake_whisper = WhisperModel(WAKE_MODEL_SIZE, device=DEVICE, compute_type=COMPUTE)
-    print("[wake] ready — say 'Hey Cryptic' to start dictating")
+    try:
+        from openwakeword.model import Model as WakeModel
+        oww = WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+        print("[wake] ready — say 'Hey Jarvis' to start dictating")
+    except Exception as e:
+        print(f"[wake] openwakeword failed ({e}), wake word disabled")
+        return
 
-    # Accumulate frames for WAKE_CHUNK_SECS before processing
-    target_frames = int(WAKE_CHUNK_SECS * SAMPLE_RATE / 512)  # ~512 samples per callback
+    CHUNK    = 1280
+    OWW_RATE = 16000
 
     while True:
-        time.sleep(0.1)
-        if recording or not WAKE_ENABLED or wake_whisper is None:
-            with wake_lock:
-                wake_frames = []  # always flush when recording
+        # Only run stream when NOT recording
+        if recording or not WAKE_ENABLED:
+            time.sleep(0.5)
             continue
 
-        wake_listening = True
+        buf = []
+        triggered = False
 
-        with wake_lock:
-            if len(wake_frames) < target_frames:
-                continue
-            frames = list(wake_frames)
-            wake_frames = []
+        def _oww_callback(indata, frames, time_info, status):
+            nonlocal triggered
+            if recording or triggered or not WAKE_ENABLED:
+                return
+            if time.time() < _wake_cooldown_until:
+                return
 
-        if not frames:
-            continue
-
-        audio = np.concatenate(frames, axis=0)
-        rms = float(np.sqrt(np.mean(audio**2)))
-        duration = len(audio) / SAMPLE_RATE
-        print(f"[wake] chunk: {duration:.1f}s rms={rms:.4f}")
-        if rms < WAKE_THRESHOLD:
-            continue
-
-        # Transcribe the chunk
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                wav_path = f.name
-            save_wav(frames, wav_path)
-            segments, _ = wake_whisper.transcribe(
-                wav_path,
-                beam_size=1,
-                language="en",
-                condition_on_previous_text=False,
+            audio      = indata[:, 0]
+            target_len = int(len(audio) * OWW_RATE / SAMPLE_RATE)
+            resampled  = np.interp(
+                np.linspace(0, len(audio)-1, target_len),
+                np.arange(len(audio)), audio
             )
-            text = " ".join(seg.text for seg in segments).strip().lower()
-            text = re.sub(r"[^a-z0-9 ]", "", text).strip()
-            os.unlink(wav_path)
+            buf.extend(resampled.tolist())
+            while len(buf) >= CHUNK:
+                chunk = np.array(buf[:CHUNK], dtype=np.float32)
+                del buf[:CHUNK]
+                pcm   = (chunk * 32767).astype(np.int16)
+                preds = oww.predict(pcm)
+                score = preds.get("hey_jarvis", 0)
+                if score > 0.75:
+                    print(f"[wake] Hey Jarvis! score={score:.2f}")
+                    triggered = True
+                    buf.clear()
 
-            if WAKE_WORD in text or "cryptic" in text:
-                print(f"[wake] detected: {text!r}")
-                wake_listening = False
-                # Flush all buffers so wake phrase is not transcribed
-                with wake_lock:
-                    wake_frames = []
-                audio_frames = []
-                time.sleep(0.3)  # brief pause after wake word
-                audio_frames = []  # flush again after pause
-                cancelled    = False
-                recording    = True
-                app.capture_active_app()
-                app.set_state("recording")
-                app.root.after(0, app.start_wave)
-                threading.Thread(
-                    target=play_sound, args=("start",), daemon=True
-                ).start()
-                threading.Thread(
-                    target=_auto_stop_monitor, daemon=True
-                ).start()
+        # Open stream, run until recording starts or trigger fires
+        try:
+            with sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                device=MIC_DEVICE,
+                callback=_oww_callback,
+            ):
+                while not recording and not triggered and WAKE_ENABLED:
+                    time.sleep(0.05)
         except Exception as e:
-            print(f"[wake] error: {e}")
+            print(f"[wake] stream error: {e}")
+            time.sleep(1)
+            continue
+
+        if triggered and not recording:
+            threading.Thread(target=_trigger_wake, daemon=True).start()
+
+        # Wait until recording finishes before restarting wake listener
+        while recording:
+            time.sleep(0.2)
+
+        # Reset oww model state so residual scores don't retrigger
+        try:
+            oww.reset()
+        except Exception:
+            pass
+
+        # Cooldown — wait until _wake_cooldown_until has passed
+        while time.time() < _wake_cooldown_until:
+            time.sleep(0.1)
+
+        print("[wake] listening for 'Hey Jarvis'...")
+
 
 
 def _auto_stop_monitor():
-    """Auto-stop recording after silence or max time."""
-    MAX_RECORD_SECS  = 30    # max recording length
-    SILENCE_STOP_SECS = 4    # stop after 4s of silence
-    CHECK_INTERVAL   = 0.5
-
-    global recording
-    start_time    = time.time()
-    last_speech   = time.time()
-
-    while recording:
-        time.sleep(CHECK_INTERVAL)
-        if not recording:
-            break
-
-        elapsed = time.time() - start_time
-
-        # Check recent RMS
-        if audio_frames:
-            recent = audio_frames[-5:] if len(audio_frames) >= 5 else audio_frames
-            audio  = np.concatenate(recent, axis=0)
-            rms    = float(np.sqrt(np.mean(audio**2)))
-            if rms > 0.02:  # speech detected
-                last_speech = time.time()
-
-        silence_secs = time.time() - last_speech
-
-        if elapsed > MAX_RECORD_SECS:
-            print("[auto-stop] max recording time reached")
-            _stop_recording()
-            break
-        elif silence_secs > SILENCE_STOP_SECS and elapsed > 2.0:
-            print(f"[auto-stop] silence for {silence_secs:.1f}s")
-            _stop_recording()
-            break
+    """Disabled — use Right Command key to stop recording."""
+    pass
 
 def _stop_recording():
-    global recording
+    global recording, _wake_cooldown_until
     if not recording:
         return
     recording = False
+    _wake_cooldown_until = time.time() + 12.0  # 12s cooldown after auto-stop
+    app.root.after(0, app.stop_wave)
+    app.root.after(0, lambda: app.set_state("transcribing"))
     frames = list(audio_frames)
     threading.Thread(target=play_sound, args=("stop",), daemon=True).start()
     if frames:
@@ -748,16 +781,19 @@ def on_press(key):
 
     if key == record_key and not recording:
         recording    = True
+        _wake_active.set()
+        _wake_cooldown_until = time.time() + 15.0
         audio_frames = []
         cancelled    = False
         with wake_lock:
-            wake_frames.clear()  # flush wake buffer on manual start
+            wake_frames.clear()
         app.capture_active_app()
         app.set_state("recording")
         app.root.after(0, app.start_wave)
         threading.Thread(target=play_sound, args=("start",), daemon=True).start()
     elif key == record_key and recording and settings.get("toggle_mode", False):
         recording = False
+        app.root.after(0, app.stop_wave)
         threading.Thread(target=play_sound, args=("stop",), daemon=True).start()
         frames = list(audio_frames)
         if frames:
@@ -768,6 +804,7 @@ def on_press(key):
         recording = False
         cancelled = True
         audio_frames.clear()
+        app.root.after(0, app.stop_wave)
         app.show_message("Cancelled", "#ff9f0a")
         threading.Timer(1.5, lambda: app.set_state("idle")).start()
     elif ctrl and is_z:
@@ -776,10 +813,13 @@ def on_press(key):
         app.open_settings()
 
 def on_release(key):
-    global recording
+    global recording, _wake_cooldown_until
     current_keys.discard(key)
     if key == get_record_key() and recording and not settings.get("toggle_mode", False):
         recording = False
+        _wake_active.clear()
+        _wake_cooldown_until = time.time() + 15.0
+        app.root.after(0, app.stop_wave)
         threading.Thread(target=play_sound, args=("stop",), daemon=True).start()
         frames = list(audio_frames)
         if frames:
@@ -1058,6 +1098,9 @@ class DictationApp:
         if self._blink_job:
             self.root.after_cancel(self._blink_job)
             self._blink_job = None
+        # Always stop wave animation on any state change
+        if state != "recording":
+            self.stop_wave()
         label = settings.get("hotkey_label", "Right Command")
         if state == "idle":
             self.stop_wave()
@@ -1133,7 +1176,10 @@ class DictationApp:
                                                fill=self.RED, outline="")
             self._bars.append(bar)
         self._wave_phase = 0.0
-        self._wave_job = self.root.after(30, self._animate_wave)
+        if recording:
+            self._wave_job = self.root.after(30, self._animate_wave)
+        else:
+            self.root.after(0, self.stop_wave)
 
     def _animate_wave(self):
         if not hasattr(self, '_bars') or not self._bars:
@@ -1157,17 +1203,27 @@ class DictationApp:
             x1, _, x2, _ = self.canvas.coords(bar)
             self.canvas.coords(bar, x1, H//2 - height, x2, H//2 + height)
             self.canvas.itemconfig(bar, fill=color)
-        self._wave_job = self.root.after(30, self._animate_wave)
+        if recording:
+            self._wave_job = self.root.after(30, self._animate_wave)
+        else:
+            self.root.after(0, self.stop_wave)
 
     def stop_wave(self):
-        if hasattr(self, '_wave_job') and self._wave_job:
-            self.root.after_cancel(self._wave_job)
-            self._wave_job = None
+        job = getattr(self, '_wave_job', None)
+        self._wave_job = None  # set None FIRST to stop animation loop
+        if job:
+            self.root.after_cancel(job)
         if hasattr(self, '_bars'):
             for bar in self._bars:
-                self.canvas.delete(bar)
+                try:
+                    self.canvas.delete(bar)
+                except Exception:
+                    pass
             self._bars = []
-        self.canvas.itemconfig(self.dot, state="normal")
+        try:
+            self.canvas.itemconfig(self.dot, state="normal")
+        except Exception:
+            pass
 
     def _show_snippets(self, parent=None):
         swin = tk.Toplevel(self.root)
@@ -1361,7 +1417,7 @@ class DictationApp:
         toggle_var = tk.BooleanVar(value=settings.get("toggle_mode", False))
         toggle_row("Toggle Mode", toggle_var)
         wake_var = tk.BooleanVar(value=settings.get("wake_enabled", True))
-        toggle_row('Wake Word "Hey Cryptic"', wake_var)
+        toggle_row('Wake Word "Hey Jarvis"', wake_var)
 
         # Bottom buttons
         btn_frame = tk.Frame(win, bg="#1a1a1a")
