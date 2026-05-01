@@ -1,12 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
+
+datas = []
+datas += collect_data_files('openwakeword')
 
 
 a = Analysis(
     ['dictate_v2.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=datas,
+    hiddenimports=['openwakeword', 'onnxruntime'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
