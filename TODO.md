@@ -16,13 +16,12 @@
 - [x] Configurable hotkey (Right Command, F13, F14, etc.)
 
 ## 🔲 Up Next
-- [ ] Create downloadable `.app` for Mac (py2app or PyInstaller)
-- [ ] Sound feedback on start/stop recording (afplay, 5 lines)
+- [ ] Create downloadable `.app` for Mac (py2app — PyInstaller has tkinter font crash on macOS)
 - [ ] Custom word replacements — JSON file for brand names/jargon Whisper gets wrong
 - [ ] Silence auto-stop — stop recording automatically after X seconds of silence
 - [ ] Dictation history panel — log of everything dictated, searchable
 - [ ] Auto-start on login (launch agent)
-- [ ] Menubar icon option
+- [ ] Language selection in menu bar
 
 ## 📦 Packaging Notes
 - All dependencies must be pure Python or have wheels (no ollama, no external binaries)

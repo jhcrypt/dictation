@@ -397,7 +397,7 @@ class MenuBarApp:
         "recording":    "recording",
         "transcribing": "transcribing",
     }
-    ICON_DIR = os.path.dirname(os.path.abspath(__file__))
+    ICON_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 
     def __init__(self):
         self._available = False
@@ -490,16 +490,19 @@ class MenuBarApp:
     def _set_icon(self, state):
         if not self._available:
             return
-        path = os.path.join(self.ICON_DIR, f"icon_{state}.png")
-        if os.path.exists(path):
-            img = self._NSImage.alloc().initWithContentsOfFile_(path)
-            img.setSize_((18, 18))
-            img.setTemplate_(True)
-            self._item.button().setImage_(img)
-            self._item.button().setTitle_("")
-        else:
-            fallback = {"idle": "🎙️", "recording": "🔴", "transcribing": "⏳"}
-            self._item.button().setTitle_(fallback.get(state, "🎙️"))
+        # Use emoji in bundled app, PNG when running from source
+        if not getattr(sys, '_MEIPASS', None):
+            path = os.path.join(self.ICON_DIR, f"icon_{state}.png")
+            if os.path.exists(path):
+                img = self._NSImage.alloc().initWithContentsOfFile_(path)
+                img.setSize_((18, 18))
+                img.setTemplate_(True)
+                self._item.button().setImage_(img)
+                self._item.button().setTitle_("")
+                return
+        fallback = {"idle": "🎙️", "recording": "🔴", "transcribing": "⏳"}
+        self._item.button().setImage_(None)
+        self._item.button().setTitle_(fallback.get(state, "🎙️"))
 
     def set_state(self, state):
         if not self._available:
@@ -794,6 +797,7 @@ def reload_model():
 # ── Backend ───────────────────────────────────────────────────────────────────
 def start_backend(stream):
     global whisper
+    time.sleep(1.5)
     whisper = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
     app._ready = True
     app.set_state("idle")
@@ -805,6 +809,11 @@ def start_backend(stream):
 def main():
     global app, menubar
     root = tk.Tk()
+    root.tk.call('tk', 'windowingsystem')  # force tk init
+    try:
+        root.tk.call('::tk::unsupported::MacWindowStyle', 'style', root._w, 'plain', 'none')
+    except Exception:
+        pass
     app  = DictationApp(root)
 
     if not settings.get("show_hud", True):
@@ -824,4 +833,10 @@ def main():
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
-    main()
+    import traceback
+    try:
+        main()
+    except Exception as e:
+        with open(os.path.expanduser("~/dictation_crash.log"), "w") as f:
+            f.write(traceback.format_exc())
+        raise
