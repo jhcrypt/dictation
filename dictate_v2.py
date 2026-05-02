@@ -2367,7 +2367,27 @@ def start_backend(stream):
     global whisper, JARVIS_ENABLED
     JARVIS_ENABLED = settings.get("jarvis_enabled", True)
     time.sleep(1.5)
-    whisper = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
+    try:
+        whisper = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
+    except Exception as e:
+        print(f"[whisper] failed to load model '{MODEL}': {e}")
+        app.root.after(0, lambda: app.show_message(
+            f"Model '{MODEL}' not found — check ~/Library/Caches/whisper", "#ff3b30"))
+        # Try falling back to tiny.en which is most likely to be cached
+        fallback = "tiny.en"
+        try:
+            print(f"[whisper] falling back to {fallback}")
+            whisper = WhisperModel(fallback, device=DEVICE, compute_type=COMPUTE)
+            settings["model"] = fallback
+            save_settings(settings)
+            app.root.after(0, lambda: app.show_message(
+                f"Loaded fallback model: {fallback}", "#ff9f0a"))
+        except Exception as e2:
+            print(f"[whisper] fallback also failed: {e2}")
+            app.root.after(0, lambda: app.show_message(
+                "No Whisper model found. Run: pip install faster-whisper", "#ff3b30"))
+            app.set_state("idle")
+            return
     print(f"[jarvis] enabled={JARVIS_ENABLED} model={MODEL}")
     app._ready = True
     app.set_state("idle")
@@ -2405,8 +2425,35 @@ def main():
     root.mainloop()
 
 def _init_menubar():
+    """Initialize MenuBarApp, ensuring NSStatusBar calls land on the Cocoa main thread.
+
+    tkinter's root.after() callbacks run on the main thread's run loop, which IS
+    the Cocoa main thread in a normal Python process.  However in a PyInstaller
+    .app bundle the thread identity can differ.  We use performSelectorOnMainThread
+    as the safest cross-version dispatch — it's a no-op overhead when already on
+    the right thread, and correctly re-dispatches when not.
+    """
     global menubar
-    menubar = MenuBarApp()
+
+    def _create():
+        global menubar
+        menubar = MenuBarApp()
+
+    try:
+        from Foundation import NSObject
+        import objc
+
+        class _Trampoline(NSObject):
+            def create_(self, _):
+                _create()
+
+        t = _Trampoline.alloc().init()
+        t.performSelectorOnMainThread_withObject_waitUntilDone_(
+            objc.selector(t.create_, selector=b"create:"), None, True
+        )
+    except Exception as e:
+        print(f"[menubar] performSelectorOnMainThread unavailable ({e}), creating directly")
+        _create()
 
 if __name__ == "__main__":
     import multiprocessing, signal
@@ -2418,16 +2465,6 @@ if __name__ == "__main__":
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
-
-    # Fix for macOS .app bundle — ensure we run on main thread
-    import platform
-    if platform.system() == "Darwin":
-        import objc
-        from Foundation import NSThread
-        if not NSThread.isMainThread():
-            # Re-launch on main thread
-            from AppKit import NSApplication
-            NSApplication.sharedApplication()
 
     import traceback
     try:
