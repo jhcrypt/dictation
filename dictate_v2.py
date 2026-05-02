@@ -1608,7 +1608,7 @@ class MenuBarApp:
         "recording":    "recording",
         "transcribing": "transcribing",
     }
-    ICON_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    ICON_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(sys.argv[0])))
 
     def __init__(self):
         self._available = False
@@ -1873,16 +1873,22 @@ class DictationApp:
 
     def capture_active_app(self):
         def _fetch():
-            icon = get_active_app_icon()
+            try:
+                icon = get_active_app_icon()
+            except Exception:
+                icon = None
             def _update():
-                if icon:
-                    self._app_icon = icon
-                    self.canvas.itemconfig(self.appicon, image=icon)
-                    self.canvas.itemconfig(self.appname, text="")
-                else:
-                    name = get_active_app_name()
-                    self.canvas.itemconfig(self.appicon, image="")
-                    self.canvas.itemconfig(self.appname, text=name)
+                try:
+                    if icon:
+                        self._app_icon = icon
+                        self.canvas.itemconfig(self.appicon, image=icon)
+                        self.canvas.itemconfig(self.appname, text="")
+                    else:
+                        name = get_active_app_name()
+                        self.canvas.itemconfig(self.appicon, image="")
+                        self.canvas.itemconfig(self.appname, text=name[:8] if name else "")
+                except Exception:
+                    pass
             self.root.after(0, _update)
         threading.Thread(target=_fetch, daemon=True).start()
 
