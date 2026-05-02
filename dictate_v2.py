@@ -1729,16 +1729,19 @@ class MenuBarApp:
     def _set_icon(self, state):
         if not self._available:
             return
-        # Use emoji in bundled app, PNG when running from source
-        if not getattr(sys, '_MEIPASS', None):
-            path = os.path.join(self.ICON_DIR, f"icon_{state}.png")
-            if os.path.exists(path):
-                img = self._NSImage.alloc().initWithContentsOfFile_(path)
+        # Try PNG icon first — works both from source and inside .app bundle.
+        # In a bundle _MEIPASS points to Frameworks where PyInstaller copies our PNGs.
+        icon_dir = getattr(sys, '_MEIPASS', self.ICON_DIR)
+        path = os.path.join(icon_dir, f"icon_{state}.png")
+        if os.path.exists(path):
+            img = self._NSImage.alloc().initWithContentsOfFile_(path)
+            if img:
                 img.setSize_((18, 18))
                 img.setTemplate_(True)
                 self._item.button().setImage_(img)
                 self._item.button().setTitle_("")
                 return
+        # Fallback to emoji if PNG missing
         fallback = {"idle": "🎙️", "recording": "🔴", "transcribing": "⏳"}
         self._item.button().setImage_(None)
         self._item.button().setTitle_(fallback.get(state, "🎙️"))
@@ -1884,23 +1887,46 @@ class DictationApp:
 
     def capture_active_app(self):
         def _fetch():
+            # Do the heavy AppKit + PIL work in the thread
             try:
-                icon = get_active_app_icon()
-            except Exception:
-                icon = None
-            def _update():
+                from AppKit import NSWorkspace
+                from PIL import Image
+                import io
+                ws   = NSWorkspace.sharedWorkspace()
+                appo = ws.frontmostApplication()
+                path = appo.bundleURL().path() if appo and appo.bundleURL() else None
+                if path:
+                    icon_ns = ws.iconForFile_(path)
+                    icon_ns.setSize_((48, 48))
+                    tiff = icon_ns.TIFFRepresentation()
+                    img  = Image.open(io.BytesIO(bytes(tiff))).convert("RGBA")
+                    bbox = img.getbbox()
+                    if bbox:
+                        img = img.crop(bbox)
+                    img = img.resize((32, 32), Image.LANCZOS)
+                    # ImageTk.PhotoImage MUST be created on the main thread
+                    def _update_icon(i=img):
+                        try:
+                            from PIL import ImageTk
+                            photo = ImageTk.PhotoImage(i)
+                            self._app_icon = photo  # keep reference alive
+                            self.canvas.itemconfig(self.appicon, image=photo)
+                            self.canvas.itemconfig(self.appname, text="")
+                        except Exception as e:
+                            print(f"[icon] update error: {e}")
+                    self.root.after(0, _update_icon)
+                    return
+            except Exception as e:
+                print(f"[icon] fetch error: {e}")
+            # Fallback: show app name as text
+            def _update_name():
                 try:
-                    if icon:
-                        self._app_icon = icon
-                        self.canvas.itemconfig(self.appicon, image=icon)
-                        self.canvas.itemconfig(self.appname, text="")
-                    else:
-                        name = get_active_app_name()
-                        self.canvas.itemconfig(self.appicon, image="")
-                        self.canvas.itemconfig(self.appname, text=name[:8] if name else "")
+                    name = get_active_app_name()
+                    self.canvas.itemconfig(self.appicon, image="")
+                    self.canvas.itemconfig(self.appname, text=name[:8] if name else "")
                 except Exception:
                     pass
-            self.root.after(0, _update)
+            self.root.after(0, _update_name)
         threading.Thread(target=_fetch, daemon=True).start()
 
     def set_state(self, state):
