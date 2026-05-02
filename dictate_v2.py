@@ -583,17 +583,28 @@ def get_active_app_icon():
         app = ws.frontmostApplication()
         if not app:
             return None
-        icon = ws.iconForFile_(app.bundleURL().path())
+        bundle_url = app.bundleURL()
+        if not bundle_url:
+            return None
+        path = bundle_url.path()
+        if not path:
+            return None
+        icon = ws.iconForFile_(path)
+        if not icon:
+            return None
         icon.setSize_((48, 48))
-        data = bytes(icon.TIFFRepresentation())
+        tiff = icon.TIFFRepresentation()
+        if not tiff:
+            return None
+        data = bytes(tiff)
         img  = Image.open(io.BytesIO(data)).convert("RGBA")
-        # Crop transparent padding so all icons fill the same space
         bbox = img.getbbox()
         if bbox:
             img = img.crop(bbox)
         img = img.resize((32, 32), Image.LANCZOS)
         return ImageTk.PhotoImage(img)
-    except Exception:
+    except Exception as e:
+        print(f"[icon] error: {e}")
         return None
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
