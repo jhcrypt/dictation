@@ -738,7 +738,7 @@ def _fast_jarvis_match(lower):
     # Email — require open/check prefix
     if any(p in lower for p in ("open email", "check email", "open spark",
                                  "check spark", "open my email", "check my email",
-                                 "open inbox")):
+                                 "my email", "open inbox")):
         return ("open_app", {"app": "Spark", "url": ""})
 
     # Common Mac apps — check by keyword not exact phrase
@@ -818,7 +818,7 @@ def _fast_jarvis_match(lower):
 
     # Email compose — "send email to John saying I'll be late"
     import re as _re
-    email_match = _re.match(
+    email_match = _re.search(
         r"(?:send|compose|write|draft)\s+(?:an\s+)?email\s+(?:to\s+)?(.+?)\s+(?:saying|that|about|with)\s+(.+)",
         lower
     )
@@ -828,7 +828,7 @@ def _fast_jarvis_match(lower):
         return ("send_email", {"to": to, "subject": "", "body": body})
 
     # Simple "send email to John"
-    simple_email = _re.match(r"^(?:send|compose|write)\s+(?:an\s+)?email\s+to\s+(.+)", lower)
+    simple_email = _re.match(r"(?:send|compose|write)\s+(?:an\s+)?email\s+(?:to\s+)?(.+)", lower)
     if simple_email:
         to = simple_email.group(1).strip()
         return ("send_email", {"to": to, "subject": "", "body": ""})

@@ -393,25 +393,6 @@ HOTKEY_OPTIONS = {
 def get_record_key():
     return HOTKEY_OPTIONS.get(settings.get("hotkey_label", "Right Command"), Key.cmd_r)
 
-# ── Languages ────────────────────────────────────────────────────────────────
-LANGUAGES = {
-    "English":     "en",
-    "Spanish":     "es",
-    "French":      "fr",
-    "German":      "de",
-    "Italian":     "it",
-    "Portuguese":  "pt",
-    "Dutch":       "nl",
-    "Russian":     "ru",
-    "Japanese":    "ja",
-    "Chinese":     "zh",
-    "Korean":      "ko",
-    "Arabic":      "ar",
-    "Hindi":       "hi",
-    "Auto-detect": None,
-}
-current_language = "en"
-
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL       = settings["model"]
 DEVICE      = "cpu"
@@ -604,40 +585,6 @@ def play_sound(name):
     }
     subprocess.Popen(["afplay", sounds[name]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-def pause_media():
-    """Pause Spotify, Music, Podcasts when recording starts."""
-    for app_name, cmd in [
-        ("Spotify",  'tell application "Spotify" to pause'),
-        ("Music",    'tell application "Music" to pause'),
-        ("Podcasts", 'tell application "Podcasts" to pause'),
-    ]:
-        try:
-            check = f'tell application "System Events" to exists process "{app_name}"'
-            exists = subprocess.check_output(["osascript", "-e", check], timeout=1).decode().strip()
-            if exists == "true":
-                subprocess.Popen(["osascript", "-e", cmd])
-                print(f"[media] paused {app_name}")
-        except Exception:
-            pass
-
-
-def resume_media():
-    """Resume Spotify, Music, Podcasts after recording."""
-    for app_name, cmd in [
-        ("Spotify",  'tell application "Spotify" to play'),
-        ("Music",    'tell application "Music" to play'),
-        ("Podcasts", 'tell application "Podcasts" to resume'),
-    ]:
-        try:
-            check = f'tell application "System Events" to exists process "{app_name}"'
-            exists = subprocess.check_output(["osascript", "-e", check], timeout=1).decode().strip()
-            if exists == "true":
-                subprocess.Popen(["osascript", "-e", cmd])
-                print(f"[media] resumed {app_name}")
-        except Exception:
-            pass
-
-
 def get_current_rms():
     if not audio_frames:
         return 0.0
@@ -818,7 +765,7 @@ def _fast_jarvis_match(lower):
 
     # Email compose — "send email to John saying I'll be late"
     import re as _re
-    email_match = _re.match(
+    email_match = _re.search(
         r"(?:send|compose|write|draft)\s+(?:an\s+)?email\s+(?:to\s+)?(.+?)\s+(?:saying|that|about|with)\s+(.+)",
         lower
     )
@@ -828,7 +775,7 @@ def _fast_jarvis_match(lower):
         return ("send_email", {"to": to, "subject": "", "body": body})
 
     # Simple "send email to John"
-    simple_email = _re.match(r"^(?:send|compose|write)\s+(?:an\s+)?email\s+to\s+(.+)", lower)
+    simple_email = _re.match(r"(?:send|compose|write)\s+(?:an\s+)?email\s+(?:to\s+)?(.+)", lower)
     if simple_email:
         to = simple_email.group(1).strip()
         return ("send_email", {"to": to, "subject": "", "body": ""})
@@ -1256,7 +1203,6 @@ def transcribe_and_type(wav_path, raw_frames):
     app.set_transcript(text)
     time.sleep(0.3)
     paste_text(text)
-    threading.Thread(target=resume_media, daemon=True).start()
     time.sleep(3.0)
     app.set_state("idle")
 
@@ -1430,9 +1376,7 @@ def _wake_word_loop():
     CHUNK    = 1280
     OWW_RATE = 16000
 
-    while True:  # outer restart loop for SEGV prevention
-      session_start = time.time()
-      while True:
+    while True:
         # Only run stream when NOT recording
         if recording or not WAKE_ENABLED:
             time.sleep(0.5)
@@ -1563,7 +1507,6 @@ def on_press(key):
         app.set_state("recording")
         app.root.after(0, app.start_wave)
         threading.Thread(target=play_sound, args=("start",), daemon=True).start()
-        threading.Thread(target=pause_media, daemon=True).start()
     elif key == record_key and recording and settings.get("toggle_mode", False):
         recording = False
         app.root.after(0, app.stop_wave)
@@ -1579,7 +1522,6 @@ def on_press(key):
         audio_frames.clear()
         app.root.after(0, app.stop_wave)
         app.show_message("Cancelled", "#ff9f0a")
-        threading.Thread(target=resume_media, daemon=True).start()
         threading.Timer(1.5, lambda: app.set_state("idle")).start()
     elif ctrl and is_z:
         threading.Thread(target=_scratch_last, daemon=True).start()
@@ -1827,7 +1769,7 @@ class DictationApp:
                                 bg="systemTransparent", highlightthickness=0,
                                 takefocus=0)
         self.canvas.pack()
-        self._pill(0, 0, W, H, 18, fill=self.PILL, outline="")
+        self._pill(0, 0, W, H, 8, fill=self.PILL, outline="")
         self.dot = self.canvas.create_oval(20, H//2-6, 32, H//2+6,
                                            fill=self.TEXT_DIM, outline="")
         self.canvas.create_line(46, 14, 46, H-14, fill="#303030", width=1)
@@ -2140,7 +2082,7 @@ class DictationApp:
     def _show_settings(self):
         win = tk.Toplevel(self.root)
         win.title("Dictation Settings")
-        win.geometry("400x700")
+        win.geometry("400x500")
         win.configure(bg="#1a1a1a")
         win.resizable(False, False)
         win.attributes("-topmost", True)
@@ -2195,9 +2137,6 @@ class DictationApp:
 
         section("HOTKEYS")
         hotkey_var = tk.StringVar(value=settings.get("hotkey_label", "Right Command"))
-        # Ensure current value is in the list
-        if hotkey_var.get() not in HOTKEY_OPTIONS:
-            hotkey_var.set("Right Command")
         def hotkey_w(f):
             return ttk.Combobox(f, textvariable=hotkey_var,
                 values=list(HOTKEY_OPTIONS.keys()),
@@ -2220,21 +2159,6 @@ class DictationApp:
         toggle_row("Toggle Mode", toggle_var)
         wake_var = tk.BooleanVar(value=settings.get("wake_enabled", True))
         toggle_row('Wake Word "Hey Jarvis"', wake_var)
-
-        section("LANGUAGE")
-        current_lang_name = next(
-            (k for k, v in LANGUAGES.items() if v == settings.get("language", "en")),
-            "English"
-        )
-        lang_var = tk.StringVar(value=current_lang_name)
-        def lang_w(f):
-            return ttk.Combobox(f, textvariable=lang_var,
-                values=list(LANGUAGES.keys()),
-                state="readonly", width=18,
-                font=("Helvetica Neue", 12))
-        row("Language", lang_w)
-        auto_var = tk.BooleanVar(value=settings.get("auto_detect", False))
-        toggle_row("Auto-detect", auto_var)
 
         section("AI FEATURES")
         jarvis_var = tk.BooleanVar(value=settings.get("jarvis_enabled", True))
@@ -2312,8 +2236,6 @@ class DictationApp:
                    lambda: self._show_snippets(win)).pack(side="left")
         styled_btn(btn_frame, "  Save  ",
                    save_and_close, primary=True).pack(side="right")
-        win.update_idletasks()
-        win.geometry(f"400x{min(700, win.winfo_reqheight() + 40)}")
 
 # Model sizes that need downloading (not pre-cached)
 LARGE_MODELS = {"large-v2", "large-v3", "distil-large-v3", "distil-medium.en"}
