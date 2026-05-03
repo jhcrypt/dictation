@@ -414,11 +414,16 @@ current_language = "en"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL       = settings["model"]
-DEVICE      = "cpu"
-COMPUTE     = "int8"
 SAMPLE_RATE = 48000
 CHANNELS    = 1
-MIC_DEVICE  = 2
+MIC_DEVICE  = settings.get("mic_device", 2)
+
+# Auto-detect Apple Silicon vs Intel
+import platform as _platform
+_is_arm = _platform.machine() == "arm64"
+DEVICE  = "cpu"
+COMPUTE = "float16" if _is_arm else "int8"
+print(f"[hardware] {'Apple Silicon (arm64)' if _is_arm else 'Intel (x86_64)'} — compute={COMPUTE}")
 
 # ── Wake word config ─────────────────────────────────────────────────────────
 WAKE_WORD         = "hey cryptic"
@@ -1279,37 +1284,42 @@ def transcribe_and_type(wav_path, raw_frames):
     last_text = text
     _add_to_history(text)
     active_app = get_active_app_name()
-    current_model = settings.get("model", "unknown")
-    # Save directly (not in thread) to ensure it completes
-    try:
-        history = []
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE) as f:
-                history = json.load(f)
-        history.append({
-            "text":      text,
-            "app":       active_app,
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "model":     current_model,
-        })
-        history = history[-500:]
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(history, f, indent=2)
-        print(f"[history] saved {len(history)} entries")
-    except Exception as e:
-        print(f"[history] error: {e}")
-    learn_from_text(text)  # call directly to ensure it runs
-    # Context-aware formatting
+
+    # Context-aware formatting (must happen before paste)
     if settings.get("context_format") and active_app:
         app.show_message("Formatting...", "#0a84ff")
         formatted = format_for_app(text, active_app)
         if formatted and formatted != text:
             text = formatted
 
+    # ── Paste FIRST — user sees result immediately ────────────────────────────
     app.set_transcript(text)
-    time.sleep(0.3)
     paste_text(text)
     threading.Thread(target=resume_media, daemon=True).start()
+
+    # ── Background: history + learning (non-blocking) ─────────────────────────
+    def _background_tasks(t=text, a=active_app):
+        current_model = settings.get("model", "unknown")
+        try:
+            history = []
+            if os.path.exists(HISTORY_FILE):
+                with open(HISTORY_FILE) as f:
+                    history = json.load(f)
+            history.append({
+                "text":      t,
+                "app":       a,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "model":     current_model,
+            })
+            history = history[-500:]
+            with open(HISTORY_FILE, "w") as f:
+                json.dump(history, f, indent=2)
+            print(f"[history] saved {len(history)} entries")
+        except Exception as e:
+            print(f"[history] error: {e}")
+        learn_from_text(t)
+
+    threading.Thread(target=_background_tasks, daemon=True).start()
     time.sleep(3.0)
     app.set_state("idle")
 
