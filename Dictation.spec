@@ -2,7 +2,7 @@
 # Dictation.spec — Intel Mac, Python 3.11, conda env "dictation"
 # Build: pyinstaller --clean Dictation.spec
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_all
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 import os, sys, pathlib
 
 project_dir = os.path.dirname(os.path.abspath(SPEC))
@@ -35,7 +35,7 @@ datas += collect_data_files('openwakeword')
 datas += collect_data_files('faster_whisper')
 datas += collect_data_files('ctranslate2')
 datas += collect_data_files('symspellpy')
-datas += collect_data_files('PIL')        # Pillow image data files
+datas += collect_data_files('PIL')
 datas += whisper_model_datas
 
 # Icon PNGs — transparent background, used by HUD and menu bar
@@ -49,7 +49,7 @@ datas += [
 binaries = []
 binaries += collect_dynamic_libs('ctranslate2')
 binaries += collect_dynamic_libs('onnxruntime')
-binaries += collect_dynamic_libs('PIL')   # Pillow native libs (_imaging etc.)
+binaries += collect_dynamic_libs('PIL')
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(
@@ -58,7 +58,6 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=[
-        # Pillow — needed for HUD app icon rendering
         'PIL',
         'PIL.Image',
         'PIL.ImageDraw',
@@ -68,32 +67,25 @@ a = Analysis(
         'PIL.PngImagePlugin',
         'PIL.JpegImagePlugin',
         'PIL.TiffImagePlugin',
-        # openwakeword
         'openwakeword',
         'openwakeword.model',
         'onnxruntime',
         'onnxruntime.capi',
-        # faster-whisper / ctranslate2
         'faster_whisper',
         'ctranslate2',
         'tokenizers',
         'huggingface_hub',
-        # audio
         'sounddevice',
         '_sounddevice_data',
-        # pyobjc
         'AppKit',
         'Foundation',
         'objc',
-        # symspell
         'symspellpy',
-        # pynput
         'pynput',
         'pynput.keyboard',
         'pynput.keyboard._darwin',
         'pynput._util',
         'pynput._util.darwin',
-        # stdlib
         'wave',
         'json',
         'tempfile',
