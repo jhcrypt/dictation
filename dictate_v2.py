@@ -422,7 +422,7 @@ MIC_DEVICE  = settings.get("mic_device", 2)
 import platform as _platform
 _is_arm = _platform.machine() == "arm64"
 DEVICE  = "cpu"
-COMPUTE = "float16" if _is_arm else "int8"
+COMPUTE = "int8"
 print(f"[hardware] {'Apple Silicon (arm64)' if _is_arm else 'Intel (x86_64)'} — compute={COMPUTE}")
 
 # ── Wake word config ─────────────────────────────────────────────────────────
