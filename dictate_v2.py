@@ -631,19 +631,11 @@ _pre_recording_muted = False
 _apps_were_playing   = []
 
 def pause_media():
-    """Mute system audio and pause only media apps that were actually playing."""
+    """Pause Spotify/Music/Podcasts if playing. Mute system audio for browser media."""
     global _pre_recording_muted, _apps_were_playing
     _apps_were_playing = []
-    try:
-        result = subprocess.check_output(
-            ["osascript", "-e", "output muted of (get volume settings)"], timeout=3
-        ).decode().strip()
-        _pre_recording_muted = (result == "true")
-        if not _pre_recording_muted:
-            _set_system_mute(True)
-            print("[media] system muted")
-    except Exception as e:
-        print(f"[media] mute error: {e}")
+
+    # Step 1: Pause media apps (Spotify etc.) — they handle their own audio
     for app_name, state_cmd, pause_cmd in [
         ("Spotify",  'tell application "Spotify" to player state as string',  'tell application "Spotify" to pause'),
         ("Music",    'tell application "Music" to player state as string',    'tell application "Music" to pause'),
@@ -651,9 +643,9 @@ def pause_media():
     ]:
         try:
             check = f'tell application "System Events" to exists process "{app_name}"'
-            exists = subprocess.check_output(["osascript", "-e", check], timeout=1).decode().strip()
+            exists = subprocess.check_output(["osascript", "-e", check], timeout=3).decode().strip()
             if exists == "true":
-                state = subprocess.check_output(["osascript", "-e", state_cmd], timeout=1).decode().strip()
+                state = subprocess.check_output(["osascript", "-e", state_cmd], timeout=3).decode().strip()
                 if state.lower() in ("playing", "1"):
                     subprocess.Popen(["osascript", "-e", pause_cmd])
                     _apps_were_playing.append(app_name)
@@ -661,13 +653,26 @@ def pause_media():
         except Exception:
             pass
 
+    # Step 2: Only mute system if NO media app was playing (handles browser audio)
+    if not _apps_were_playing:
+        try:
+            result = subprocess.check_output(
+                ["osascript", "-e", "output muted of (get volume settings)"], timeout=3
+            ).decode().strip()
+            _pre_recording_muted = (result == "true")
+            if not _pre_recording_muted:
+                _set_system_mute(True)
+                print("[media] system muted (browser audio)")
+        except Exception as e:
+            print(f"[media] mute error: {e}")
+    else:
+        _pre_recording_muted = True  # don't unmute system when we resume
+
 
 def resume_media():
-    """Unmute system and resume only apps that were playing before recording."""
+    """Unmute system (browser) or resume media apps — whichever was paused."""
     global _pre_recording_muted, _apps_were_playing
-    if not _pre_recording_muted:
-        _set_system_mute(False)
-        print("[media] system unmuted")
+    # Resume media apps first
     resume_cmds = {
         "Spotify":  'tell application "Spotify" to play',
         "Music":    'tell application "Music" to play',
@@ -675,11 +680,15 @@ def resume_media():
     }
     for app_name in _apps_were_playing:
         try:
-            subprocess.Popen(["osascript", "-e", resume_cmds[app_name]])
+            subprocess.run(["osascript", "-e", resume_cmds[app_name]], timeout=5)
             print(f"[media] resumed {app_name}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[media] resume error {app_name}: {e}")
     _apps_were_playing = []
+    # Unmute system only if we muted it (browser audio case)
+    if not _pre_recording_muted:
+        _set_system_mute(False)
+        print("[media] system unmuted")
 
 
 def get_current_rms():
@@ -710,18 +719,23 @@ def save_wav(frames, path):
         wf.writeframes((resampled * 32767).astype(np.int16).tobytes())
 
 def paste_text(text):
-    """Paste using a single AppleScript call - fast and reliable."""
+    """Paste using pbcopy + Cmd+V. Saves and restores clipboard."""
     try:
-        clean    = (text + " ").replace("\\", "\\\\").replace('"', '\\"')
-        # Single AppleScript: save clipboard, paste, restore — all in one call
-        script = f"""
-set prevClip to the clipboard
-set the clipboard to "{clean}"
-tell application "System Events" to keystroke "v" using command down
-delay 0.05
-set the clipboard to prevClip
-"""
-        subprocess.Popen(["osascript", "-e", script])
+        import subprocess as _sp
+        # Save current clipboard
+        prev = _sp.run(["pbpaste"], capture_output=True).stdout
+        # Set new content
+        _sp.run(["pbcopy"], input=(text + " ").encode(), timeout=2)
+        # Small delay to ensure clipboard is set
+        import time as _t; _t.sleep(0.05)
+        # Paste
+        from pynput.keyboard import Controller as _C, Key as _K
+        _k = _C()
+        with _k.pressed(_K.cmd):
+            _k.press("v"); _k.release("v")
+        _t.sleep(0.1)
+        # Restore clipboard
+        _sp.run(["pbcopy"], input=prev, timeout=2)
     except Exception as e:
         print(f"[paste] error: {e}")
         typer.type(text + " ")
@@ -941,8 +955,11 @@ def transcribe_and_type(wav_path, raw_frames):
     audio = np.concatenate(raw_frames, axis=0)
     rms = np.sqrt(np.mean(audio**2))
     if rms < 0.002:  # lower threshold to allow pauses
+        # No audio — unmute/resume without transcribing
+        threading.Thread(target=resume_media, daemon=True).start()
         app.set_state("idle")
         return
+    globals()["_recording_had_audio"] = True
 
     app.set_state("transcribing")
     # Check RMS — skip if audio is too quiet (prevents hallucination)
@@ -1320,7 +1337,7 @@ def transcribe_and_type(wav_path, raw_frames):
         learn_from_text(t)
 
     threading.Thread(target=_background_tasks, daemon=True).start()
-    time.sleep(3.0)
+    time.sleep(1.5)
     app.set_state("idle")
 
 def _scratch_last(count=1):
@@ -1609,7 +1626,7 @@ def _stop_recording():
     if not recording:
         return
     recording = False
-    _wake_cooldown_until = time.time() + 5.0  # 12s cooldown after auto-stop
+    _wake_cooldown_until = time.time() + 2.0
     app.root.after(0, app.stop_wave)
     app.root.after(0, lambda: app.set_state("transcribing"))
     frames = list(audio_frames)
@@ -1644,7 +1661,7 @@ def on_press(key):
     if key == record_key and not recording:
         recording    = True
         _wake_active.set()
-        _wake_cooldown_until = time.time() + 5.0
+        _wake_cooldown_until = time.time() + 2.0
         audio_frames = []
         cancelled    = False
         with wake_lock:
@@ -1654,6 +1671,7 @@ def on_press(key):
         app.root.after(0, app.start_wave)
         threading.Thread(target=play_sound, args=("start",), daemon=True).start()
         threading.Thread(target=pause_media, daemon=True).start()
+        globals()["_recording_had_audio"] = False
     elif key == record_key and recording and settings.get("toggle_mode", False):
         recording = False
         app.root.after(0, app.stop_wave)
@@ -1672,7 +1690,7 @@ def on_press(key):
         threading.Thread(target=resume_media, daemon=True).start()
         threading.Timer(1.5, lambda: app.set_state("idle")).start()
     elif ctrl and is_z:
-        threading.Thread(target=_scratch_last, daemon=True).start()
+        _scratch_last(1)
     elif ctrl and is_comma:
         app.open_settings()
 
@@ -1682,13 +1700,15 @@ def on_release(key):
     if key == get_record_key() and recording and not settings.get("toggle_mode", False):
         recording = False
         _wake_active.clear()
-        _wake_cooldown_until = time.time() + 5.0
+        _wake_cooldown_until = time.time() + 2.0
         app.root.after(0, app.stop_wave)
         threading.Thread(target=play_sound, args=("stop",), daemon=True).start()
         frames = list(audio_frames)
         if frames:
             threading.Thread(target=_process, args=(frames,), daemon=True).start()
         else:
+            # No audio recorded — still need to restore media/unmute
+            threading.Thread(target=resume_media, daemon=True).start()
             app.set_state("idle")
 
 # ── Menu Bar ─────────────────────────────────────────────────────────────────
