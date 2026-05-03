@@ -948,14 +948,24 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
+    # Build personal prompt from learned vocabulary
+    personal_prompt = get_personal_prompt()
+
     # Cloud mode — use OpenAI Whisper API
     if settings.get("cloud_mode") and settings.get("openai_key"):
         print("[cloud] transcribing...")
         raw_text = transcribe_cloud(wav_path)
         if not raw_text:
             print("[cloud] failed, falling back to local")
-            segments, _ = whisper.transcribe(wav_path, beam_size=5, language="en",
-                                             condition_on_previous_text=False)
+            segments, _ = whisper.transcribe(
+                wav_path,
+                beam_size=5,
+                language="en",
+                condition_on_previous_text=False,
+                initial_prompt=personal_prompt,
+                vad_filter=True,
+                no_speech_threshold=0.6,
+            )
             raw_text = " ".join(seg.text for seg in segments).strip()
     else:
         segments, _ = whisper.transcribe(
@@ -963,6 +973,9 @@ def transcribe_and_type(wav_path, raw_frames):
             beam_size=5,
             language="en",
             condition_on_previous_text=False,
+            initial_prompt=personal_prompt,
+            vad_filter=True,
+            no_speech_threshold=0.6,
         )
         raw_text = " ".join(seg.text for seg in segments).strip()
     if not raw_text:
@@ -1261,6 +1274,7 @@ def transcribe_and_type(wav_path, raw_frames):
     text = symspell_correct(raw_text)
     text = words_to_digits(text)
     text = apply_snippets(text)
+    text = smart_punctuate(text)
 
     last_text = text
     _add_to_history(text)
