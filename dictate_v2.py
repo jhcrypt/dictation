@@ -618,7 +618,7 @@ def play_sound(name):
 def _set_system_mute(mute: bool):
     try:
         flag = "with" if mute else "without"
-        subprocess.Popen(["osascript", "-e", f"set volume {flag} output muted"])
+        subprocess.run(["osascript", "-e", f"set volume {flag} output muted"], timeout=3)
     except Exception:
         pass
 
