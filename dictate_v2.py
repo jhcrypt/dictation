@@ -1457,7 +1457,7 @@ def _trigger_wake():
 
 def _silence_stop_monitor():
     """Auto-stop recording after sustained silence."""
-    SILENCE_THRESHOLD = 0.012
+    SILENCE_THRESHOLD = 0.08   # raised above room noise floor (~0.054 avg)
     SILENCE_SECS      = 2.5
     MIN_RECORD_SECS   = 1.5
     start_time    = time.time()
