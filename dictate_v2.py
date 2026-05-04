@@ -630,49 +630,112 @@ def _set_system_mute(mute: bool):
 _pre_recording_muted = False
 _apps_were_playing   = []
 
-def pause_media():
-    """Pause Spotify/Music/Podcasts if playing. Mute system audio for browser media."""
-    global _pre_recording_muted, _apps_were_playing
-    _apps_were_playing = []
+def _browser_js(browser, js):
+    """Run JavaScript in all tabs of a browser via AppleScript. Returns True if browser was running."""
+    # Map friendly name -> (process name, AppleScript app name, JS method)
+    BROWSER_MAP = {
+        "Chrome":  ("Google Chrome", "Google Chrome", "execute tab javascript"),
+        "Safari":  ("Safari",        "Safari",        "do JavaScript in tab"),
+        "Arc":     ("Arc",           "Arc",           "execute tab javascript"),
+        "Brave":   ("Brave Browser", "Brave Browser", "execute tab javascript"),
+        "Firefox": None,  # Firefox doesn't support AppleScript JS
+    }
+    entry = BROWSER_MAP.get(browser)
+    if not entry:
+        return False
+    proc_name, app_name, _ = entry
 
-    # Step 1: Pause media apps (Spotify etc.) — they handle their own audio
-    for app_name, state_cmd, pause_cmd in [
+    # Fast running-process check via `pgrep` — much faster than System Events
+    try:
+        result = subprocess.run(["pgrep", "-x", proc_name], capture_output=True, timeout=1)
+        if result.returncode != 0:
+            return False
+    except Exception:
+        return False
+
+    # Build the AppleScript for Chrome-like vs Safari
+    if browser == "Safari":
+        script = f'''tell application "Safari"
+    repeat with w in windows
+        repeat with t in tabs of w
+            try
+                do JavaScript "{js}" in t
+            end try
+        end repeat
+    end repeat
+end tell'''
+    else:
+        script = f'''tell application "{app_name}"
+    repeat with w in windows
+        repeat with t in tabs of w
+            try
+                execute t javascript "{js}"
+            end try
+        end repeat
+    end repeat
+end tell'''
+    try:
+        subprocess.run(["osascript", "-e", script], timeout=4, capture_output=True)
+        return True
+    except Exception as e:
+        print(f"[media] browser JS error ({browser}): {e}")
+        return False
+
+_browsers_paused = []
+
+def _is_running(proc_name):
+    """Fast process check using pgrep."""
+    try:
+        return subprocess.run(["pgrep", "-ix", proc_name], capture_output=True, timeout=1).returncode == 0
+    except Exception:
+        return False
+
+def pause_media():
+    """Mute system audio immediately, and pause Spotify/Music/Podcasts if running."""
+    global _pre_recording_muted, _apps_were_playing, _browsers_paused
+    _apps_were_playing = []
+    _browsers_paused   = []
+
+    # Always mute system audio immediately — fastest and most reliable
+    try:
+        result = subprocess.check_output(
+            ["osascript", "-e", "output muted of (get volume settings)"], timeout=2
+        ).decode().strip()
+        _pre_recording_muted = (result == "true")
+        if not _pre_recording_muted:
+            _set_system_mute(True)
+            print("[media] system muted")
+    except Exception as e:
+        print(f"[media] mute error: {e}")
+
+    # Also pause Spotify/Music/Podcasts so they don't resume mid-dictation
+    for proc, state_cmd, pause_cmd in [
         ("Spotify",  'tell application "Spotify" to player state as string',  'tell application "Spotify" to pause'),
         ("Music",    'tell application "Music" to player state as string',    'tell application "Music" to pause'),
         ("Podcasts", 'tell application "Podcasts" to player state as string', 'tell application "Podcasts" to pause'),
     ]:
+        if not _is_running(proc):
+            continue
         try:
-            check = f'tell application "System Events" to exists process "{app_name}"'
-            exists = subprocess.check_output(["osascript", "-e", check], timeout=3).decode().strip()
-            if exists == "true":
-                state = subprocess.check_output(["osascript", "-e", state_cmd], timeout=3).decode().strip()
-                if state.lower() in ("playing", "1"):
-                    subprocess.Popen(["osascript", "-e", pause_cmd])
-                    _apps_were_playing.append(app_name)
-                    print(f"[media] paused {app_name}")
+            state = subprocess.check_output(["osascript", "-e", state_cmd], timeout=2).decode().strip()
+            if state.lower() in ("playing", "1"):
+                subprocess.Popen(["osascript", "-e", pause_cmd])
+                _apps_were_playing.append(proc)
+                print(f"[media] paused {proc}")
         except Exception:
             pass
 
-    # Step 2: Only mute system if NO media app was playing (handles browser audio)
-    if not _apps_were_playing:
-        try:
-            result = subprocess.check_output(
-                ["osascript", "-e", "output muted of (get volume settings)"], timeout=3
-            ).decode().strip()
-            _pre_recording_muted = (result == "true")
-            if not _pre_recording_muted:
-                _set_system_mute(True)
-                print("[media] system muted (browser audio)")
-        except Exception as e:
-            print(f"[media] mute error: {e}")
-    else:
-        _pre_recording_muted = True  # don't unmute system when we resume
-
 
 def resume_media():
-    """Unmute system (browser) or resume media apps — whichever was paused."""
-    global _pre_recording_muted, _apps_were_playing
-    # Resume media apps first
+    """Unmute system audio and resume any paused media apps."""
+    global _pre_recording_muted, _apps_were_playing, _browsers_paused
+
+    # Unmute system if we muted it
+    if not _pre_recording_muted:
+        _set_system_mute(False)
+        print("[media] system unmuted")
+
+    # Resume named media apps
     resume_cmds = {
         "Spotify":  'tell application "Spotify" to play',
         "Music":    'tell application "Music" to play',
@@ -685,10 +748,7 @@ def resume_media():
         except Exception as e:
             print(f"[media] resume error {app_name}: {e}")
     _apps_were_playing = []
-    # Unmute system only if we muted it (browser audio case)
-    if not _pre_recording_muted:
-        _set_system_mute(False)
-        print("[media] system unmuted")
+    _browsers_paused = []
 
 
 def get_current_rms():
@@ -1630,11 +1690,14 @@ def _stop_recording():
     app.root.after(0, app.stop_wave)
     app.root.after(0, lambda: app.set_state("transcribing"))
     frames = list(audio_frames)
-    threading.Thread(target=play_sound, args=("stop",), daemon=True).start()
-    if frames:
-        threading.Thread(target=_process, args=(frames,), daemon=True).start()
-    else:
-        app.set_state("idle")
+    def _finish():
+        resume_media()
+        play_sound("stop")
+        if frames:
+            _process(frames)
+        else:
+            app.set_state("idle")
+    threading.Thread(target=_finish, daemon=True).start()
 
 def _process(frames):
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -1669,7 +1732,8 @@ def on_press(key):
         app.capture_active_app()
         app.set_state("recording")
         app.root.after(0, app.start_wave)
-        threading.Thread(target=play_sound, args=("start",), daemon=True).start()
+        # Play start sound first, then mute — so the sound isn't swallowed
+        play_sound("start")
         threading.Thread(target=pause_media, daemon=True).start()
         globals()["_recording_had_audio"] = False
     elif key == record_key and recording and settings.get("toggle_mode", False):
@@ -1702,14 +1766,20 @@ def on_release(key):
         _wake_active.clear()
         _wake_cooldown_until = time.time() + 2.0
         app.root.after(0, app.stop_wave)
-        threading.Thread(target=play_sound, args=("stop",), daemon=True).start()
         frames = list(audio_frames)
         if frames:
-            threading.Thread(target=_process, args=(frames,), daemon=True).start()
+            # Unmute first so stop sound is audible, then process
+            def _stop_and_process():
+                resume_media()
+                play_sound("stop")
+                _process(frames)
+            threading.Thread(target=_stop_and_process, daemon=True).start()
         else:
-            # No audio recorded — still need to restore media/unmute
-            threading.Thread(target=resume_media, daemon=True).start()
-            app.set_state("idle")
+            def _stop_silent():
+                resume_media()
+                play_sound("stop")
+                app.set_state("idle")
+            threading.Thread(target=_stop_silent, daemon=True).start()
 
 # ── Menu Bar ─────────────────────────────────────────────────────────────────
 class MenuBarApp:

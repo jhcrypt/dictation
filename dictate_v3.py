@@ -454,7 +454,9 @@ def _fast_jarvis_match(lower):
             "spotify": "", "netflix": "https://www.netflix.com", 
             "amazon": "https://www.amazon.com", "reddit": "https://www.reddit.com", 
             "claude": "https://claude.ai", "chatgpt": "https://chat.openai.com", 
-            "maps": "https://maps.google.com", "my website": "https://your-actual-website.com", "my repo": "https://github.com/your-username/repo-name",
+            "maps": "https://maps.google.com", 
+            "my website": "https://conceived-automations.onrender.com/", 
+            "my repo": "https://github.com/your-username/repo-name",
         }
         if target in websites: return ("open_app", {"app": target.capitalize(), "url": websites[target]})
         return ("open_app", {"app": target.capitalize(), "url": ""})

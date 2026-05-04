@@ -414,11 +414,16 @@ current_language = "en"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL       = settings["model"]
-DEVICE      = "cpu"
-COMPUTE     = "int8"
 SAMPLE_RATE = 48000
 CHANNELS    = 1
-MIC_DEVICE  = 2
+MIC_DEVICE  = settings.get("mic_device", 2)
+
+# Auto-detect Apple Silicon vs Intel
+import platform as _platform
+_is_arm = _platform.machine() == "arm64"
+DEVICE  = "cpu"
+COMPUTE = "float16" if _is_arm else "int8"
+print(f"[hardware] {'Apple Silicon (arm64)' if _is_arm else 'Intel (x86_64)'} — compute={COMPUTE}")
 
 # ── Wake word config ─────────────────────────────────────────────────────────
 WAKE_WORD         = "hey cryptic"
@@ -615,38 +620,66 @@ def play_sound(name):
     }
     subprocess.Popen(["afplay", sounds[name]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+def _set_system_mute(mute: bool):
+    try:
+        flag = "with" if mute else "without"
+        subprocess.run(["osascript", "-e", f"set volume {flag} output muted"], timeout=3)
+    except Exception:
+        pass
+
+_pre_recording_muted = False
+_apps_were_playing   = []
+
 def pause_media():
-    """Pause Spotify, Music, Podcasts when recording starts."""
-    for app_name, cmd in [
-        ("Spotify",  'tell application "Spotify" to pause'),
-        ("Music",    'tell application "Music" to pause'),
-        ("Podcasts", 'tell application "Podcasts" to pause'),
+    """Mute system audio and pause only media apps that were actually playing."""
+    global _pre_recording_muted, _apps_were_playing
+    _apps_were_playing = []
+    try:
+        result = subprocess.check_output(
+            ["osascript", "-e", "output muted of (get volume settings)"], timeout=3
+        ).decode().strip()
+        _pre_recording_muted = (result == "true")
+        if not _pre_recording_muted:
+            _set_system_mute(True)
+            print("[media] system muted")
+    except Exception as e:
+        print(f"[media] mute error: {e}")
+    for app_name, state_cmd, pause_cmd in [
+        ("Spotify",  'tell application "Spotify" to player state as string',  'tell application "Spotify" to pause'),
+        ("Music",    'tell application "Music" to player state as string',    'tell application "Music" to pause'),
+        ("Podcasts", 'tell application "Podcasts" to player state as string', 'tell application "Podcasts" to pause'),
     ]:
         try:
             check = f'tell application "System Events" to exists process "{app_name}"'
             exists = subprocess.check_output(["osascript", "-e", check], timeout=1).decode().strip()
             if exists == "true":
-                subprocess.Popen(["osascript", "-e", cmd])
-                print(f"[media] paused {app_name}")
+                state = subprocess.check_output(["osascript", "-e", state_cmd], timeout=1).decode().strip()
+                if state.lower() in ("playing", "1"):
+                    subprocess.Popen(["osascript", "-e", pause_cmd])
+                    _apps_were_playing.append(app_name)
+                    print(f"[media] paused {app_name}")
         except Exception:
             pass
 
 
 def resume_media():
-    """Resume Spotify, Music, Podcasts after recording."""
-    for app_name, cmd in [
-        ("Spotify",  'tell application "Spotify" to play'),
-        ("Music",    'tell application "Music" to play'),
-        ("Podcasts", 'tell application "Podcasts" to resume'),
-    ]:
+    """Unmute system and resume only apps that were playing before recording."""
+    global _pre_recording_muted, _apps_were_playing
+    if not _pre_recording_muted:
+        _set_system_mute(False)
+        print("[media] system unmuted")
+    resume_cmds = {
+        "Spotify":  'tell application "Spotify" to play',
+        "Music":    'tell application "Music" to play',
+        "Podcasts": 'tell application "Podcasts" to resume',
+    }
+    for app_name in _apps_were_playing:
         try:
-            check = f'tell application "System Events" to exists process "{app_name}"'
-            exists = subprocess.check_output(["osascript", "-e", check], timeout=1).decode().strip()
-            if exists == "true":
-                subprocess.Popen(["osascript", "-e", cmd])
-                print(f"[media] resumed {app_name}")
+            subprocess.Popen(["osascript", "-e", resume_cmds[app_name]])
+            print(f"[media] resumed {app_name}")
         except Exception:
             pass
+    _apps_were_playing = []
 
 
 def get_current_rms():
@@ -920,14 +953,24 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
+    # Build personal prompt from learned vocabulary
+    personal_prompt = get_personal_prompt()
+
     # Cloud mode — use OpenAI Whisper API
     if settings.get("cloud_mode") and settings.get("openai_key"):
         print("[cloud] transcribing...")
         raw_text = transcribe_cloud(wav_path)
         if not raw_text:
             print("[cloud] failed, falling back to local")
-            segments, _ = whisper.transcribe(wav_path, beam_size=5, language="en",
-                                             condition_on_previous_text=False)
+            segments, _ = whisper.transcribe(
+                wav_path,
+                beam_size=5,
+                language="en",
+                condition_on_previous_text=False,
+                initial_prompt=personal_prompt,
+                vad_filter=True,
+                no_speech_threshold=0.6,
+            )
             raw_text = " ".join(seg.text for seg in segments).strip()
     else:
         segments, _ = whisper.transcribe(
@@ -935,6 +978,9 @@ def transcribe_and_type(wav_path, raw_frames):
             beam_size=5,
             language="en",
             condition_on_previous_text=False,
+            initial_prompt=personal_prompt,
+            vad_filter=True,
+            no_speech_threshold=0.6,
         )
         raw_text = " ".join(seg.text for seg in segments).strip()
     if not raw_text:
@@ -1233,41 +1279,47 @@ def transcribe_and_type(wav_path, raw_frames):
     text = symspell_correct(raw_text)
     text = words_to_digits(text)
     text = apply_snippets(text)
+    text = smart_punctuate(text)
 
     last_text = text
     _add_to_history(text)
     active_app = get_active_app_name()
-    current_model = settings.get("model", "unknown")
-    # Save directly (not in thread) to ensure it completes
-    try:
-        history = []
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE) as f:
-                history = json.load(f)
-        history.append({
-            "text":      text,
-            "app":       active_app,
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "model":     current_model,
-        })
-        history = history[-500:]
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(history, f, indent=2)
-        print(f"[history] saved {len(history)} entries")
-    except Exception as e:
-        print(f"[history] error: {e}")
-    learn_from_text(text)  # call directly to ensure it runs
-    # Context-aware formatting
+
+    # Context-aware formatting (must happen before paste)
     if settings.get("context_format") and active_app:
         app.show_message("Formatting...", "#0a84ff")
         formatted = format_for_app(text, active_app)
         if formatted and formatted != text:
             text = formatted
 
+    # ── Paste FIRST — user sees result immediately ────────────────────────────
     app.set_transcript(text)
-    time.sleep(0.3)
     paste_text(text)
     threading.Thread(target=resume_media, daemon=True).start()
+
+    # ── Background: history + learning (non-blocking) ─────────────────────────
+    def _background_tasks(t=text, a=active_app):
+        current_model = settings.get("model", "unknown")
+        try:
+            history = []
+            if os.path.exists(HISTORY_FILE):
+                with open(HISTORY_FILE) as f:
+                    history = json.load(f)
+            history.append({
+                "text":      t,
+                "app":       a,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "model":     current_model,
+            })
+            history = history[-500:]
+            with open(HISTORY_FILE, "w") as f:
+                json.dump(history, f, indent=2)
+            print(f"[history] saved {len(history)} entries")
+        except Exception as e:
+            print(f"[history] error: {e}")
+        learn_from_text(t)
+
+    threading.Thread(target=_background_tasks, daemon=True).start()
     time.sleep(3.0)
     app.set_state("idle")
 
@@ -1424,6 +1476,33 @@ def _trigger_wake():
     app.root.after(100, lambda: app.canvas.itemconfig(
         app.label, text="Recording...  press ⌘ to stop", fill=app.TEXT_WHITE))
     threading.Thread(target=play_sound, args=("start",), daemon=True).start()
+    threading.Thread(target=_silence_stop_monitor, daemon=True).start()
+
+
+def _silence_stop_monitor():
+    """Auto-stop recording after sustained silence."""
+    SILENCE_THRESHOLD = 0.08   # raised above room noise floor (~0.054 avg)
+    SILENCE_SECS      = 2.5
+    MIN_RECORD_SECS   = 1.5
+    start_time    = time.time()
+    silence_since = None
+    while recording:
+        time.sleep(0.1)
+        if time.time() - start_time < MIN_RECORD_SECS:
+            silence_since = None
+            continue
+        if not audio_frames:
+            continue
+        rms = float(np.sqrt(np.mean(audio_frames[-1]**2)))
+        if rms < SILENCE_THRESHOLD:
+            if silence_since is None:
+                silence_since = time.time()
+            elif time.time() - silence_since >= SILENCE_SECS:
+                print(f"[silence] auto-stop (rms={rms:.4f})")
+                _stop_recording()
+                return
+        else:
+            silence_since = None
 
 
 def _wake_word_loop():
@@ -1431,12 +1510,7 @@ def _wake_word_loop():
     global recording
 
     try:
-        import platform
         from openwakeword.model import Model as WakeModel
-        # onnxruntime segfaults and spikes CPU on Intel — skip wake word there
-        if platform.machine() != "arm64":
-            print("[wake] disabled on Intel Mac (onnxruntime AVX2 incompatible)")
-            return
         oww = WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
         print("[wake] ready — say 'Hey Jarvis' to start dictating")
     except Exception as e:
@@ -1646,6 +1720,10 @@ class MenuBarApp:
                     if app:
                         threading.Thread(target=lambda: app.root.after(0, app._show_settings), daemon=True).start()
 
+                def showSnippets_(self, sender):
+                    if app:
+                        threading.Thread(target=lambda: app.root.after(0, app._show_snippets), daemon=True).start()
+
                 def selectModel_(self, sender):
                     new_model = sender.title()
                     if new_model == settings.get("model"):
@@ -1714,7 +1792,17 @@ class MenuBarApp:
 
             self._menu.addItem_(NSMenuItem.separatorItem())
 
-            # History item
+            # Settings
+            settings_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Settings", "openSettings:", "")
+            settings_item.setTarget_(self._delegate)
+            self._menu.addItem_(settings_item)
+
+            # Snippets
+            snippets_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Manage Snippets", "showSnippets:", "")
+            snippets_item.setTarget_(self._delegate)
+            self._menu.addItem_(snippets_item)
+
+            # History
             hist_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Show History", "showHistory:", "")
             hist_item.setTarget_(self._delegate)
             self._menu.addItem_(hist_item)
@@ -1734,16 +1822,19 @@ class MenuBarApp:
     def _set_icon(self, state):
         if not self._available:
             return
-        # Use emoji in bundled app, PNG when running from source
-        if not getattr(sys, '_MEIPASS', None):
-            path = os.path.join(self.ICON_DIR, f"icon_{state}.png")
-            if os.path.exists(path):
-                img = self._NSImage.alloc().initWithContentsOfFile_(path)
+        # Try PNG icon first — works both from source and inside .app bundle.
+        # In a bundle _MEIPASS points to Frameworks where PyInstaller copies our PNGs.
+        icon_dir = getattr(sys, '_MEIPASS', self.ICON_DIR)
+        path = os.path.join(icon_dir, f"icon_{state}.png")
+        if os.path.exists(path):
+            img = self._NSImage.alloc().initWithContentsOfFile_(path)
+            if img:
                 img.setSize_((18, 18))
                 img.setTemplate_(True)
                 self._item.button().setImage_(img)
                 self._item.button().setTitle_("")
                 return
+        # Fallback to emoji if PNG missing
         fallback = {"idle": "🎙️", "recording": "🔴", "transcribing": "⏳"}
         self._item.button().setImage_(None)
         self._item.button().setTitle_(fallback.get(state, "🎙️"))
@@ -1792,6 +1883,21 @@ class DictationApp:
         self.root.resizable(False, False)
         self.root.focus_set()  # keep focus on root not canvas
 
+        # Never take keyboard focus — fixes spacebar stick issue
+        try:
+            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSWindow
+            NSApplication.sharedApplication().setActivationPolicy_(
+                NSApplicationActivationPolicyAccessory
+            )
+            self.root.update_idletasks()
+            for win in NSApplication.sharedApplication().windows():
+                win.setIgnoresMouseEvents_(False)
+                win.setAcceptsMouseMovedEvents_(False)
+                win.setCanBecomeKey_(False)
+                win.setCanBecomeMain_(False)
+        except Exception:
+            pass
+
         sw = self.root.winfo_screenwidth()
         x  = settings.get("hud_x", sw//2 - self.W//2)
         y  = settings.get("hud_y", 24)
@@ -1800,30 +1906,12 @@ class DictationApp:
         self._build()
         self._make_draggable()
 
-        # Defer ALL AppKit window calls until after mainloop() starts.
-        # Calling AppKit/update_idletasks() inside __init__ corrupts NSWindow
-        # state on Intel Macs, causing the HUD to be invisible.
-        self.root.after(100, self._apply_window_style)
-
-    def _apply_window_style(self):
-        """Apply NSWindow styling — must run after mainloop() has started."""
-        import platform
         try:
-            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
-            # Keep app out of Dock and Cmd+Tab switcher
-            NSApplication.sharedApplication().setActivationPolicy_(
-                NSApplicationActivationPolicyAccessory
-            )
+            from AppKit import NSApplication
+            self.root.update_idletasks()
             for win in NSApplication.sharedApplication().windows():
-                # Never steal keyboard focus — fixes spacebar-stick issue
-                win.setIgnoresMouseEvents_(False)
-                win.setAcceptsMouseMovedEvents_(False)
-                win.setCanBecomeKey_(False)
-                win.setCanBecomeMain_(False)
+                win.setCornerRadius_(12)
                 win.setOpaque_(False)
-                # Corner radius via NSWindow only works reliably on arm64
-                if platform.machine() == "arm64":
-                    win.setCornerRadius_(18)
         except Exception:
             pass
 
@@ -1892,23 +1980,46 @@ class DictationApp:
 
     def capture_active_app(self):
         def _fetch():
+            # Do the heavy AppKit + PIL work in the thread
             try:
-                icon = get_active_app_icon()
-            except Exception:
-                icon = None
-            def _update():
+                from AppKit import NSWorkspace
+                from PIL import Image
+                import io
+                ws   = NSWorkspace.sharedWorkspace()
+                appo = ws.frontmostApplication()
+                path = appo.bundleURL().path() if appo and appo.bundleURL() else None
+                if path:
+                    icon_ns = ws.iconForFile_(path)
+                    icon_ns.setSize_((48, 48))
+                    tiff = icon_ns.TIFFRepresentation()
+                    img  = Image.open(io.BytesIO(bytes(tiff))).convert("RGBA")
+                    bbox = img.getbbox()
+                    if bbox:
+                        img = img.crop(bbox)
+                    img = img.resize((32, 32), Image.LANCZOS)
+                    # ImageTk.PhotoImage MUST be created on the main thread
+                    def _update_icon(i=img):
+                        try:
+                            from PIL import ImageTk
+                            photo = ImageTk.PhotoImage(i)
+                            self._app_icon = photo  # keep reference alive
+                            self.canvas.itemconfig(self.appicon, image=photo)
+                            self.canvas.itemconfig(self.appname, text="")
+                        except Exception as e:
+                            print(f"[icon] update error: {e}")
+                    self.root.after(0, _update_icon)
+                    return
+            except Exception as e:
+                print(f"[icon] fetch error: {e}")
+            # Fallback: show app name as text
+            def _update_name():
                 try:
-                    if icon:
-                        self._app_icon = icon
-                        self.canvas.itemconfig(self.appicon, image=icon)
-                        self.canvas.itemconfig(self.appname, text="")
-                    else:
-                        name = get_active_app_name()
-                        self.canvas.itemconfig(self.appicon, image="")
-                        self.canvas.itemconfig(self.appname, text=name[:8] if name else "")
+                    name = get_active_app_name()
+                    self.canvas.itemconfig(self.appicon, image="")
+                    self.canvas.itemconfig(self.appname, text=name[:8] if name else "")
                 except Exception:
                     pass
-            self.root.after(0, _update)
+            self.root.after(0, _update_name)
         threading.Thread(target=_fetch, daemon=True).start()
 
     def set_state(self, state):
@@ -2048,266 +2159,380 @@ class DictationApp:
             pass
 
     def _show_snippets(self, parent=None):
+        BG   = "#1c1c1e"   # HUD background
+        CARD = "#242424"   # pill color
+        SEP  = "#2c2c2e"   # subtle separator
+        ACC  = "#0a84ff"   # blue accent
+        FG   = "#ffffff"
+        DIM  = "#8e8e93"
+
         swin = tk.Toplevel(self.root)
-        swin.title("Manage Snippets")
-        swin.geometry("520x480")
-        swin.configure(bg="#1a1a1a")
+        swin.title("Snippets")
+        swin.geometry("660x520")
+        swin.configure(bg=BG)
         swin.attributes("-topmost", True)
+        swin.attributes("-alpha", 0.97)
+        swin.resizable(True, True)
+        try:
+            swin.tk.call("::tk::unsupported::MacWindowStyle", "style", swin._w, "plain", "none")
+        except Exception:
+            pass
 
-        tk.Label(swin, text="Snippets", bg=self.BG, fg=self.TEXT_WHITE,
-                 font=("Helvetica Neue", 14, "bold")).pack(pady=(12,4))
-        tk.Label(swin, text="Say the trigger word while dictating to expand",
-                 bg=self.BG, fg=self.TEXT_DIM,
-                 font=("Helvetica Neue", 10)).pack()
+        # Title bar
+        tb = tk.Frame(swin, bg=BG, height=48)
+        tb.pack(fill="x"); tb.pack_propagate(False)
+        tk.Label(tb, text="Snippets", bg=BG, fg=FG,
+                 font=("Helvetica Neue", 14, "bold")).place(relx=0.5, rely=0.5, anchor="center")
+        x_lbl = tk.Label(tb, text="✕", bg=BG, fg=DIM,
+                         font=("Helvetica Neue", 14), cursor="hand2")
+        x_lbl.place(x=16, y=14)
+        x_lbl.bind("<Button-1>", lambda e: swin.destroy())
+        x_lbl.bind("<Enter>",    lambda e: x_lbl.configure(fg=FG))
+        x_lbl.bind("<Leave>",    lambda e: x_lbl.configure(fg=DIM))
+        tk.Frame(swin, bg=SEP, height=1).pack(fill="x")
 
-        # Scrollable list
-        frame = tk.Frame(swin, bg="#1a1a1a")
-        frame.pack(fill="both", expand=True, padx=16, pady=8)
+        # Search
+        sf = tk.Frame(swin, bg=BG)
+        sf.pack(fill="x", padx=16, pady=(12,8))
+        tk.Label(sf, text="⌕", bg=BG, fg=DIM,
+                 font=("Helvetica Neue", 16)).pack(side="left", padx=(0,8))
+        search_var = tk.StringVar()
+        tk.Entry(sf, textvariable=search_var, bg=CARD, fg=FG,
+                 font=("Helvetica Neue", 13), relief="flat",
+                 insertbackground=FG, bd=0).pack(side="left", fill="x", expand=True, ipady=7)
+        tk.Frame(swin, bg=SEP, height=1).pack(fill="x", padx=16)
 
-        canvas = tk.Canvas(frame, bg="#1a1a1a", highlightthickness=0)
-        scroll = tk.Scrollbar(frame, orient="vertical", command=canvas.yview)
-        inner  = tk.Frame(canvas, bg="#1a1a1a")
+        # Body: left list + right editor
+        body = tk.Frame(swin, bg=BG)
+        body.pack(fill="both", expand=True, padx=0, pady=0)
 
-        inner.bind("<Configure>", lambda e: canvas.configure(
-            scrollregion=canvas.bbox("all")))
-        canvas.create_window((0,0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        # Left panel
+        left = tk.Frame(body, bg=BG, width=210)
+        left.pack(side="left", fill="y"); left.pack_propagate(False)
+        lc = tk.Canvas(left, bg=BG, highlightthickness=0)
+        ls = tk.Scrollbar(left, orient="vertical", command=lc.yview)
+        li = tk.Frame(lc, bg=BG)
+        li.bind("<Configure>", lambda e: lc.configure(scrollregion=lc.bbox("all")))
+        lc.create_window((0,0), window=li, anchor="nw")
+        lc.configure(yscrollcommand=ls.set)
+        lc.pack(side="left", fill="both", expand=True)
+        ls.pack(side="right", fill="y")
 
-        snippets = load_snippets()
-        entries  = {}
+        # Divider
+        tk.Frame(body, bg=SEP, width=1).pack(side="left", fill="y")
 
-        def refresh():
-            for w in inner.winfo_children():
+        # Right panel
+        right = tk.Frame(body, bg=BG)
+        right.pack(side="left", fill="both", expand=True, padx=20, pady=16)
+
+        tk.Label(right, text="TRIGGER", bg=BG, fg=DIM,
+                 font=("Helvetica Neue", 9, "bold")).pack(anchor="w")
+        trigger_var   = tk.StringVar()
+        trigger_entry = tk.Entry(right, textvariable=trigger_var,
+                                 bg=CARD, fg=FG, font=("Helvetica Neue", 14),
+                                 relief="flat", insertbackground=FG, bd=0)
+        trigger_entry.pack(fill="x", ipady=8, pady=(4,16))
+
+        tk.Label(right, text="EXPANSION", bg=BG, fg=DIM,
+                 font=("Helvetica Neue", 9, "bold")).pack(anchor="w")
+        content_text = tk.Text(right, bg=CARD, fg=FG,
+                               font=("Helvetica Neue", 13), relief="flat",
+                               insertbackground=FG, wrap="word",
+                               height=8, padx=10, pady=10, bd=0)
+        content_text.pack(fill="both", expand=True, pady=(4,0))
+
+        selected = [None]
+        rows = {}
+
+        def select(t, c):
+            selected[0] = t
+            trigger_var.set(t)
+            content_text.delete("1.0", tk.END)
+            content_text.insert("1.0", c)
+            for k, b in rows.items():
+                b.configure(bg=ACC if k == t else BG,
+                            fg=FG if k == t else DIM)
+
+        def refresh(q=""):
+            for w in li.winfo_children():
                 w.destroy()
-            entries.clear()
+            rows.clear()
             snips = load_snippets()
-            for trigger, content in snips.items():
-                row = tk.Frame(inner, bg=self.BG)
-                row.pack(fill="x", pady=3)
-                tk.Label(row, text=trigger, bg="#2a2a2a", fg=self.BLUE,
-                         font=("Helvetica Neue", 11, "bold"),
-                         width=16, anchor="w", padx=6).pack(side="left")
-                var = tk.StringVar(value=content)
-                e   = tk.Entry(row, textvariable=var, bg="#2a2a2a", fg=self.TEXT_WHITE,
-                               font=("Helvetica Neue", 11), relief="flat",
-                               insertbackground="white", width=26)
-                e.pack(side="left", padx=4)
-                entries[trigger] = var
+            shown = {t: c for t, c in snips.items()
+                     if not q or q.lower() in t.lower() or q.lower() in c.lower()}
+            if not shown:
+                tk.Label(li, text="No snippets", bg=BG, fg=DIM,
+                         font=("Helvetica Neue", 12)).pack(pady=20, padx=12)
+                return
+            for t, c in shown.items():
+                b = tk.Button(li, text=f"  {t}", anchor="w",
+                              bg=ACC if t == selected[0] else BG,
+                              fg=FG if t == selected[0] else DIM,
+                              activebackground="#1a6bcc",
+                              font=("Helvetica Neue", 12),
+                              relief="flat", padx=8, pady=10,
+                              cursor="hand2",
+                              command=lambda tt=t, cc=c: select(tt, cc))
+                b.pack(fill="x")
+                rows[t] = b
+            if selected[0] not in shown and shown:
+                first = next(iter(shown))
+                select(first, shown[first])
 
-                def delete(t=trigger):
-                    s = load_snippets()
-                    del s[t]
-                    with open(SNIPPETS_FILE, "w") as f:
-                        json.dump(s, f, indent=2)
-                    refresh()
+        def delete_sel():
+            t = selected[0]
+            if not t: return
+            s = load_snippets()
+            if t in s: del s[t]
+            with open(SNIPPETS_FILE, "w") as f: json.dump(s, f, indent=2)
+            selected[0] = None
+            trigger_var.set(""); content_text.delete("1.0", tk.END)
+            refresh(search_var.get())
+            self.show_message(f"Deleted '{t}'", self.ORANGE)
 
-                tk.Button(row, text="✕", command=delete,
-                          bg=self.RED, fg="white", font=("Helvetica Neue", 10),
-                          relief="flat", padx=6).pack(side="left", padx=2)
+        def save_sel():
+            t = trigger_var.get().strip().lower()
+            c = content_text.get("1.0", tk.END).strip()
+            if not t or not c: return
+            s = load_snippets()
+            old = selected[0]
+            if old and old != t and old in s: del s[old]
+            s[t] = c
+            with open(SNIPPETS_FILE, "w") as f: json.dump(s, f, indent=2)
+            selected[0] = t
+            refresh(search_var.get())
+            self.show_message(f"Saved '{t}'", self.GREEN)
 
+        def new_snip():
+            selected[0] = None
+            trigger_var.set(""); content_text.delete("1.0", tk.END)
+            for b in rows.values(): b.configure(bg=BG, fg=DIM)
+            trigger_entry.focus_set()
+
+        search_var.trace_add("write", lambda *a: refresh(search_var.get()))
         refresh()
 
-        def save_all():
-            snips = load_snippets()
-            for trigger, var in entries.items():
-                snips[trigger] = var.get()
-            with open(SNIPPETS_FILE, "w") as f:
-                json.dump(snips, f, indent=2)
-            self.show_message("Snippets saved!", self.GREEN)
-            swin.destroy()
+        # Bottom bar
+        tk.Frame(swin, bg=SEP, height=1).pack(fill="x")
+        bot = tk.Frame(swin, bg=BG)
+        bot.pack(fill="x", padx=16, pady=12)
 
-        # Add new snippet
-        add_frame = tk.Frame(swin, bg="#1a1a1a")
-        add_frame.pack(fill="x", padx=16, pady=(0,4))
-        tk.Label(add_frame, text="New trigger:", bg="#1a1a1a", fg=self.TEXT_DIM,
-                 font=("Helvetica Neue", 11)).pack(side="left")
-        new_trigger_var = tk.StringVar()
-        tk.Entry(add_frame, textvariable=new_trigger_var, bg="#2a2a2a", fg=self.TEXT_WHITE,
-                 font=("Helvetica Neue", 11), relief="flat",
-                 insertbackground="white", width=14).pack(side="left", padx=4)
-        tk.Label(add_frame, text="Content:", bg="#1a1a1a", fg=self.TEXT_DIM,
-                 font=("Helvetica Neue", 11)).pack(side="left")
-        new_content_var = tk.StringVar()
-        tk.Entry(add_frame, textvariable=new_content_var, bg="#2a2a2a", fg=self.TEXT_WHITE,
-                 font=("Helvetica Neue", 11), relief="flat",
-                 insertbackground="white", width=16).pack(side="left", padx=4)
+        def _b(parent, text, cmd, primary=False):
+            return tk.Button(parent, text=text, command=cmd,
+                             bg=ACC if primary else CARD,
+                             fg=FG, activebackground="#1a6bcc" if primary else "#3a3a3a",
+                             font=("Helvetica Neue", 12, "bold" if primary else "normal"),
+                             relief="flat", padx=16, pady=8, cursor="hand2", bd=0)
 
-        def add_new():
-            t = new_trigger_var.get().strip().lower()
-            c = new_content_var.get().strip()
-            if t and c:
-                s = load_snippets()
-                s[t] = c
-                with open(SNIPPETS_FILE, "w") as f:
-                    json.dump(s, f, indent=2)
-                new_trigger_var.set("")
-                new_content_var.set("")
-                refresh()
-
-        tk.Button(add_frame, text="Add", command=add_new,
-                  bg="#0a84ff", fg="white", font=("Helvetica Neue", 11),
-                  relief="flat", padx=10, pady=4, cursor="hand2").pack(side="left", padx=4)
-
-        btn_frame = tk.Frame(swin, bg="#1a1a1a")
-        btn_frame.pack(pady=8, fill="x", padx=16)
-        tk.Button(btn_frame, text="Save Changes", command=save_all,
-                  bg="#0a84ff", fg="white", font=("Helvetica Neue", 12, "bold"),
-                  relief="flat", padx=20, pady=8, cursor="hand2").pack(side="right", padx=4)
-        tk.Button(btn_frame, text="Close", command=swin.destroy,
-                  bg="#2a2a2a", fg="#aaaaaa", font=("Helvetica Neue", 12),
-                  relief="flat", padx=20, pady=8, cursor="hand2").pack(side="right", padx=4)
+        _b(bot, "+ New",  new_snip).pack(side="left")
+        _b(bot, "Delete", delete_sel).pack(side="left", padx=8)
+        _b(bot, "Close",  swin.destroy).pack(side="right")
+        _b(bot, "Save",   save_sel, primary=True).pack(side="right", padx=(0,8))
+        swin.bind("<Command-s>", lambda e: save_sel())
+        swin.bind("<Command-n>", lambda e: new_snip())
 
     def open_settings(self):
         self.root.after(0, self._show_settings)
 
     def _show_settings(self):
-        win = tk.Toplevel(self.root)
-        win.title("Dictation Settings")
-        win.geometry("400x700")
-        win.configure(bg="#1a1a1a")
-        win.resizable(False, False)
-        win.attributes("-topmost", True)
+        BG   = "#1c1c1e"
+        CARD = "#242424"
+        SEP  = "#2c2c2e"
+        ACC  = "#0a84ff"
+        FG   = "#ffffff"
+        DIM  = "#8e8e93"
 
-        style = ttk.Style(win)
+        _win = tk.Toplevel(self.root)
+        _win.title("Settings")
+        _win.geometry("400x680")
+        _win.configure(bg=BG)
+        _win.resizable(False, True)
+        _win.attributes("-topmost", True)
+        _win.attributes("-alpha", 0.97)
+        try:
+            _win.tk.call("::tk::unsupported::MacWindowStyle", "style", _win._w, "plain", "none")
+        except Exception:
+            pass
+
+        # Title bar
+        tb = tk.Frame(_win, bg=BG, height=48)
+        tb.pack(fill="x"); tb.pack_propagate(False)
+        tk.Label(tb, text="Settings", bg=BG, fg=FG,
+                 font=("Helvetica Neue", 14, "bold")).place(relx=0.5, rely=0.5, anchor="center")
+        x_lbl = tk.Label(tb, text="✕", bg=BG, fg=DIM,
+                         font=("Helvetica Neue", 14), cursor="hand2")
+        x_lbl.place(x=16, y=14)
+        x_lbl.bind("<Button-1>", lambda e: _win.destroy())
+        x_lbl.bind("<Enter>",    lambda e: x_lbl.configure(fg=FG))
+        x_lbl.bind("<Leave>",    lambda e: x_lbl.configure(fg=DIM))
+        tk.Frame(_win, bg=SEP, height=1).pack(fill="x")
+
+        # Scrollable body
+        bc = tk.Canvas(_win, bg=BG, highlightthickness=0)
+        bs = tk.Scrollbar(_win, orient="vertical", command=bc.yview)
+        win = tk.Frame(bc, bg=BG)
+        win.bind("<Configure>", lambda e: bc.configure(scrollregion=bc.bbox("all")))
+        bc.create_window((0,0), window=win, anchor="nw")
+        bc.configure(yscrollcommand=bs.set)
+        bc.pack(side="left", fill="both", expand=True)
+        bs.pack(side="right", fill="y")
+
+        style = ttk.Style(_win)
         style.theme_use("clam")
-        style.configure("TCombobox",
-            fieldbackground="#2a2a2a", background="#2a2a2a",
-            foreground="white", arrowcolor="white",
-            selectbackground="#0a84ff", selectforeground="white",
-            bordercolor="#444444", lightcolor="#2a2a2a", darkcolor="#2a2a2a")
-        style.map("TCombobox",
-            fieldbackground=[("readonly","#2a2a2a")],
-            foreground=[("readonly","white")],
-            background=[("readonly","#2a2a2a")])
+        style.configure("D.TCombobox",
+            fieldbackground=CARD, background=CARD,
+            foreground=FG, arrowcolor=FG,
+            selectbackground=ACC, selectforeground=FG,
+            bordercolor=SEP, lightcolor=CARD, darkcolor=CARD)
+        style.map("D.TCombobox",
+            fieldbackground=[("readonly", CARD)],
+            foreground=[("readonly", FG)],
+            background=[("readonly", CARD)])
 
         def section(text):
-            tk.Label(win, text=text, bg="#1a1a1a", fg="#666666",
-                     font=("Helvetica Neue", 10, "bold")).pack(
-                     anchor="w", padx=20, pady=(16,4))
-            tk.Frame(win, bg="#333333", height=1).pack(fill="x", padx=20)
+            tk.Label(win, text=text, bg=BG, fg=DIM,
+                     font=("Helvetica Neue", 9, "bold")).pack(
+                     anchor="w", padx=20, pady=(18,6))
 
         def row(label, widget_fn):
-            f = tk.Frame(win, bg="#1a1a1a")
-            f.pack(fill="x", padx=20, pady=5)
-            tk.Label(f, text=label, bg="#1a1a1a", fg="#aaaaaa",
-                     font=("Helvetica Neue", 12), width=13, anchor="w").pack(side="left")
-            widget_fn(f).pack(side="right")
+            f = tk.Frame(win, bg=CARD)
+            f.pack(fill="x", padx=16, pady=2, ipady=2)
+            tk.Label(f, text=label, bg=CARD, fg=FG,
+                     font=("Helvetica Neue", 13), anchor="w",
+                     padx=12, pady=10).pack(side="left")
+            widget_fn(f).pack(side="right", padx=12, pady=8)
 
         def toggle_row(label, var):
-            f = tk.Frame(win, bg="#1a1a1a")
-            f.pack(fill="x", padx=20, pady=5)
-            tk.Label(f, text=label, bg="#1a1a1a", fg="#aaaaaa",
-                     font=("Helvetica Neue", 12), anchor="w").pack(side="left")
-            # Custom toggle switch look
-            cb = tk.Checkbutton(f, variable=var, bg="#1a1a1a",
-                               activebackground="#1e1e1e",
-                               selectcolor="#0a84ff",
-                               relief="flat", cursor="hand2")
-            cb.pack(side="right")
+            f = tk.Frame(win, bg=CARD)
+            f.pack(fill="x", padx=16, pady=2)
+            tk.Label(f, text=label, bg=CARD, fg=FG,
+                     font=("Helvetica Neue", 13), anchor="w",
+                     padx=12, pady=10).pack(side="left")
+
+            # Custom iOS-style toggle pill
+            tog = tk.Canvas(f, width=44, height=24, bg=CARD,
+                            highlightthickness=0, cursor="hand2")
+            tog.pack(side="right", padx=12, pady=10)
+
+            def draw_toggle():
+                tog.delete("all")
+                on = var.get()
+                pill_color = ACC if on else "#3a3a3a"
+                tog.create_oval(0, 0, 44, 24, fill=pill_color, outline="")
+                knob_x = 22 if on else 2
+                tog.create_oval(knob_x, 2, knob_x+20, 22, fill=FG, outline="")
+
+            def toggle_click(e):
+                var.set(not var.get())
+                draw_toggle()
+
+            tog.bind("<Button-1>", toggle_click)
+            draw_toggle()
+
+        def hotkey_label_row(label, key_text):
+            f = tk.Frame(win, bg=CARD)
+            f.pack(fill="x", padx=16, pady=2)
+            tk.Label(f, text=label, bg=CARD, fg=FG,
+                     font=("Helvetica Neue", 13), anchor="w",
+                     padx=12, pady=10).pack(side="left")
+            tk.Label(f, text=key_text, bg="#3a3a3a", fg=FG,
+                     font=("Helvetica Neue", 11),
+                     padx=10, pady=4).pack(side="right", padx=12, pady=8)
 
         section("TRANSCRIPTION")
         model_var = tk.StringVar(value=settings["model"])
         def model_w(f):
-            cb = ttk.Combobox(f, textvariable=model_var,
+            return ttk.Combobox(f, textvariable=model_var, style="D.TCombobox",
                 values=["tiny.en","base.en","small.en","medium.en",
-                        "large-v2","large-v3",
-                        "distil-medium.en","distil-large-v3"],
-                state="readonly", width=18, font=("Helvetica Neue", 12))
-            return cb
+                        "large-v2","large-v3","distil-medium.en","distil-large-v3"],
+                state="readonly", width=16, font=("Helvetica Neue", 12))
         row("Model", model_w)
 
         section("HOTKEYS")
         hotkey_var = tk.StringVar(value=settings.get("hotkey_label", "Right Command"))
-        # Ensure current value is in the list
         if hotkey_var.get() not in HOTKEY_OPTIONS:
             hotkey_var.set("Right Command")
         def hotkey_w(f):
-            return ttk.Combobox(f, textvariable=hotkey_var,
+            return ttk.Combobox(f, textvariable=hotkey_var, style="D.TCombobox",
                 values=list(HOTKEY_OPTIONS.keys()),
-                state="readonly", width=18, font=("Helvetica Neue", 12))
+                state="readonly", width=16, font=("Helvetica Neue", 12))
         row("Record Key", hotkey_w)
-
-        for action, k in [("Cancel", "Escape"), ("Scratch", "Ctrl+Z"), ("Settings", "Ctrl+D")]:
-            f = tk.Frame(win, bg="#1a1a1a")
-            f.pack(fill="x", padx=20, pady=3)
-            tk.Label(f, text=action, bg="#1a1a1a", fg="#aaaaaa",
-                     font=("Helvetica Neue", 12), anchor="w").pack(side="left")
-            tk.Label(f, text=k, bg="#2a2a2a", fg="#ffffff",
-                     font=("Helvetica Neue", 11), padx=10, pady=3,
-                     relief="flat").pack(side="right")
+        hotkey_label_row("Cancel",   "Escape")
+        hotkey_label_row("Scratch",  "Ctrl+Z")
+        hotkey_label_row("Settings", "Ctrl+D")
 
         section("DISPLAY")
-        hud_var = tk.BooleanVar(value=settings.get("show_hud", True))
-        toggle_row("Show HUD", hud_var)
+        hud_var    = tk.BooleanVar(value=settings.get("show_hud", True))
         toggle_var = tk.BooleanVar(value=settings.get("toggle_mode", False))
-        toggle_row("Toggle Mode", toggle_var)
-        wake_var = tk.BooleanVar(value=settings.get("wake_enabled", True))
+        wake_var   = tk.BooleanVar(value=settings.get("wake_enabled", True))
+        toggle_row("Show HUD",            hud_var)
+        toggle_row("Toggle Mode",         toggle_var)
         toggle_row('Wake Word "Hey Jarvis"', wake_var)
 
         section("LANGUAGE")
         current_lang_name = next(
-            (k for k, v in LANGUAGES.items() if v == settings.get("language", "en")),
-            "English"
-        )
+            (k for k, v in LANGUAGES.items() if v == settings.get("language", "en")), "English")
         lang_var = tk.StringVar(value=current_lang_name)
         def lang_w(f):
-            return ttk.Combobox(f, textvariable=lang_var,
-                values=list(LANGUAGES.keys()),
-                state="readonly", width=18,
-                font=("Helvetica Neue", 12))
+            return ttk.Combobox(f, textvariable=lang_var, style="D.TCombobox",
+                values=list(LANGUAGES.keys()), state="readonly",
+                width=16, font=("Helvetica Neue", 12))
         row("Language", lang_w)
         auto_var = tk.BooleanVar(value=settings.get("auto_detect", False))
         toggle_row("Auto-detect", auto_var)
 
         section("AI FEATURES")
         jarvis_var = tk.BooleanVar(value=settings.get("jarvis_enabled", True))
-        toggle_row('Jarvis Commands (Ollama)', jarvis_var)
         format_var = tk.BooleanVar(value=settings.get("context_format", False))
-        toggle_row('Context-Aware Formatting', format_var)
+        toggle_row("Jarvis Commands (Ollama)", jarvis_var)
+        toggle_row("Context-Aware Formatting", format_var)
 
         section("VOICE LEARNING")
-        vocab = load_vocab()
-        total = vocab.get("total_dictations", 0)
+        vocab      = load_vocab()
+        total      = vocab.get("total_dictations", 0)
         word_count = len(vocab.get("word_counts", {}))
-        tk.Label(win, text=f"Learned from {total} dictations • {word_count} personal words",
-                 bg="#1a1a1a", fg="#aaaaaa",
-                 font=("Helvetica Neue", 11)).pack(anchor="w", padx=20, pady=4)
+        f_vl = tk.Frame(win, bg=CARD)
+        f_vl.pack(fill="x", padx=16, pady=2)
+        tk.Label(f_vl,
+                 text=f"Learned from {total} dictations  •  {word_count} personal words",
+                 bg=CARD, fg=DIM, font=("Helvetica Neue", 11),
+                 padx=12, pady=10).pack(side="left")
 
         def reset_vocab():
-            if os.path.exists(VOCAB_FILE):
-                os.remove(VOCAB_FILE)
+            if os.path.exists(VOCAB_FILE): os.remove(VOCAB_FILE)
             app.show_message("Voice learning reset!", "#ff9f0a")
-            win.destroy()
+            _win.destroy()
 
         tk.Button(win, text="Reset Learning Data", command=reset_vocab,
-                  bg="#2a2a2a", fg="#aaaaaa", font=("Helvetica Neue", 11),
-                  relief="flat", padx=12, pady=4, cursor="hand2").pack(anchor="w", padx=20, pady=4)
+                  bg=CARD, fg=DIM, font=("Helvetica Neue", 11),
+                  relief="flat", padx=16, pady=8,
+                  cursor="hand2", bd=0).pack(anchor="w", padx=16, pady=(0,4))
 
         section("CLOUD (OpenAI)")
         cloud_var = tk.BooleanVar(value=settings.get("cloud_mode", False))
         toggle_row("Cloud Mode", cloud_var)
-
-        # API Key field
-        f_key = tk.Frame(win, bg="#1a1a1a")
-        f_key.pack(fill="x", padx=20, pady=5)
-        tk.Label(f_key, text="OpenAI Key", bg="#1a1a1a", fg="#aaaaaa",
-                 font=("Helvetica Neue", 12), width=13, anchor="w").pack(side="left")
+        f_key = tk.Frame(win, bg=CARD)
+        f_key.pack(fill="x", padx=16, pady=2)
+        tk.Label(f_key, text="OpenAI Key", bg=CARD, fg=FG,
+                 font=("Helvetica Neue", 13), padx=12, pady=10).pack(side="left")
         key_var = tk.StringVar(value=settings.get("openai_key", ""))
-        tk.Entry(f_key, textvariable=key_var, bg="#2a2a2a", fg="white",
-                 font=("Helvetica Neue", 11), relief="flat",
-                 insertbackground="white", show="*", width=18).pack(side="right")
+        tk.Entry(f_key, textvariable=key_var, bg=CARD, fg=FG,
+                 font=("Helvetica Neue", 12), relief="flat",
+                 insertbackground=FG, show="*", bd=0,
+                 width=18).pack(side="right", padx=12, pady=8)
 
-        # Bottom buttons
-        btn_frame = tk.Frame(win, bg="#1a1a1a")
-        btn_frame.pack(fill="x", padx=20, pady=20, side="bottom")
+        tk.Frame(win, bg=BG, height=20).pack()
+
+        # Bottom bar
+        tk.Frame(_win, bg=SEP, height=1).pack(fill="x")
+        bot = tk.Frame(_win, bg=BG)
+        bot.pack(fill="x", padx=16, pady=12)
 
         def save_and_close():
-            settings["model"]        = model_var.get()
-            settings["hotkey_label"] = hotkey_var.get()
-            settings["show_hud"]     = hud_var.get()
-            settings["toggle_mode"]  = toggle_var.get()
+            settings["model"]           = model_var.get()
+            settings["hotkey_label"]    = hotkey_var.get()
+            settings["show_hud"]        = hud_var.get()
+            settings["toggle_mode"]     = toggle_var.get()
             settings["wake_enabled"]    = wake_var.get()
             globals()["WAKE_ENABLED"]   = wake_var.get()
             settings["cloud_mode"]      = cloud_var.get()
@@ -2316,29 +2541,19 @@ class DictationApp:
             settings["context_format"]  = format_var.get()
             globals()["JARVIS_ENABLED"] = jarvis_var.get()
             save_settings(settings)
-            if menubar:
-                menubar._update_hud_label()
-            win.destroy()
+            if menubar: menubar._update_hud_label()
+            _win.destroy()
             self.show_message("Saved! Restart to apply.", self.GREEN)
 
-        def styled_btn(parent, text, cmd, primary=False):
-            color  = "#0a84ff" if primary else "#323232"
-            fcolor = "#ffffff"
-            b = tk.Button(parent, text=text, command=cmd,
-                          bg=color, fg=fcolor, activebackground=color,
-                          activeforeground=fcolor,
-                          font=("Helvetica Neue", 12, "bold" if primary else "normal"),
-                          relief="flat", bd=0,
-                          padx=20, pady=9, cursor="hand2",
-                          highlightthickness=0)
-            return b
+        def _b(parent, text, cmd, primary=False):
+            return tk.Button(parent, text=text, command=cmd,
+                             bg=ACC if primary else CARD,
+                             fg=FG, activebackground="#1a6bcc" if primary else "#3a3a3a",
+                             font=("Helvetica Neue", 12, "bold" if primary else "normal"),
+                             relief="flat", padx=16, pady=8, cursor="hand2", bd=0)
 
-        styled_btn(btn_frame, "Manage Snippets",
-                   lambda: self._show_snippets(win)).pack(side="left")
-        styled_btn(btn_frame, "  Save  ",
-                   save_and_close, primary=True).pack(side="right")
-        win.update_idletasks()
-        win.geometry(f"400x{min(700, win.winfo_reqheight() + 40)}")
+        _b(bot, "Manage Snippets", lambda: self._show_snippets(_win)).pack(side="left")
+        _b(bot, "Save", save_and_close, primary=True).pack(side="right")
 
 # Model sizes that need downloading (not pre-cached)
 LARGE_MODELS = {"large-v2", "large-v3", "distil-large-v3", "distil-medium.en"}
@@ -2375,7 +2590,27 @@ def start_backend(stream):
     global whisper, JARVIS_ENABLED
     JARVIS_ENABLED = settings.get("jarvis_enabled", True)
     time.sleep(1.5)
-    whisper = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
+    try:
+        whisper = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
+    except Exception as e:
+        print(f"[whisper] failed to load model '{MODEL}': {e}")
+        app.root.after(0, lambda: app.show_message(
+            f"Model '{MODEL}' not found — check ~/Library/Caches/whisper", "#ff3b30"))
+        # Try falling back to tiny.en which is most likely to be cached
+        fallback = "tiny.en"
+        try:
+            print(f"[whisper] falling back to {fallback}")
+            whisper = WhisperModel(fallback, device=DEVICE, compute_type=COMPUTE)
+            settings["model"] = fallback
+            save_settings(settings)
+            app.root.after(0, lambda: app.show_message(
+                f"Loaded fallback model: {fallback}", "#ff9f0a"))
+        except Exception as e2:
+            print(f"[whisper] fallback also failed: {e2}")
+            app.root.after(0, lambda: app.show_message(
+                "No Whisper model found. Run: pip install faster-whisper", "#ff3b30"))
+            app.set_state("idle")
+            return
     print(f"[jarvis] enabled={JARVIS_ENABLED} model={MODEL}")
     app._ready = True
     app.set_state("idle")
@@ -2413,8 +2648,35 @@ def main():
     root.mainloop()
 
 def _init_menubar():
+    """Initialize MenuBarApp, ensuring NSStatusBar calls land on the Cocoa main thread.
+
+    tkinter's root.after() callbacks run on the main thread's run loop, which IS
+    the Cocoa main thread in a normal Python process.  However in a PyInstaller
+    .app bundle the thread identity can differ.  We use performSelectorOnMainThread
+    as the safest cross-version dispatch — it's a no-op overhead when already on
+    the right thread, and correctly re-dispatches when not.
+    """
     global menubar
-    menubar = MenuBarApp()
+
+    def _create():
+        global menubar
+        menubar = MenuBarApp()
+
+    try:
+        from Foundation import NSObject
+        import objc
+
+        class _Trampoline(NSObject):
+            def create_(self, _):
+                _create()
+
+        t = _Trampoline.alloc().init()
+        t.performSelectorOnMainThread_withObject_waitUntilDone_(
+            objc.selector(t.create_, selector=b"create:"), None, True
+        )
+    except Exception as e:
+        print(f"[menubar] performSelectorOnMainThread unavailable ({e}), creating directly")
+        _create()
 
 if __name__ == "__main__":
     import multiprocessing, signal
@@ -2426,16 +2688,6 @@ if __name__ == "__main__":
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
-
-    # Fix for macOS .app bundle — ensure we run on main thread
-    import platform
-    if platform.system() == "Darwin":
-        import objc
-        from Foundation import NSThread
-        if not NSThread.isMainThread():
-            # Re-launch on main thread
-            from AppKit import NSApplication
-            NSApplication.sharedApplication()
 
     import traceback
     try:

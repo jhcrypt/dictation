@@ -4,3 +4,16 @@ build/
 *.zip
 __pycache__/
 *.pyc
+
+# Local Settings and Secrets
+.dictation_settings.json
+.dictation_snippets.json
+.dictation_history.json
+.dictation_vocabulary.json
+
+# Audio and Logs
+*.wav
+dictation_crash.log
+
+# OS specific
+.DS_Store
