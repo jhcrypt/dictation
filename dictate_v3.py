@@ -8,6 +8,9 @@ Hold Right Option to record, release to transcribe and type.
 import os
 # CRITICAL CRASH FIX: Must be set BEFORE importing faster_whisper to prevent "illegal hardware instruction"
 os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["CT2_USE_EXPERIMENTAL_PACKED_GEMM"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import threading
 import tempfile
@@ -32,9 +35,7 @@ except ImportError as e:
 import tkinter as tk
 from tkinter import ttk
 
-# ── Ollama AI Brain ──────────────────────────────────────────────────────────
-OLLAMA_MODEL   = "llama3"
-OLLAMA_URL     = "http://localhost:11434/api/generate"
+# ── Jarvis AI Brain ───────────────────────────────────────────────────────────
 JARVIS_ENABLED = True  # overridden by settings on load
 
 # Added Spark so Context-Aware formatting triggers on emails!
@@ -59,39 +60,45 @@ JARVIS_COMMANDS = {
     "calendar": "check_calendar", "close": "close_app", "play": "play_media", "weather": "check_weather",
 }
 
-def ollama_query(prompt, system="You are a helpful assistant.", timeout=8):
-    try:
-        payload = json.dumps({"model": OLLAMA_MODEL, "prompt": prompt, "system": system, "stream": False}).encode()
-        req = _urllib.Request(OLLAMA_URL, data=payload, headers={"Content-Type": "application/json"})
-        with _urllib.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read()).get("response", "").strip()
-    except Exception as e:
-        print(f"[ollama] error: {e}")
-        return None
+# ── Local intent detection & formatting (no Ollama) ─────────────────────────
+
+def ollama_query(prompt, system="", timeout=8):
+    """Stub — Ollama not used. Returns None immediately."""
+    return None
 
 def detect_jarvis_intent(text):
-    system = """You are an intent detector for a voice assistant on macOS.
-Analyze the text and respond with JSON only, no explanation.
-Format: {"is_command": true/false, "action": "action_name", "params": {}}"""
-    response = ollama_query(text, system=system, timeout=5)
-    if not response: return None
-    try:
-        match = re.search(r'\{.*\}', response, re.DOTALL)
-        if match: return json.loads(match.group())
-    except Exception as e:
-        print(f"[intent] parse error: {e}")
+    """Stub — replaced by _fast_jarvis_match."""
     return None
 
 def format_for_app(text, app_name):
+    """Rule-based formatting — instant, no LLM required."""
     app_lower = app_name.lower()
-    rule = next((fmt_rule for app_key, fmt_rule in APP_FORMAT_RULES.items() if app_key in app_lower), None)
-    if not rule: return text
+    rule_key = next((k for k in APP_FORMAT_RULES if k in app_lower), None)
+    if not rule_key:
+        return text
 
-    prompt = f"Format this dictated text for use in {app_name}.\nRule: {rule}\nText: {text}\nReturn ONLY the formatted text, nothing else."
-    formatted = ollama_query(prompt, timeout=5)
-    if formatted:
-        print(f"[format] {app_name}: {text!r} -> {formatted!r}")
-        return formatted
+    # Capitalize first letter
+    text = text.strip()
+    if text:
+        text = text[0].upper() + text[1:]
+
+    if rule_key in ("mail", "spark", "word", "pages"):
+        # Ensure sentence endings have proper punctuation
+        if text and text[-1] not in ".!?":
+            text += "."
+        # Capitalize after period
+        text = re.sub(r'(\.\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
+
+    elif rule_key in ("messages", "slack"):
+        # Strip trailing period for casual tone
+        if text.endswith("."):
+            text = text[:-1]
+
+    elif rule_key == "terminal":
+        # Lowercase only
+        text = text.lower()
+
+    print(f"[format] {app_name}: applied '{rule_key}' rule")
     return text
 
 def execute_jarvis_command(action, params):
@@ -149,10 +156,45 @@ def execute_jarvis_command(action, params):
             subprocess.run(["osascript", "-e", f'tell application "Reminders"\n    tell default list\n        make new reminder with properties {{name:"{text}"}}\n    end tell\nend tell'])
             app.show_message(f"Reminder: {text[:30]}", "#30d158")
 
+        elif action == "kill_app":
+            app_name = params.get("app", "")
+            subprocess.run(["pkill", "-9", "-f", app_name])
+            app.show_message(f"Killed {app_name}", "#30d158")
+
         elif action == "send_email":
             to, subject, body = params.get("to", ""), params.get("subject", ""), params.get("body", "")
-            script = f'tell application "Spark" to activate\ndelay 0.5\ntell application "System Events"\ntell process "Spark"\nkeystroke "n" using command down\ndelay 0.5\nkeystroke "{to}"\nkeystroke tab\nkeystroke "{subject}"\nkeystroke tab\nkeystroke "{body}"\nend tell\nend tell'
-            subprocess.Popen(["osascript", "-e", script])
+            lines = [
+                'tell application "Spark" to activate',
+                'delay 2.5',
+                'tell application "System Events"',
+                '    tell process "Spark"',
+                '        keystroke "n" using command down',
+                '        delay 2.0',
+            ]
+            if to:
+                lines += [
+                    f'        keystroke "{to}"',
+                    '        delay 0.8',
+                    '        key code 36',   # Return to confirm recipient autocomplete
+                    '        delay 0.5',
+                ]
+            # Tab past CC to Subject, then tab again to Body
+            lines += [
+                '        keystroke tab',    # To -> CC
+                '        delay 0.2',
+                '        keystroke tab',    # CC -> Subject
+                '        delay 0.2',
+            ]
+            if subject:
+                lines += [f'        keystroke "{subject}"', '        delay 0.2']
+            lines += [
+                '        keystroke tab',    # Subject -> Body
+                '        delay 0.3',
+            ]
+            if body:
+                lines += [f'        keystroke "{body}"']
+            lines += ['    end tell', 'end tell']
+            subprocess.Popen(["osascript", "-e", "\n".join(lines)])
             app.show_message(f"Composing email to {to[:20]}" if to else "Opening Spark", "#30d158")
 
         elif action == "close_app":
@@ -361,9 +403,12 @@ def get_active_app_name():
     try: return subprocess.check_output(["osascript", "-e", 'tell application "System Events" to get name of first application process whose frontmost is true'], timeout=1).decode().strip()
     except Exception: return ""
 
-def play_sound(name):
+def play_sound(name, block=False):
     sounds = {"start": "/System/Library/Sounds/Tink.aiff", "stop": "/System/Library/Sounds/Pop.aiff"}
-    subprocess.Popen(["afplay", sounds[name]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if block:
+        subprocess.run(["afplay", sounds[name]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.Popen(["afplay", sounds[name]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def _set_system_mute(mute: bool):
     try: subprocess.run(["osascript", "-e", f"set volume {'with' if mute else 'without'} output muted"], timeout=3)
@@ -373,6 +418,25 @@ _pre_recording_muted = False
 _apps_were_playing = []
 _browsers_paused = []
 
+def _send_media_playpause():
+    """Send a real media play/pause key event using CoreGraphics."""
+    try:
+        import Quartz
+        NX_KEYTYPE_PLAY = 16
+        NX_SYSDEFINED = 14  # correct event type for media keys
+        def _make_event(down):
+            ev = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
+            Quartz.CGEventSetType(ev, NX_SYSDEFINED)
+            Quartz.CGEventSetIntegerValueField(
+                ev, 159,
+                (NX_KEYTYPE_PLAY << 16) | ((1 if down else 0) << 8)
+            )
+            return ev
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, _make_event(True))
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, _make_event(False))
+    except Exception as e:
+        print(f"[media] playpause error: {e}")
+
 def _is_running(proc_name):
     try: return subprocess.run(["pgrep", "-ix", proc_name], capture_output=True, timeout=1).returncode == 0
     except Exception: return False
@@ -381,20 +445,71 @@ def pause_media():
     global _pre_recording_muted, _apps_were_playing, _browsers_paused
     _apps_were_playing = []
     _browsers_paused = []
+
+    # 1. INSTANT MUTE — fire and forget, no waiting for return value
     try:
-        _pre_recording_muted = (subprocess.check_output(["osascript", "-e", "output muted of (get volume settings)"], timeout=2).decode().strip() == "true")
-        if not _pre_recording_muted: _set_system_mute(True)
-    except Exception: pass
-    for proc, state_cmd, pause_cmd in [("Spotify", 'tell application "Spotify" to player state as string', 'tell application "Spotify" to pause'), ("Music", 'tell application "Music" to player state as string', 'tell application "Music" to pause'), ("Podcasts", 'tell application "Podcasts" to player state as string', 'tell application "Podcasts" to pause')]:
-        if not _is_running(proc): continue
-        try:
-            if subprocess.check_output(["osascript", "-e", state_cmd], timeout=2).decode().strip().lower() in ("playing", "1"):
-                subprocess.Popen(["osascript", "-e", pause_cmd]); _apps_were_playing.append(proc)
-        except Exception: pass
+        result = subprocess.run(
+            ["osascript", "-e", "output muted of (get volume settings)"],
+            capture_output=True, timeout=1
+        )
+        _pre_recording_muted = result.stdout.decode().strip() == "true"
+    except Exception:
+        _pre_recording_muted = False
+    if not _pre_recording_muted:
+        subprocess.Popen(["osascript", "-e", "set volume with output muted"])
+
+    # 2. THREADED APP CHECKS — browser and music app pausing in background
+    def _pause_apps():
+        # Firefox media key
+        if _is_running("firefox"):
+            try:
+                _send_media_playpause()
+                _browsers_paused.append("Firefox")
+                print("[media] paused Firefox")
+            except Exception as e:
+                print(f"[media] Firefox pause error: {e}")
+        # Spotify/Music/Podcasts in parallel
+        import concurrent.futures
+        def _pause_one(args):
+            proc, state_cmd, pause_cmd = args
+            if not _is_running(proc): return None
+            try:
+                state = subprocess.check_output(
+                    ["osascript", "-e", state_cmd], timeout=1
+                ).decode().strip().lower()
+                if state in ("playing", "1"):
+                    subprocess.Popen(["osascript", "-e", pause_cmd])
+                    print(f"[media] paused {proc}")
+                    return proc
+            except Exception: pass
+            return None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            results = list(ex.map(_pause_one, [
+                ("Spotify", 'tell application "Spotify" to player state as string', 'tell application "Spotify" to pause'),
+                ("Music",   'tell application "Music" to player state as string',   'tell application "Music" to pause'),
+                ("Podcasts",'tell application "Podcasts" to player state as string','tell application "Podcasts" to pause'),
+            ]))
+        _apps_were_playing.extend([r for r in results if r])
+
+    threading.Thread(target=_pause_apps, daemon=True).start()
 
 def resume_media():
     global _pre_recording_muted, _apps_were_playing, _browsers_paused
-    if not _pre_recording_muted: _set_system_mute(False)
+    print(f"[media] resuming — _pre_recording_muted={_pre_recording_muted}")
+    if not _pre_recording_muted:
+        _set_system_mute(False)
+        print("[media] system unmuted")
+    else:
+        print("[media] was already muted before recording, leaving muted")
+
+    # Resume Firefox via media key
+    if "Firefox" in _browsers_paused:
+        try:
+            _send_media_playpause()
+            print("[media] resumed Firefox")
+        except Exception as e:
+            print(f"[media] Firefox resume error: {e}")
+
     resume_cmds = {"Spotify": 'tell application "Spotify" to play', "Music": 'tell application "Music" to play', "Podcasts": 'tell application "Podcasts" to resume'}
     for app_name in _apps_were_playing:
         try: subprocess.run(["osascript", "-e", resume_cmds[app_name]], timeout=5)
@@ -425,11 +540,8 @@ def paste_text(text):
         import subprocess as _sp
         prev = _sp.run(["pbpaste"], capture_output=True).stdout
         _sp.run(["pbcopy"], input=(text + " ").encode(), timeout=2)
-        import time as _t; _t.sleep(0.05)
-        from pynput.keyboard import Controller as _C, Key as _K
-        _k = _C()
-        with _k.pressed(_K.cmd):
-            _k.press("v"); _k.release("v")
+        import time as _t; _t.sleep(0.1)
+        _sp.run(["osascript", "-e", 'tell application "System Events" to keystroke "v" using command down'], timeout=3)
         _t.sleep(0.1)
         _sp.run(["pbcopy"], input=prev, timeout=2)
     except Exception: typer.type(text + " ")
@@ -472,8 +584,10 @@ def _fast_jarvis_match(lower):
         "reminders": "Reminders", "calculator": "Calculator", "safari": "Safari",
         "chrome": "Google Chrome", "firefox": "Firefox", "vs code": "Visual Studio Code",
         "vscode": "Visual Studio Code", "xcode": "Xcode", "textedit": "TextEdit",
-        "photoshop": "Adobe Photoshop 2025", "illustrator": "Adobe Illustrator",
-        "premiere": "Adobe Premiere Pro", "after effects": "Adobe After Effects",
+        "photoshop": "Adobe Photoshop 2023", "illustrator": "Adobe Illustrator",
+        "premiere": "Adobe Premiere Pro 2022", "after effects": "Adobe After Effects",
+        "lightroom": "Adobe Lightroom Classic", "acrobat": "Adobe Acrobat DC",
+        "media encoder": "Adobe Media Encoder 2023", "encoder": "Adobe Media Encoder 2023",
         "figma": "Figma", "sketch": "Sketch", "zoom": "Zoom", "teams": "Microsoft Teams",
         "word": "Microsoft Word", "excel": "Microsoft Excel", "powerpoint": "Microsoft PowerPoint",
         "outlook": "Microsoft Outlook", "notion": "Notion", "obsidian": "Obsidian",
@@ -526,6 +640,8 @@ def _fast_jarvis_match(lower):
     if remind_match: return ("set_reminder", {"text": remind_match.group(1)})
     close_match = re.match(r"close (.+)", lower)
     if close_match: return ("close_app", {"app": close_match.group(1).capitalize()})
+    kill_match = re.match(r"(?:kill|force quit|force close)\s+(.+)", lower)
+    if kill_match: return ("kill_app", {"app": kill_match.group(1).strip()})
     return None
 
 def transcribe_and_type(wav_path, raw_frames):
@@ -737,7 +853,6 @@ def transcribe_and_type(wav_path, raw_frames):
 
     app.set_transcript(text)
     paste_text(text)
-    threading.Thread(target=resume_media, daemon=True).start()
 
     def _background_tasks(t=text, a=active_app):
         save_history(t, a)
@@ -883,7 +998,9 @@ def _wake_word_loop():
     try:
         from openwakeword.model import Model as WakeModel
         oww = WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
-    except Exception:
+        print("[wake] ready — say 'Hey Jarvis' to start dictating")
+    except Exception as e:
+        print(f"[wake] openwakeword failed ({e}), wake word disabled")
         return
 
     while True:
@@ -929,6 +1046,7 @@ def _wake_word_loop():
                 for key in oww.prediction_buffer:
                     oww.prediction_buffer[key] = [0.0] * len(oww.prediction_buffer[key])
             except Exception: pass
+            print("[wake] listening for 'Hey Jarvis'...")
 
 def _stop_recording():
     global recording, _wake_cooldown_until
@@ -966,6 +1084,7 @@ def on_press(key):
     is_comma = hasattr(key, "char") and key.char in (",", "d")
 
     if key == record_key and not recording:
+        print(f"[debug] record key pressed — starting recording")
         recording = True
         _wake_active.set()
         globals()["_wake_cooldown_until"] = time.time() + 2.0
@@ -976,7 +1095,7 @@ def on_press(key):
         app.capture_active_app()
         app.set_state("recording")
         app.root.after(0, app.start_wave)
-        play_sound("start")
+        play_sound("start")           # non-blocking — fire and forget
         threading.Thread(target=pause_media, daemon=True).start()
         globals()["_recording_had_audio"] = False
     elif key == record_key and recording and settings.get("toggle_mode", False):
@@ -1049,6 +1168,9 @@ class MenuBarApp:
                 def selectHotkey_(self, sender):
                     settings["hotkey_label"] = sender.title()
                     save_settings(settings)
+                    for i in range(menubar._hotkey_menu.numberOfItems()):
+                        item = menubar._hotkey_menu.itemAtIndex_(i)
+                        item.setState_(1 if item.title() == sender.title() else 0)
                 def quitApp_(self, sender):
                     os._exit(0)
                 def showHistory_(self, sender):
@@ -1089,6 +1211,7 @@ class MenuBarApp:
                 hotkey_menu.addItem_(hi)
             hotkey_item.setSubmenu_(hotkey_menu)
             self._menu.addItem_(hotkey_item)
+            self._hotkey_menu = hotkey_menu
             self._menu.addItem_(NSMenuItem.separatorItem())
 
             for title, action in [("Settings", "openSettings:"), ("Manage Snippets", "showSnippets:"), ("Show History", "showHistory:")]:
@@ -1498,17 +1621,25 @@ def reload_model():
     app.set_state("idle")
 
 def start_backend(stream):
-    global whisper, JARVIS_ENABLED
+    global whisper, JARVIS_ENABLED, WAKE_ENABLED
     JARVIS_ENABLED = settings.get("jarvis_enabled", True)
+    WAKE_ENABLED = settings.get("wake_enabled", True)
+    print(f"[boot] WAKE_ENABLED={WAKE_ENABLED} JARVIS_ENABLED={JARVIS_ENABLED}")
     time.sleep(1.5)
     try:
+        print(f"[model] loading {MODEL} on {DEVICE}/{COMPUTE}...")
         whisper = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
-    except Exception:
+        print(f"[model] loaded OK")
+    except Exception as e:
+        print(f"[model] failed to load {MODEL}: {e}")
         try:
+            print("[model] falling back to tiny.en...")
             whisper = WhisperModel("tiny.en", device=DEVICE, compute_type=COMPUTE)
             settings["model"] = "tiny.en"
             save_settings(settings)
-        except Exception:
+            print("[model] tiny.en loaded OK")
+        except Exception as e2:
+            print(f"[model] fatal: {e2}")
             app.root.after(0, lambda: app.show_message("No Whisper model found.", "#ff3b30"))
             app.set_state("idle")
             return
@@ -1518,6 +1649,46 @@ def start_backend(stream):
     with keyboard.Listener(on_press=on_press, on_release=on_release):
         stream.start()
         threading.Event().wait()
+
+def _install_suppression_tap():
+    """Install a Quartz event tap on the main thread to suppress the record key."""
+    try:
+        import Quartz
+        KEYCODE_MAP = {
+            "Right Command": 54, "Right Option": 61,
+            "Right Control": 62, "F13": 105, "F14": 107, "F15": 113,
+        }
+        suppress_keycode = KEYCODE_MAP.get(settings.get("hotkey_label", "Right Command"), 54)
+
+        def _cb(proxy, event_type, event, refcon):
+            try:
+                keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+                if event_type == Quartz.kCGEventFlagsChanged:
+                    print(f"[input] FlagsChanged keycode={keycode}")
+                if keycode == suppress_keycode:
+                    return None  # suppress — pynput listener still fires separately
+            except Exception:
+                pass
+            return event
+
+        tap = Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            0,  # active tap
+            Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown) |
+            Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp) |
+            Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged),
+            _cb, None
+        )
+        if tap:
+            src = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+            Quartz.CFRunLoopAddSource(Quartz.CFRunLoopGetCurrent(), src, Quartz.kCFRunLoopCommonModes)
+            Quartz.CGEventTapEnable(tap, True)
+            print("[input] Quartz suppression tap installed")
+        else:
+            print("[input] Quartz tap failed — key may leak characters")
+    except Exception as e:
+        print(f"[input] Quartz tap error: {e}")
 
 def main():
     global app, menubar
@@ -1529,6 +1700,7 @@ def main():
     stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", device=MIC_DEVICE, callback=audio_callback)
     threading.Thread(target=start_backend, args=(stream,), daemon=True).start()
     root.after(500, _init_menubar)
+    root.after(1000, _install_suppression_tap)
     root.mainloop()
 
 def _init_menubar():
