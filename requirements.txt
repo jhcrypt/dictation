@@ -1,0 +1,32 @@
+# Jarvis Dictation — Python dependencies
+# Install: pip install -r requirements.txt
+# Requires: Python 3.11, conda env "dictation"
+
+# Core transcription
+faster-whisper
+
+# Audio
+sounddevice
+numpy
+
+# Wake word detection
+openwakeword
+onnxruntime
+
+# Image / UI
+Pillow
+
+# Spell correction
+symspellpy
+
+# macOS keychain
+keyring
+
+# macOS system frameworks (PyObjC)
+pyobjc
+
+# Local AI cleanup (optional — also requires Ollama installed: https://ollama.com)
+ollama
+
+# App packaging (dev only)
+# pyinstaller
