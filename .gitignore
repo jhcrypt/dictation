@@ -1,19 +1,57 @@
-dist/
-build/
-*.spec
-*.zip
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
 
-# Local Settings and Secrets
-.dictation_settings.json
-.dictation_snippets.json
-.dictation_history.json
-.dictation_vocabulary.json
+# Virtual environments
+.env
+.venv/
+venv/
+ENV/
+env/
 
-# Audio and Logs
-*.wav
-dictation_crash.log
-
-# OS specific
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Build artifacts
+build/
+dist/
+*.spec.bak
+*.app/
+*.dmg
+*.zip
+
+# Private local app data
+.dictation_settings.json
+.dictation_history.json
+.dictation_snippets.json
+.dictation_vocabulary.json
+*.log
+*.crash
+
+# Audio / temp files
+*.wav
+*.aiff
+*.mp3
+*.m4a
+
+# IDE
+.vscode/
+.idea/
+
+# Model / cache folders
+models/
+.cache/
+
+# Conda
+.conda/
+
+# Local archive — old versions kept locally only, not committed to public repo
+archive/
+backup/

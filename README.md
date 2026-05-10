@@ -1,186 +1,179 @@
-# Cryptic Dictation App
+# Jarvis Dictation
 
-A powerful local voice dictation app for Mac with AI-powered commands, wake word detection, and smart formatting.
+Private, Mac-first voice dictation with local Whisper transcription, optional Ollama cleanup, writing profiles, snippets/history, and Jarvis-style commands.
+
+---
 
 ## Features
 
-- 🎙️ **Hold Right ⌘** to record and transcribe
-- 🤖 **Hey Jarvis** wake word (hands-free)
-- 🧠 **AI Commands** — open apps, search web, compose emails, control volume
-- ✂️ **Smart Editing** — scratch that, scratch last 2/3, undo
-- 💅 **Smart Formatting** — bold, italic, code, heading, bullet lists
-- 📚 **Personal Learning** — gets smarter the more you use it
-- 🌍 **Multi-language** — 13 languages supported
-- ⏸️ **Media Control** — pauses Spotify/Music while dictating
+- **Right Option push-to-dictate** — hold to record, release to transcribe and type
+- **Local Whisper transcription** — fully offline, no cloud required
+- **Optional Ollama cleanup** — local AI polishing with configurable writing profiles
+- **Writing Profiles** — General, Professional, Email, Developer, Medical, Legal, Sales, Notes, Creative, and Verbatim
+- **Jarvis wake-word dictation** — say "Hey Jarvis" for hands-free recording
+- **Snippets** — store and insert reusable text blocks by voice
+- **Dictation history** — browse and reuse past transcriptions
+- **Safe Mode** — bypass AI cleanup when you need raw output
+- **macOS menu bar utility** — lives in the menu bar, out of your way
+- **Private by default** — no data leaves your Mac unless you enable cloud mode
+
+---
+
+## Screenshots
+
+_Coming soon._
 
 ---
 
 ## Requirements
 
-- macOS 12+ (Monterey or later)
+- macOS 12 Monterey or later (Intel Mac)
 - Python 3.11
 - Conda (Miniconda or Anaconda)
-- Homebrew (optional)
+- [Ollama](https://ollama.com) (optional — for AI cleanup)
 
 ---
 
 ## Installation
 
-### Step 1 — Install Miniconda (if not already installed)
+### 1. Install Miniconda
 
-**Intel Mac:**
 ```bash
 curl -O https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh
 bash Miniconda3-latest-MacOSX-x86_64.sh
 ```
 
-**M1/M2 Mac:**
-```bash
-curl -O https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh
-bash Miniconda3-latest-MacOSX-arm64.sh
-```
+Restart your terminal after installing.
 
-Restart terminal after installing.
-
----
-
-### Step 2 — Clone the repo
+### 2. Clone the repo
 
 ```bash
 git clone https://github.com/jhcrypt/dictation
 cd dictation
 ```
 
----
-
-### Step 3 — Create conda environment
+### 3. Create the conda environment
 
 ```bash
 conda create -n dictation python=3.11
 conda activate dictation
 ```
 
----
-
-### Step 4 — Install dependencies
+### 4. Install dependencies
 
 ```bash
-pip install faster-whisper symspellpy pynput sounddevice numpy openwakeword onnxruntime Pillow
+pip install faster-whisper sounddevice numpy openwakeword onnxruntime \
+            Pillow symspellpy keyring pyobjc ollama
 ```
 
----
-
-### Step 5 — Download wake word models
+### 5. Download wake word models
 
 ```bash
-python3 -c "from openwakeword.utils import download_models; download_models()"
+python -c "from openwakeword.utils import download_models; download_models()"
 ```
 
+### 6. Grant macOS permissions
+
+Go to **System Settings → Privacy & Security** and grant:
+
+- **Microphone** — to your terminal app (iTerm2, Terminal, etc.)
+- **Accessibility** — to your terminal app
+- **Input Monitoring** — to your terminal app
+
+See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for full details.
+
 ---
 
-### Step 6 — Grant permissions
-
-Go to **System Settings → Privacy & Security** and enable:
-- ✅ **Microphone** — for your terminal app
-- ✅ **Accessibility** — for your terminal app
-- ✅ **Input Monitoring** — for your terminal app
-
----
-
-### Step 7 — Run
+## Running from Source
 
 ```bash
 conda activate dictation
-python dictate_v2.py
+python src/jarvis_dictation.py
 ```
+
+The app appears in your menu bar. No Dock icon.
 
 ---
 
-## M1/M2 Mac Additional Setup
+## Building the Mac App
 
-After cloning or pulling, run the M1 setup script:
+See [docs/INSTALL.md](docs/INSTALL.md) for detailed instructions.
+
+Quick start:
 
 ```bash
-bash m1_setup.sh
+conda activate dictation
+pip install pyinstaller
+cd packaging/mac
+chmod +x build_mac_app.sh
+./build_mac_app.sh
 ```
 
-This automatically fixes:
-- Symspell dictionary path
-- Microphone device index
-- Audio sensitivity threshold
-- Cross-platform compatibility
+The built app will be at `packaging/mac/dist/JarvisDictation.app`.
 
-Then run:
-```bash
-/Users/$USER/miniconda3/envs/dictation/bin/python dictate_v2.py
-```
+> After building, grant Microphone, Accessibility, and Input Monitoring permissions to **JarvisDictation.app** separately in System Settings.
 
 ---
 
-## Usage
+## macOS Permissions
 
-| Action | How |
-|--------|-----|
-| Dictate | Hold **Right ⌘**, speak, release |
-| Wake word | Say **"Hey Jarvis"** |
-| Cancel | Press **Escape** |
-| Settings | Press **Ctrl+D** or menu bar |
-| Scratch last | Say **"scratch that"** |
-| Scratch last 2 | Say **"scratch last two"** |
-| Bold text | Say **"make bold"** after dictating |
-| Open app | Say **"open YouTube"** |
-| Search | Say **"search for Python tutorials"** |
-| Volume | Say **"volume up"** / **"volume down"** |
-| Email | Say **"send email to John saying hello"** |
-| Language | Say **"switch to Spanish"** |
+| Permission | Why |
+|---|---|
+| Microphone | Records your voice |
+| Accessibility | Types transcribed text into other apps |
+| Input Monitoring | Detects the global record hotkey |
+| Automation | Controls apps like Reminders, Spark, Spotify |
+
+See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
+
+---
+
+## Writing Profiles
+
+Select a writing profile in Settings or via the menu bar. The AI cleanup will match the style to your profile:
+
+| Profile | Best For |
+|---|---|
+| General | Everyday dictation |
+| Professional | Business writing |
+| Email | Email composition |
+| Developer | Code notes, technical writing |
+| Medical | Clinical documentation |
+| Legal | Legal memos and briefs |
+| Sales | Sales emails, pitches |
+| Notes | Quick bullet notes |
+| Creative | Stories, creative writing |
+| Verbatim | Exact transcription, no cleanup |
+
+---
+
+## Hotkeys
+
+| Action | Key |
+|---|---|
+| Start / stop recording | **Right Option** (recommended) |
+| Cancel recording | **Escape** |
+| Undo last dictation | **Ctrl+Z** |
+| Open Settings | **Ctrl+,** |
+
+**Optional record keys:** F13, F14, F15
+
+Change the record key anytime from Settings.
 
 ---
 
 ## Troubleshooting
 
-**Symspell dictionary not found:**
-```bash
-python3 -c "
-import symspellpy, os, re
-path = os.path.join(os.path.dirname(symspellpy.__file__), 'frequency_dictionary_en_82_765.txt')
-with open('dictate_v2.py') as f: content = f.read()
-content = re.sub(r'\"[^\"]*frequency_dictionary_en_82_765\.txt\"', f'\"{path}\"', content)
-with open('dictate_v2.py', 'w') as f: f.write(content)
-print('Fixed:', path)
-"
-```
-
-**Wrong microphone device:**
-```bash
-python3 -c "import sounddevice as sd; print(sd.query_devices())"
-```
-Note the input device number, then update in settings or run:
-```bash
-python3 -c "
-with open('dictate_v2.py') as f: c = f.read()
-c = c.replace('MIC_DEVICE  = 2', 'MIC_DEVICE  = 0')  # change 0 to your device number
-with open('dictate_v2.py', 'w') as f: f.write(c)
-"
-```
-
-**Accessibility permission error:**
-Go to System Settings → Privacy & Security → Accessibility → Add Terminal
-
-**App crashes on startup (M1):**
-```bash
-bash m1_setup.sh
-```
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ---
 
-## Models
+## Roadmap
 
-| Model | Speed | Accuracy | Best For |
-|-------|-------|----------|---------|
-| tiny.en | ⚡⚡⚡ | ★★★ | Fast machines, simple dictation |
-| base.en | ⚡⚡ | ★★★★ | Good balance |
-| small.en | ⚡ | ★★★★★ | Best accuracy (recommended) |
-| medium.en | 🐢 | ★★★★★ | High-end machines only |
+See [docs/ROADMAP.md](docs/ROADMAP.md).
 
-Switch models anytime from the menu bar or Settings.
+---
 
+## License
+
+MIT License. See [LICENSE](LICENSE).
