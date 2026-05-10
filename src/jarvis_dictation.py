@@ -1,15 +1,16 @@
 #!/usr/bin/env python
 """
-Local Whisper Dictation v5.8 Stable Polish - Intel Mac
+Jarvis Dictation v6.1.11 — Intel Mac
 Hold Right Option to record, release to transcribe and type.
 100% offline by default. Optional OpenAI/Ollama refinement.
 
-v5.8 polish:
-  - keeps the queue-safe Quartz/Tkinter hotkey crash fix
-  - adds hotkey debounce and minimum recording duration guards
-  - prevents overlapping transcription jobs
-  - standardizes important terminal logs
-  - makes start/stop sounds setting-aware
+v6.1.11 fixes:
+  - openwakeword model loading in packaged .app (get_pretrained_model_paths
+    stub + direct ONNX path resolution via _MEIPASS and package dir)
+  - safe fallback when openwakeword is entirely unavailable
+  - improved wake-word startup log messages
+  - Ollama daemon thread print() crash (ValueError: I/O operation on closed
+    file) fixed with _safe_print() wrapper
 
 v4 fixes:
   - audio_frames guarded by a threading.Lock() (race condition fix)
@@ -464,6 +465,49 @@ JARVIS_COMMANDS = {
 
 # ── Local intent detection & formatting (no Ollama) ─────────────────────────
 
+# ── Packaged-app safe logging ─────────────────────────────────────────────────
+# In a PyInstaller .app bundle stdout/stderr may be closed. Any print() call
+# from a daemon thread after that raises ValueError: I/O operation on closed
+# file. Use _safe_print() for all background-thread logging.
+def _safe_print(*args, **kwargs):
+    try:
+        print(*args, **kwargs)
+    except (ValueError, OSError):
+        pass
+
+# ── openwakeword model path resolver ─────────────────────────────────────────
+def _get_oww_model_path() -> str:
+    """Return the absolute path to hey_jarvis_v0.1.onnx.
+
+    Checks (in order):
+      1. sys._MEIPASS — PyInstaller bundle, data files extracted here
+      2. The openwakeword package's own resources directory
+
+    Returns an empty string if the file cannot be found.
+    """
+    import os
+    candidates = []
+
+    # 1. Bundled app: PyInstaller extracts openwakeword data to _MEIPASS
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(os.path.join(
+            sys._MEIPASS, "openwakeword", "resources", "models",
+            "hey_jarvis_v0.1.onnx"))
+
+    # 2. Running from source: ask the package where it lives
+    try:
+        import openwakeword as _oww_pkg
+        pkg_dir = os.path.dirname(_oww_pkg.__file__)
+        candidates.append(os.path.join(
+            pkg_dir, "resources", "models", "hey_jarvis_v0.1.onnx"))
+    except Exception:
+        pass
+
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return ""
+
 # ── Ollama async refinement engine ───────────────────────────────────────────
 # A single persistent worker thread keeps the model warm between calls.
 # transcribe_and_type submits a job and waits up to OLLAMA_TIMEOUT seconds.
@@ -530,9 +574,9 @@ def _ollama_worker():
     try:
         import ollama as _ol
     except ImportError:
-        print("[ollama] library not installed — refinement disabled")
+        _safe_print("[ollama] library not installed — refinement disabled")
         return
-    print("[ollama] worker ready")
+    _safe_print("[ollama] worker ready")
     while True:
         job = _ollama_req_q.get()         # blocks until a job arrives
         if job is None: break             # poison pill — exit
@@ -567,9 +611,9 @@ def _ollama_worker():
             lines = [l.strip() for l in result.splitlines() if l.strip()]
             if len(lines) > 1:
                 result = lines[-1]
-            print(f"[ollama] {elapsed:.2f}s → {result!r}")
+            _safe_print(f"[ollama] {elapsed:.2f}s → {result!r}")
         except Exception as e:
-            print(f"[ollama] worker error: {e}")
+            _safe_print(f"[ollama] worker error: {e}")
             result = None
 
         # Only post result if the caller is still waiting for THIS job_id.
@@ -2129,28 +2173,50 @@ def _silence_stop_monitor():
 def _wake_word_loop():
     global recording
     try:
+        # ── Resolve the hey_jarvis ONNX model path ────────────────────────────
+        # In a packaged .app the openwakeword module loads but its internal
+        # helper openwakeword.get_pretrained_model_paths() may be missing
+        # (not re-exported in all bundle configs).  Model.__init__ calls that
+        # function unconditionally, so we must ensure it exists before
+        # constructing WakeModel.  We provide a minimal stub that returns the
+        # direct path discovered by _get_oww_model_path().
+        import openwakeword as _oww_mod
+        if not hasattr(_oww_mod, "get_pretrained_model_paths"):
+            _oww_path = _get_oww_model_path()
+            def _oww_stub(framework="onnx"):
+                return [_oww_path] if _oww_path else []
+            _oww_mod.get_pretrained_model_paths = _oww_stub
+            _safe_print("[wake] patched openwakeword.get_pretrained_model_paths (bundled app)")
+
+        model_path = _get_oww_model_path()
+        if not model_path:
+            _safe_print("[wake] hey_jarvis ONNX model not found — wake word disabled")
+            return
+
+        _safe_print(f"[wake] loading model: {model_path}")
+
         # Force ONNX Runtime to use a single thread with no internal thread pool.
         # Multiple inter-op threads cause onnxruntime to spawn C++ threads that
         # call Py_BEGIN_ALLOW_THREADS from contexts with no PyThreadState on
         # macOS / Python 3.11, producing the fatal GIL abort.
-        import onnxruntime as _ort
-        _sess_opts = _ort.SessionOptions()
-        _sess_opts.inter_op_num_threads = 1
-        _sess_opts.intra_op_num_threads = 1
-        _sess_opts.execution_mode = _ort.ExecutionMode.ORT_SEQUENTIAL
-        from openwakeword.model import Model as WakeModel
-        oww = WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx",
-                        openwakeword_models_kwargs={"sess_options": _sess_opts})
-        print("[wake] ready — say 'Hey Jarvis' to start dictating")
-    except Exception as e:
-        # SessionOptions kwarg not supported in all versions — fall back without it
         try:
+            import onnxruntime as _ort
+            _sess_opts = _ort.SessionOptions()
+            _sess_opts.inter_op_num_threads = 1
+            _sess_opts.intra_op_num_threads = 1
+            _sess_opts.execution_mode = _ort.ExecutionMode.ORT_SEQUENTIAL
             from openwakeword.model import Model as WakeModel
-            oww = WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
-            print("[wake] ready — say 'Hey Jarvis' to start dictating")
-        except Exception as e2:
-            print(f"[wake] openwakeword failed ({e2}), wake word disabled")
-            return
+            oww = WakeModel(wakeword_models=[model_path], inference_framework="onnx",
+                            openwakeword_models_kwargs={"sess_options": _sess_opts})
+        except Exception:
+            # SessionOptions kwarg not supported in all versions — fall back without it
+            from openwakeword.model import Model as WakeModel
+            oww = WakeModel(wakeword_models=[model_path], inference_framework="onnx")
+
+        _safe_print("[wake] ready — say 'Hey Jarvis' to start dictating")
+    except Exception as e:
+        _safe_print(f"[wake] openwakeword failed ({e}), wake word disabled")
+        return
 
     buf = []
     while True:
@@ -2208,7 +2274,7 @@ def _wake_word_loop():
                     oww.prediction_buffer[key] = [0.0] * len(oww.prediction_buffer[key])
             except Exception:
                 pass
-            print("[wake] listening for 'Hey Jarvis'...")
+            _safe_print("[wake] listening for 'Hey Jarvis'...")
             continue
 
         time.sleep(0.05)
