@@ -163,7 +163,7 @@ app = BUNDLE(
         'LSMinimumSystemVersion': '10.15',
         'CFBundleName': 'Jarvis Dictation',
         'CFBundleDisplayName': 'Jarvis Dictation',
-        'CFBundleShortVersionString': '6.1.10',
-        'CFBundleVersion': '6.1.10',
+        'CFBundleShortVersionString': '6.1.15',
+        'CFBundleVersion': '6.1.15',
     },
 )

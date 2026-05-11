@@ -1,8 +1,21 @@
 #!/usr/bin/env python
 """
-Jarvis Dictation v6.1.11 — Intel Mac
+Jarvis Dictation v6.1.18 — Intel Mac
 Hold Right Option to record, release to transcribe and type.
 100% offline by default. Optional OpenAI/Ollama refinement.
+
+v6.1.18 fixes:
+  - Spark Desktop support on M1 Macs: email commands now try Spark Desktop,
+    Spark, Mail, then Outlook; Email profile/formatting explicitly recognizes
+    Spark Desktop.
+  - Paste reliability preserved: clipboard is verified before Cmd+V and
+    previous clipboard is restored after paste.
+
+v6.1.15 fixes:
+  - Menu bar icon restored: strong PyObjC reference prevents GC from wiping
+    the NSImage; null-before-set + setNeedsDisplay_ forces clean redraw
+  - Hey Jarvis wake word fixed: pass model name "hey_jarvis" (not file path)
+    so prediction dict key matches oww.predict().get("hey_jarvis", 0)
 
 v6.1.11 fixes:
   - openwakeword model loading in packaged .app (get_pretrained_model_paths
@@ -254,7 +267,7 @@ _record_key_is_modifier: bool = True
 # into this queue; Tk drains it from its own event loop.
 _input_event_q: _queue.SimpleQueue = _queue.SimpleQueue()
 
-APP_VERSION = "6.1.10 Hotkey UI Cleanup"
+APP_VERSION = "6.1.18 Spark Desktop Email Fix"
 HOTKEY_DEBOUNCE_SECONDS = 0.18
 MIN_RECORD_SECONDS = 0.30
 
@@ -372,6 +385,8 @@ JARVIS_ENABLED = True  # overridden by settings on load
 APP_FORMAT_RULES = {
     "mail":     "formal email tone, proper punctuation, capitalize first word",
     "spark":    "formal email tone, proper punctuation, capitalize first word",
+    "spark desktop": "formal email tone, proper punctuation, capitalize first word",
+    "readdle":  "formal email tone, proper punctuation, capitalize first word",
     "outlook":  "formal email tone, proper punctuation, capitalize first word",
     "notes":    "clear concise notes format",
     # We use broader keywords to catch terminal/coding apps
@@ -422,6 +437,8 @@ PROFILE_OPTIONS = list(WRITING_PROFILES.keys())
 APP_PROFILE_RULES = {
     "mail": "Email",
     "spark": "Email",
+    "spark desktop": "Email",
+    "readdle": "Email",
     "outlook": "Email",
     "gmail": "Email",
     "terminal": "Developer",
@@ -752,7 +769,7 @@ def format_for_app(text, app_name):
     if text:
         text = text[0].upper() + text[1:]
 
-    if rule_key in ("mail", "spark", "word", "pages"):
+    if rule_key in ("mail", "spark", "spark desktop", "readdle", "outlook", "word", "pages"):
         # Ensure sentence endings have proper punctuation
         if text and text[-1] not in ".!?":
             text += "."
@@ -773,6 +790,48 @@ def format_for_app(text, app_name):
     print(f"[format] {app_name}: applied '{rule_key}' rule")
     return text
 
+
+def _open_first_available_app(candidates, show_message=True):
+    """Open the first macOS app name that exists.
+
+    Some apps use different bundle/display names on different Macs. Spark is
+    commonly reported as "Spark Desktop" on Apple Silicon and "Spark" on some
+    Intel installs. Keep this helper small and side-effect-light so Jarvis
+    commands can try safe fallbacks without changing the rest of the command
+    system.
+    """
+    seen = set()
+    for candidate in candidates:
+        candidate = (candidate or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            result = subprocess.run(
+                ["open", "-a", candidate],
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            if result.returncode == 0:
+                if show_message and app:
+                    app.show_message(f"Opening {candidate}", "#30d158")
+                return candidate
+        except Exception as e:
+            print(f"[jarvis] open app fallback failed for {candidate}: {e}")
+    return ""
+
+
+def _preferred_email_app_candidates(preferred: str = ""):
+    """Return email app fallbacks, with Spark Desktop first for M1 Macs."""
+    candidates = [preferred, "Spark Desktop", "Spark", "Mail", "Microsoft Outlook"]
+    cleaned = []
+    for item in candidates:
+        item = (item or "").strip()
+        if item and item not in cleaned:
+            cleaned.append(item)
+    return cleaned
+
 def execute_jarvis_command(action, params):
     global _last_jarvis_time
     if time.time() - _last_jarvis_time < 3.0: return
@@ -790,6 +849,14 @@ def execute_jarvis_command(action, params):
                 result = subprocess.run(["open", "-a", app_name], capture_output=True, text=True)
                 if result.returncode != 0: subprocess.Popen(["open", "-a", app_name.lower()])
             if app: app.show_message(f"Opening {app_name}", "#30d158")
+
+        elif action == "open_email_app":
+            opened = _open_first_available_app(
+                _preferred_email_app_candidates(params.get("preferred", "")),
+                show_message=True,
+            )
+            if not opened and app:
+                app.show_message("Could not open email app", "#ff3b30")
 
         elif action == "web_search":
             query = params.get("query", "")
@@ -840,11 +907,13 @@ def execute_jarvis_command(action, params):
             safe_to      = _osa_escape(to)
             safe_subject = _osa_escape(subject)
             safe_body    = _osa_escape(body)
+            spark_app = _open_first_available_app(["Spark Desktop", "Spark"], show_message=False) or "Spark Desktop"
+            safe_spark_app = _osa_escape(spark_app)
             lines = [
-                'tell application "Spark" to activate',
+                f'tell application "{safe_spark_app}" to activate',
                 'delay 2.5',
                 'tell application "System Events"',
-                '    tell process "Spark"',
+                f'    tell process "{safe_spark_app}"',
                 '        keystroke "n" using command down',
                 '        delay 2.0',
             ]
@@ -872,7 +941,7 @@ def execute_jarvis_command(action, params):
                 lines += [f'        keystroke "{safe_body}"']
             lines += ['    end tell', 'end tell']
             subprocess.Popen(["osascript", "-e", "\n".join(lines)])
-            if app: app.show_message(f"Composing email to {to[:20]}" if to else "Opening Spark", "#30d158")
+            if app: app.show_message(f"Composing email to {to[:20]}" if to else f"Opening {spark_app}", "#30d158")
 
         elif action == "close_app":
             app_name = params.get("app", "")
@@ -1411,19 +1480,59 @@ def save_wav(frames, path):
 _paste_lock = threading.Lock()   # prevents clipboard desync from overlapping pastes
 
 def paste_text(text):
+    """Paste dictated text reliably without leaving the clipboard changed.
+
+    Older versions restored the previous clipboard too quickly after Cmd+V,
+    which could cause the target app to paste the old clipboard instead of the
+    dictation. This version verifies the clipboard first, retries briefly, then
+    waits after Cmd+V before restoring the original clipboard.
+    """
     with _paste_lock:
+        paste_payload = (text + " ").encode()
         try:
             import subprocess as _sp
-            prev = _sp.run(["pbpaste"], capture_output=True).stdout
-            _sp.run(["pbcopy"], input=(text + " ").encode(), timeout=2)
-            import time as _t; _t.sleep(0.12)
+            import time as _t
+
+            log_event("paste", f"preparing {len(text)} chars")
+            prev = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
+
+            verified = False
+            for attempt in range(8):
+                _sp.run(["pbcopy"], input=paste_payload, timeout=2)
+                _t.sleep(0.08 + (attempt * 0.03))
+                current = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
+                if current == paste_payload:
+                    verified = True
+                    log_event("paste", "clipboard verified")
+                    break
+                log_event("paste", f"retry {attempt + 1}")
+
+            if not verified:
+                log_event("paste", "failed clipboard verification; falling back to typing")
+                try:
+                    _sp.run(["pbcopy"], input=prev, timeout=2)
+                except Exception:
+                    pass
+                typer.type(text + " ")
+                return
+
+            _sp.run([
+                "osascript",
+                "-e",
+                'tell application "System Events" to keystroke "v" using command down'
+            ], timeout=3)
+            log_event("paste", "sent cmd+v")
+
+            # Give the target app time to consume the clipboard before restore.
+            _t.sleep(0.35)
+            _sp.run(["pbcopy"], input=prev, timeout=2)
+            log_event("paste", "restored previous clipboard")
+        except Exception as e:
+            log_event("paste", f"failed: {e}")
             try:
-                _sp.run(["osascript", "-e", 'tell application "System Events" to keystroke "v" using command down'], timeout=3)
-                _t.sleep(0.1)
-            finally:
-                _sp.run(["pbcopy"], input=prev, timeout=2)
-        except Exception:
-            typer.type(text + " ")
+                typer.type(text + " ")
+            except Exception:
+                pass
 
 def smart_punctuate(text):
     if not text or text.rstrip()[-1] in ".!?": return text
@@ -1436,6 +1545,8 @@ def _fast_jarvis_match(lower):
     open_match = re.match(r"^open (.+)$", lower)
     if open_match:
         target = open_match.group(1).strip()
+        if target in ("email", "inbox", "mail", "spark", "my email"):
+            return ("open_email_app", {"preferred": "Spark Desktop"})
         websites = {
             "youtube": "https://www.youtube.com", "google": "https://www.google.com", 
             "duckduckgo": "https://duckduckgo.com", "gmail": "https://mail.google.com", 
@@ -1453,7 +1564,7 @@ def _fast_jarvis_match(lower):
         return ("open_app", {"app": target.capitalize(), "url": ""})
 
     if any(p in lower for p in ("open email", "check email", "open spark", "check spark", "open my email", "check my email", "open inbox")):
-        return ("open_app", {"app": "Spark", "url": ""})
+        return ("open_email_app", {"preferred": "Spark Desktop"})
 
     app_keywords = {
         "notes": "Notes", "calendar": "Calendar", "messages": "Messages",
@@ -2173,13 +2284,15 @@ def _silence_stop_monitor():
 def _wake_word_loop():
     global recording
     try:
-        # ── Resolve the hey_jarvis ONNX model path ────────────────────────────
-        # In a packaged .app the openwakeword module loads but its internal
-        # helper openwakeword.get_pretrained_model_paths() may be missing
-        # (not re-exported in all bundle configs).  Model.__init__ calls that
-        # function unconditionally, so we must ensure it exists before
-        # constructing WakeModel.  We provide a minimal stub that returns the
-        # direct path discovered by _get_oww_model_path().
+        # ── Load hey_jarvis wake-word model ───────────────────────────────────
+        # Pass the model NAME "hey_jarvis" (not a file path) so openwakeword
+        # uses it as the prediction dict key.  Passing a full path makes the
+        # key the filename-without-extension ("hey_jarvis_v0.1"), which breaks
+        # the oww.predict(...).get("hey_jarvis", 0) check below.
+        #
+        # In a packaged .app, openwakeword.get_pretrained_model_paths() may be
+        # missing.  We patch a stub onto the module so Model.__init__ doesn't
+        # crash, then let it resolve the bundled .onnx via the stub.
         import openwakeword as _oww_mod
         if not hasattr(_oww_mod, "get_pretrained_model_paths"):
             _oww_path = _get_oww_model_path()
@@ -2187,13 +2300,6 @@ def _wake_word_loop():
                 return [_oww_path] if _oww_path else []
             _oww_mod.get_pretrained_model_paths = _oww_stub
             _safe_print("[wake] patched openwakeword.get_pretrained_model_paths (bundled app)")
-
-        model_path = _get_oww_model_path()
-        if not model_path:
-            _safe_print("[wake] hey_jarvis ONNX model not found — wake word disabled")
-            return
-
-        _safe_print(f"[wake] loading model: {model_path}")
 
         # Force ONNX Runtime to use a single thread with no internal thread pool.
         # Multiple inter-op threads cause onnxruntime to spawn C++ threads that
@@ -2206,12 +2312,12 @@ def _wake_word_loop():
             _sess_opts.intra_op_num_threads = 1
             _sess_opts.execution_mode = _ort.ExecutionMode.ORT_SEQUENTIAL
             from openwakeword.model import Model as WakeModel
-            oww = WakeModel(wakeword_models=[model_path], inference_framework="onnx",
+            oww = WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx",
                             openwakeword_models_kwargs={"sess_options": _sess_opts})
         except Exception:
             # SessionOptions kwarg not supported in all versions — fall back without it
             from openwakeword.model import Model as WakeModel
-            oww = WakeModel(wakeword_models=[model_path], inference_framework="onnx")
+            oww = WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
 
         _safe_print("[wake] ready — say 'Hey Jarvis' to start dictating")
     except Exception as e:
@@ -2764,39 +2870,66 @@ class MenuBarApp:
     def _set_icon(self, state):
         if not self._available:
             return
+        # The shipped icon set only has idle/recording/transcribing.  Treat
+        # any transient or unknown state as idle so the menu bar never stays
+        # stuck on a status-only state after dictation completes.
+        icon_state = state if state in ("idle", "recording", "transcribing") else "idle"
         icon_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(sys.argv[0])))
-        path = os.path.join(icon_dir, f"icon_{state}.png")
+        path = os.path.join(icon_dir, f"icon_{icon_state}.png")
+        button = self._item.button()
         if os.path.exists(path):
             img = self._NSImage.alloc().initWithContentsOfFile_(path)
             if img:
                 img.setSize_((18, 18))
                 img.setTemplate_(True)
-                self._item.button().setImage_(img)
-                self._item.button().setTitle_("")
+                # Keep a strong Python reference.  Without this, PyObjC/AppKit
+                # can occasionally leave the previous status image displayed.
+                self._current_icon = img
+                button.setImage_(None)
+                button.setTitle_("")
+                button.setImage_(img)
+                try:
+                    button.setNeedsDisplay_(True)
+                except Exception:
+                    pass
                 return
-        self._item.button().setImage_(None)
-        self._item.button().setTitle_({
+        self._current_icon = None
+        button.setImage_(None)
+        button.setTitle_({
             "idle": "🎙",
             "recording": "●",
             "transcribing": "…",
-        }.get(state, "🎙"))
+        }.get(icon_state, "🎙"))
+        try:
+            button.setNeedsDisplay_(True)
+        except Exception:
+            pass
+
+    def _apply_state_now(self, state):
+        if not self._available:
+            return
+        self._state = state
+        self._set_icon(state)
+        labels = {
+            "idle": "Ready",
+            "recording": "Recording...",
+            "transcribing": "Transcribing...",
+            "typing": "Typing...",
+        }
+        self._status_item.setTitle_(f"Status: {labels.get(state, state.capitalize())}")
+        self._refresh_menu_state()
 
     def set_state(self, state):
         if not self._available:
             return
-        self._state = state
-        def _update():
-            self._set_icon(state)
-            labels = {
-                "idle": "Ready",
-                "recording": "Recording...",
-                "transcribing": "Transcribing...",
-                "typing": "Typing...",
-            }
-            self._status_item.setTitle_(f"Status: {labels.get(state, state.capitalize())}")
-            self._refresh_menu_state()
         if app and getattr(app, "root", None):
-            app.root.after(0, _update)
+            app.root.after(0, lambda st=state: self._apply_state_now(st))
+        else:
+            self._apply_state_now(state)
+
+    def force_state(self, state):
+        """Apply a menu-bar state immediately from the Tk/AppKit thread."""
+        self._apply_state_now(state)
 
     def _update_hud_label(self):
         self._refresh_menu_state()
