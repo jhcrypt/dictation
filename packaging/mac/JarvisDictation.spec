@@ -2,8 +2,11 @@
 # JarvisDictation.spec — Intel Mac, Python 3.11, conda env "dictation"
 # Build: cd packaging/mac && pyinstaller --clean JarvisDictation.spec
 # Or use the provided build_mac_app.sh script.
+#
+# Output: packaging/mac/dist/Jarvis Dictation.app
+# Bundle ID: com.jhcrypt.jarvis-dictation
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 import os, sys, pathlib
 
 # packaging/mac/ directory
@@ -40,15 +43,17 @@ datas += collect_data_files('faster_whisper')
 datas += collect_data_files('ctranslate2')
 datas += collect_data_files('symspellpy')
 datas += collect_data_files('PIL')
+datas += collect_data_files('scipy')
+datas += collect_data_files('sklearn')
 datas += whisper_model_datas
 
 # App icon PNG — used by menu bar and HUD
 assets_dir = os.path.join(spec_dir, 'assets')
 datas += [
-    (os.path.join(assets_dir, 'dictate_icon.png'),     '.'),
-    (os.path.join(assets_dir, 'icon_idle.png'),        '.'),
-    (os.path.join(assets_dir, 'icon_recording.png'),   '.'),
-    (os.path.join(assets_dir, 'icon_transcribing.png'),'.'),
+    (os.path.join(assets_dir, 'dictate_icon.png'),      '.'),
+    (os.path.join(assets_dir, 'icon_idle.png'),         '.'),
+    (os.path.join(assets_dir, 'icon_recording.png'),    '.'),
+    (os.path.join(assets_dir, 'icon_transcribing.png'), '.'),
 ]
 
 # ── Dynamic libraries ─────────────────────────────────────────────────────────
@@ -56,6 +61,8 @@ binaries = []
 binaries += collect_dynamic_libs('ctranslate2')
 binaries += collect_dynamic_libs('onnxruntime')
 binaries += collect_dynamic_libs('PIL')
+binaries += collect_dynamic_libs('scipy')
+binaries += collect_dynamic_libs('sklearn')
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 src_dir = os.path.join(project_dir, 'src')
@@ -75,8 +82,8 @@ a = Analysis(
         'PIL.PngImagePlugin',
         'PIL.JpegImagePlugin',
         'PIL.TiffImagePlugin',
-        'openwakeword',
-        'openwakeword.model',
+        # openwakeword — all submodules (custom_verifier_model imports scipy at top level)
+        *collect_submodules('openwakeword'),
         'onnxruntime',
         'onnxruntime.capi',
         'faster_whisper',
@@ -109,12 +116,24 @@ a = Analysis(
         'platform',
         'Quartz',
         'Quartz.CoreGraphics',
+        # scipy — openwakeword.custom_verifier_model uses scipy.io.wavfile
+        *collect_submodules('scipy'),
+        'scipy.io',
+        'scipy.io.wavfile',
+        # sklearn — openwakeword.custom_verifier_model uses LogisticRegression, pipelines
+        'sklearn',
+        'sklearn.linear_model',
+        'sklearn.linear_model._logistic',
+        'sklearn.pipeline',
+        'sklearn.preprocessing',
+        'sklearn.preprocessing._data',
+        'sklearn.preprocessing._function_transformer',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'matplotlib', 'pandas', 'scipy', 'cv2',
+        'matplotlib', 'pandas', 'cv2',
         'IPython', 'notebook', 'pytest',
     ],
     noarchive=False,
@@ -153,17 +172,35 @@ coll = COLLECT(
 
 app = BUNDLE(
     coll,
-    name='JarvisDictation.app',
+    # Bundle display name uses a space so macOS Finder shows "Jarvis Dictation".
+    # The executable inside remains JarvisDictation (no space).
+    name='Jarvis Dictation.app',
     icon=None,
-    bundle_identifier='com.jhcrypt.dictation',
+    bundle_identifier='com.jhcrypt.jarvis-dictation',
     info_plist={
-        'NSMicrophoneUsageDescription': 'Jarvis Dictation needs the microphone to transcribe your voice.',
-        'NSAppleEventsUsageDescription': 'Jarvis Dictation needs Apple Events to type text into other apps.',
-        'LSUIElement': True,
-        'LSMinimumSystemVersion': '10.15',
-        'CFBundleName': 'Jarvis Dictation',
-        'CFBundleDisplayName': 'Jarvis Dictation',
+        # ── Identity ──────────────────────────────────────────────────────────
+        'CFBundleName':             'Jarvis Dictation',
+        'CFBundleDisplayName':      'Jarvis Dictation',
+        'CFBundleExecutable':       'JarvisDictation',
+        'CFBundleIdentifier':       'com.jhcrypt.jarvis-dictation',
         'CFBundleShortVersionString': '6.1.15',
-        'CFBundleVersion': '6.1.15',
+        'CFBundleVersion':          '6.1.15',
+        'CFBundlePackageType':      'APPL',
+        'LSMinimumSystemVersion':   '10.15',
+        # ── Menu-bar agent (no Dock icon) ─────────────────────────────────────
+        'LSUIElement': True,
+        # ── TCC privacy usage descriptions ────────────────────────────────────
+        # These strings appear in System Settings permission prompts.
+        'NSMicrophoneUsageDescription':
+            'Jarvis Dictation uses the microphone to transcribe your voice.',
+        'NSAppleEventsUsageDescription':
+            'Jarvis Dictation sends keystrokes to type transcribed text into other apps.',
+        'NSSpeechRecognitionUsageDescription':
+            'Jarvis Dictation transcribes speech locally using Whisper.',
+        'NSInputMonitoringUsageDescription':
+            'Jarvis Dictation monitors the keyboard to detect the recording hotkey.',
+        # ── Apple Events target allowlist ─────────────────────────────────────
+        'NSAppleEventsUsageDescription':
+            'Jarvis Dictation uses Apple Events to send keystrokes to other apps.',
     },
 )

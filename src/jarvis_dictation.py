@@ -1482,55 +1482,86 @@ _paste_lock = threading.Lock()   # prevents clipboard desync from overlapping pa
 def paste_text(text):
     """Paste dictated text reliably without leaving the clipboard changed.
 
-    Older versions restored the previous clipboard too quickly after Cmd+V,
-    which could cause the target app to paste the old clipboard instead of the
-    dictation. This version verifies the clipboard first, retries briefly, then
-    waits after Cmd+V before restoring the original clipboard.
+    Clipboard flow: save → write → verify → send Cmd+V → restore (always).
+
+    Cmd+V transport order:
+      1. pynput Controller (works in .app without Automation/System Events)
+      2. Quartz CGEventPost (fallback if pynput unavailable)
+      3. typer.type() character-by-character (last resort)
+
+    osascript / System Events is intentionally not used — it requires a separate
+    Automation TCC grant that the packaged .app does not have by default.
     """
     with _paste_lock:
         paste_payload = (text + " ").encode()
+        import subprocess as _sp
+        import time as _t
+
+        log_event("paste", f"preparing {len(text)} chars")
+        prev = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
+
         try:
-            import subprocess as _sp
-            import time as _t
-
-            log_event("paste", f"preparing {len(text)} chars")
-            prev = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
-
+            # ── 1. Write + verify clipboard ───────────────────────────────────
             verified = False
             for attempt in range(8):
                 _sp.run(["pbcopy"], input=paste_payload, timeout=2)
-                _t.sleep(0.08 + (attempt * 0.03))
-                current = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
-                if current == paste_payload:
+                _t.sleep(0.08 + attempt * 0.03)
+                if _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout == paste_payload:
                     verified = True
                     log_event("paste", "clipboard verified")
                     break
                 log_event("paste", f"retry {attempt + 1}")
 
             if not verified:
-                log_event("paste", "failed clipboard verification; falling back to typing")
-                try:
-                    _sp.run(["pbcopy"], input=prev, timeout=2)
-                except Exception:
-                    pass
+                log_event("paste", "clipboard verification failed — typing directly")
                 typer.type(text + " ")
                 return
 
-            _sp.run([
-                "osascript",
-                "-e",
-                'tell application "System Events" to keystroke "v" using command down'
-            ], timeout=3)
-            log_event("paste", "sent cmd+v")
+            # ── 2. Send Cmd+V ─────────────────────────────────────────────────
+            sent = False
+
+            # Primary: pynput Controller — no osascript/System Events needed.
+            try:
+                from pynput.keyboard import Controller as _KbdCtrl, Key as _Key
+                _kbd = _KbdCtrl()
+                with _kbd.pressed(_Key.cmd):
+                    _kbd.press('v')
+                    _kbd.release('v')
+                log_event("paste", "sent cmd+v")
+                sent = True
+            except Exception as _pe:
+                log_event("paste", f"pynput cmd+v failed ({_pe})")
+
+            # Fallback: Quartz CGEventPost.
+            if not sent:
+                try:
+                    import Quartz as _Q
+                    _V = 9  # keycode for 'v'
+                    _dn = _Q.CGEventCreateKeyboardEvent(None, _V, True)
+                    _up = _Q.CGEventCreateKeyboardEvent(None, _V, False)
+                    _Q.CGEventSetFlags(_dn, _Q.kCGEventFlagMaskCommand)
+                    _Q.CGEventSetFlags(_up, _Q.kCGEventFlagMaskCommand)
+                    _Q.CGEventPost(_Q.kCGHIDEventTap, _dn)
+                    _t.sleep(0.05)
+                    _Q.CGEventPost(_Q.kCGHIDEventTap, _up)
+                    log_event("paste", "sent cmd+v")
+                    sent = True
+                except Exception as _qe:
+                    log_event("paste", f"CGEventPost cmd+v failed ({_qe})")
+
+            if not sent:
+                log_event("paste", "cmd+v failed — typing directly")
+                typer.type(text + " ")
+                return
 
             # Give the target app time to consume the clipboard before restore.
             _t.sleep(0.35)
-            _sp.run(["pbcopy"], input=prev, timeout=2)
-            log_event("paste", "restored previous clipboard")
-        except Exception as e:
-            log_event("paste", f"failed: {e}")
+
+        finally:
+            # Always restore the previous clipboard.
             try:
-                typer.type(text + " ")
+                _sp.run(["pbcopy"], input=prev, timeout=2)
+                log_event("paste", "restored previous clipboard")
             except Exception:
                 pass
 
@@ -4603,6 +4634,11 @@ def _install_suppression_tap():
                     pass
             return event
 
+        # First attempt: active tap (kCGHIDEventTap + kCGEventTapOptionDefault).
+        # This can suppress Caps Lock and requires Accessibility permission.
+        # On macOS 15+ the TCC grant is tied to the binary hash; after a fresh
+        # PyInstaller build the hash changes and the grant may not match even if
+        # the user just re-added the app in System Settings.
         tap = Quartz.CGEventTapCreate(
             Quartz.kCGHIDEventTap,
             Quartz.kCGHeadInsertEventTap,
@@ -4611,6 +4647,23 @@ def _install_suppression_tap():
             _cb,
             None,
         )
+        tap_mode = "active"
+
+        if not tap:
+            # Fallback: listen-only tap (kCGAnnotatedSessionEventTap +
+            # kCGEventTapOptionListenOnly).  Only needs Input Monitoring, not
+            # Accessibility.  Cannot suppress Caps Lock, but detects all key and
+            # modifier events — sufficient for recording start/stop hotkeys.
+            tap = Quartz.CGEventTapCreate(
+                Quartz.kCGAnnotatedSessionEventTap,
+                Quartz.kCGHeadInsertEventTap,
+                Quartz.kCGEventTapOptionListenOnly,
+                KEY_MASK,
+                _cb,
+                None,
+            )
+            tap_mode = "listen-only"
+
         if tap:
             tap_holder[0] = tap
             src = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
@@ -4618,7 +4671,7 @@ def _install_suppression_tap():
                 Quartz.CFRunLoopGetCurrent(), src, Quartz.kCFRunLoopCommonModes
             )
             Quartz.CGEventTapEnable(tap, True)
-            log_event("input", "HID key-detection tap active")
+            log_event("input", f"HID key-detection tap active ({tap_mode})")
         else:
             log_event("input", "HID tap failed — keyboard shortcuts unavailable")
 
