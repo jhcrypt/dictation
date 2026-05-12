@@ -860,7 +860,7 @@ def execute_jarvis_command(action, params):
     _last_jarvis_time = time.time()
 
     print(f"[jarvis] executing: {action} {params}")
-    if app: app.show_message(f"Jarvis: {action.replace('_', ' ')}...", "#0a84ff")
+    if app: app.show_message(f"{_asst_name()}: {action.replace('_', ' ')}...", "#0a84ff")
 
     try:
         if action == "open_app":
@@ -1006,7 +1006,7 @@ def execute_jarvis_command(action, params):
 
     except Exception as e:
         print(f"[jarvis] error: {e}")
-        if app: app.show_message(f"Jarvis error: {str(e)[:30]}", "#ff3b30")
+        if app: app.show_message(f"{_asst_name()} error: {str(e)[:30]}", "#ff3b30")
 
 # ── Symspell ──────────────────────────────────────────────────────────────────
 try:
@@ -1091,7 +1091,8 @@ DEFAULT_SETTINGS = {
     "wake_dictation_grace_seconds": WAKE_DICTATION_GRACE_SECONDS,
     "wake_dictation_silence_seconds": WAKE_DICTATION_SILENCE_SECONDS,
     "wake_dictation_max_seconds": WAKE_DICTATION_MAX_SECONDS,
-    "wake_dictation_silence_rms": WAKE_DICTATION_SILENCE_RMS
+    "wake_dictation_silence_rms": WAKE_DICTATION_SILENCE_RMS,
+    "assistant_name": "Jarvis"
 }
 
 def load_settings():
@@ -1108,6 +1109,10 @@ def save_settings(s):
     with open(SETTINGS_FILE, "w") as f: json.dump(s, f, indent=2)
 
 settings = load_settings()
+
+def _asst_name() -> str:
+    return settings.get("assistant_name", "Jarvis") or "Jarvis"
+
 HOTKEY_OPTIONS = {
     "Right Option": Key.alt_r,
     "F13": Key.f13,
@@ -2428,7 +2433,7 @@ def _wake_word_loop():
             from openwakeword.model import Model as WakeModel
             oww = WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
 
-        _safe_print("[wake] ready — say 'Hey Jarvis' to start dictating")
+        _safe_print(f"[wake] ready — say 'Hey {_asst_name()}' to start dictating")
     except Exception as e:
         _safe_print(f"[wake] openwakeword failed ({e}), wake word disabled")
         return
@@ -2489,7 +2494,7 @@ def _wake_word_loop():
                     oww.prediction_buffer[key] = [0.0] * len(oww.prediction_buffer[key])
             except Exception:
                 pass
-            _safe_print("[wake] listening for 'Hey Jarvis'...")
+            _safe_print(f"[wake] listening for 'Hey {_asst_name()}'...")
             continue
 
         time.sleep(0.05)
@@ -3623,6 +3628,7 @@ class DictationApp:
         wake_grace_var = tk.StringVar(value=str(settings.get("wake_dictation_grace_seconds", WAKE_DICTATION_GRACE_SECONDS)))
         wake_silence_var = tk.StringVar(value=str(settings.get("wake_dictation_silence_seconds", WAKE_DICTATION_SILENCE_SECONDS)))
         wake_max_var = tk.StringVar(value=str(settings.get("wake_dictation_max_seconds", WAKE_DICTATION_MAX_SECONDS)))
+        assistant_name_var = tk.StringVar(value=settings.get("assistant_name", "Jarvis"))
 
         # ── Sidebar nav ───────────────────────────────────────────────────────
         sidebar = tk.Frame(_win, bg=SIDEBAR, width=172)
@@ -4045,6 +4051,19 @@ class DictationApp:
         # ── Page: Jarvis ─────────────────────────────────────────────────────
         p = page("Jarvis")
         ph(p, "Jarvis")
+
+        lbl(p, "ASSISTANT NAME")
+        name_frame = tk.Frame(p, bg=BG)
+        name_frame.pack(fill="x", padx=24, pady=(2, 0))
+        name_entry = tk.Entry(name_frame, textvariable=assistant_name_var, width=20,
+                              bg=CARD, fg=FG, insertbackground=FG,
+                              relief="flat", highlightthickness=1, highlightbackground=SEP)
+        name_entry.pack(anchor="w", ipady=5)
+        helper_text(p, "Give your assistant a name — this is what appears in the HUD and status messages.\n"
+                       "Choose a name that is easy to pronounce and sounds the way it is spelled.\n"
+                       "Examples: Aria, Nova, Kai, Pria, Max.\n"
+                       "Note: the wake word is still activated by saying “Hey Jarvis” acoustically.")
+
         toggle_row(p, wake_var,   "Wake word",       "Say 'Hey Jarvis' to start recording")
         toggle_row(p, jarvis_var, "Jarvis commands", "Voice commands for apps, search, reminders, media, and screenshots")
         section_note(p, "Wake dictation length",
@@ -4276,7 +4295,7 @@ class DictationApp:
         info_card(p, "Professional app checklist",
                   "Use the Setup page for first-run configuration, keep the recommended defaults for reliability, and copy the setup summary when debugging or sharing support details.")
         info_card(p, "Start dictating",
-                  "Press Right Option once to start, then press it again to stop. Say 'Hey Jarvis' to start by voice; Jarvis will now wait for a natural pause instead of assuming a short command.")
+                  f"Press Right Option once to start, then press it again to stop. Say 'Hey {_asst_name()}' to start by voice; {_asst_name()} will now wait for a natural pause instead of assuming a short command.")
         info_card(p, "What each status means",
                   "Gray means ready. Red means recording. Blue means transcribing or processing. Green means the text was inserted or a command completed.")
         info_card(p, "Best results",
@@ -4351,6 +4370,7 @@ class DictationApp:
                 "wake_dictation_silence_seconds": max(1.0, min(12.0, _safe_float(wake_silence_var.get(), WAKE_DICTATION_SILENCE_SECONDS))),
                 "wake_dictation_max_seconds": max(10.0, min(120.0, _safe_float(wake_max_var.get(), WAKE_DICTATION_MAX_SECONDS))),
                 "wake_dictation_silence_rms": WAKE_DICTATION_SILENCE_RMS,
+                "assistant_name": assistant_name_var.get().strip() or "Jarvis",
             })
 
             # Sync the global flags
@@ -4725,7 +4745,7 @@ def _drain_input_events():
                 globals()["JARVIS_ENABLED"] = settings["jarvis_enabled"]
                 save_settings(settings)
                 if menubar: menubar._refresh_menu_state()
-                app.show_message("Jarvis commands " + ("On" if settings["jarvis_enabled"] else "Off"), "#0a84ff")
+                app.show_message(f"{_asst_name()} commands " + ("On" if settings["jarvis_enabled"] else "Off"), "#0a84ff")
             elif action == "menu_toggle_launch_at_login":
                 new_val = not _launch_at_login_enabled()
                 ok = _set_launch_at_login(new_val)
