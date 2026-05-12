@@ -2416,6 +2416,20 @@ def _silence_stop_monitor():
             silence_since = None
 
 def _wake_word_loop():
+    """Wake word listener — restarts automatically if onnxruntime crashes."""
+    global recording
+    _restart_delay = 5.0   # seconds to wait before restarting after a crash
+    while True:
+        try:
+            _wake_word_loop_inner()
+        except Exception as e:
+            _safe_print(f"[wake] crashed ({type(e).__name__}: {e}) — restarting in {_restart_delay:.0f}s")
+            time.sleep(_restart_delay)
+        else:
+            # _wake_word_loop_inner returned normally (wake disabled / not available)
+            return
+
+def _wake_word_loop_inner():
     global recording
     try:
         # ── Load hey_jarvis wake-word model ───────────────────────────────────
@@ -3230,10 +3244,14 @@ class DictationApp:
     def _animate_wave(self):
         import math
         if not hasattr(self, '_wave_items') or not self._wave_items: return
-        scale = min(1.0, get_current_rms() * 20 + 0.22)
-        self._wave_phase += 0.10
+        rms   = get_current_rms()
+        # Near-zero base so silence is clearly flat; high multiplier so
+        # speech swells the waves dramatically, matching the old bar behaviour.
+        scale = min(1.0, rms * 35 + 0.06)
+        # Phase advances faster when louder — waves feel more energetic with speech
+        self._wave_phase += 0.08 + scale * 0.14
         cy   = self.H // 2
-        mamp = (cy - 6) * scale
+        mamp = (cy - 7) * scale
         for item, (amp_f, freq, poff, color, lw) in zip(self._wave_items, self._SIRI_WAVES):
             pts = []
             for j in range(49):
