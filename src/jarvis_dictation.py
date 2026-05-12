@@ -4175,7 +4175,7 @@ class DictationApp:
             if not target:
                 err_lbl.configure(text="Target is required.")
                 return
-            if action == "open_url" and not target.startswith(("http://", "https://")):
+            if action == "open_url" and not target.startswith(("http://", "https://", "spotify:", "music:", "mailto:")):
                 target = "https://" + target
 
             cmds = load_custom_commands()
