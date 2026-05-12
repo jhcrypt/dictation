@@ -3245,18 +3245,23 @@ class DictationApp:
     def _animate_wave(self):
         import math
         if not hasattr(self, '_wave_items') or not self._wave_items: return
-        # Exponential moving average — smooths RMS so amplitude glides
-        # instead of snapping. 0.88/0.12 gives ~8 frames to reach target.
-        target = min(1.0, get_current_rms() * 35 + 0.06)
-        self._wave_scale = self._wave_scale * 0.88 + target * 0.12
-        self._wave_phase += 0.09   # constant speed — no jitter from volume changes
+        # Slow EMA — amplitude glides over ~14 frames for fluid response
+        target = min(1.0, get_current_rms() * 35 + 0.08)
+        self._wave_scale = self._wave_scale * 0.93 + target * 0.07
+        self._wave_phase += 0.065
         cy   = self.H // 2
-        mamp = (cy - 7) * self._wave_scale
+        # Gentle idle breathing so waves always move even in silence
+        breathe = 0.06 * math.sin(self._wave_phase * 0.4)
+        mamp = (cy - 7) * (self._wave_scale + breathe)
         for item, (amp_f, freq, poff, color, lw) in zip(self._wave_items, self._SIRI_WAVES):
             pts = []
-            for j in range(49):
-                x = 8 + (64 * j / 48)
-                y = cy + math.sin(self._wave_phase * freq + poff + j * 0.28) * mamp * amp_f
+            for j in range(81):
+                x = 8 + (64 * j / 80)
+                # Two harmonics — primary + subtle second at 1.7x frequency
+                # makes shape organic rather than mechanically perfect
+                primary   = math.sin(self._wave_phase * freq + poff + j * 0.20)
+                secondary = math.sin(self._wave_phase * freq * 1.7 + poff + j * 0.11) * 0.22
+                y = cy + (primary + secondary) * mamp * amp_f
                 pts.extend([x, y])
             self.canvas.coords(item, pts)
         if recording:
