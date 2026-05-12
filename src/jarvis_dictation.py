@@ -3759,9 +3759,11 @@ class DictationApp:
                 ))
 
         # ── Shared helpers ────────────────────────────────────────────────────
-        def page(name):
+        def page(name, scrollable=False):
             outer = tk.Frame(content_host, bg=BG)
             pages[name] = outer
+            if not scrollable:
+                return outer
             canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0)
             inner = tk.Frame(canvas, bg=BG)
             inner.bind("<Configure>",
@@ -4307,7 +4309,7 @@ class DictationApp:
         save_btn_row(p, lambda: _save())
 
         # ── Page: Help ───────────────────────────────────────────────────────
-        p = page("Help")
+        p = page("Help", scrollable=True)
         ph(p, "Help & Quick Start")
         info_card(p, "Professional app checklist",
                   "Use the Setup page for first-run configuration, keep the recommended defaults for reliability, and copy the setup summary when debugging or sharing support details.")
@@ -4345,7 +4347,6 @@ class DictationApp:
             copy_to_clipboard(summary, "Support summary copied")
 
         small_button(p, "Copy setup summary", copy_support_summary)
-        save_btn_row(p, lambda: _save())
 
         # ── Save logic ────────────────────────────────────────────────────────
         def _save():
