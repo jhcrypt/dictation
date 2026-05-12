@@ -971,6 +971,24 @@ def execute_jarvis_command(action, params):
             subprocess.run(["osascript", "-e", f'tell application "{safe_name}" to quit'])
             if app: app.show_message(f"Closing {app_name}", "#30d158")
 
+        elif action == "custom_command":
+            cmd_action = params.get("action", "")
+            target     = params.get("target", "").strip()
+            trigger    = params.get("trigger", "command")
+            if cmd_action == "open_url":
+                if target:
+                    subprocess.Popen(["open", target])
+                    if app: app.show_message(f"Opening {target[:35]}", "#30d158")
+            elif cmd_action == "open_app":
+                if target:
+                    result = subprocess.run(["open", "-a", target], capture_output=True)
+                    if result.returncode != 0:
+                        subprocess.Popen(["open", "-a", target.lower()])
+                    if app: app.show_message(f"Opening {target}", "#30d158")
+            elif cmd_action == "type_text":
+                if target:
+                    paste_text(target)
+
         elif action == "play_media":
             query = params.get("query", "")
             service = params.get("service", "youtube").lower()
@@ -1215,7 +1233,26 @@ def _quit_clean():
     import sys as _sys
     _sys.exit(0)
 
-SNIPPETS_FILE = os.path.expanduser("~/.dictation_snippets.json")
+SNIPPETS_FILE         = os.path.expanduser("~/.dictation_snippets.json")
+CUSTOM_COMMANDS_FILE  = os.path.expanduser("~/.dictation_custom_commands.json")
+
+def load_custom_commands() -> list:
+    try:
+        if os.path.exists(CUSTOM_COMMANDS_FILE):
+            with open(CUSTOM_COMMANDS_FILE) as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+    except Exception:
+        pass
+    return []
+
+def save_custom_commands(commands: list):
+    try:
+        with open(CUSTOM_COMMANDS_FILE, "w") as f:
+            json.dump(commands, f, indent=2)
+    except Exception as e:
+        print(f"[custom_commands] save error: {e}")
 
 def load_snippets() -> dict:
     """Load snippets from disk and cache in memory."""
@@ -1600,6 +1637,14 @@ def smart_punctuate(text):
 
 def _fast_jarvis_match(lower):
     import re
+    # ── Custom user commands — checked before all built-ins ───────────────
+    for _cmd in load_custom_commands():
+        _trigger = _cmd.get("trigger", "").lower().strip()
+        if not _trigger or len(_trigger.split()) < 2:
+            continue
+        if lower == _trigger:
+            return ("custom_command", _cmd)
+    # ── Built-in commands ─────────────────────────────────────────────────
     open_match = re.match(r"^open (.+)$", lower)
     if open_match:
         target = open_match.group(1).strip()
@@ -3614,6 +3659,7 @@ class DictationApp:
             "AI Cleanup",
             "Writing Profiles",
             "Jarvis",
+            "Custom Commands",
             "Vocabulary",
             "Cloud",
             "Help",
@@ -3998,6 +4044,166 @@ class DictationApp:
                      "The wake word is paused while Settings is open, then restored when the window closes.")
         save_btn_row(p, lambda: _save())
         
+        # ── Page: Custom Commands ────────────────────────────────────────────
+        p = page("Custom Commands")
+        ph(p, "Custom Commands")
+        tk.Label(p, text="Say your trigger phrase after 'Jarvis' to run the command.\nTrigger must be at least two words. Custom commands run before built-ins.",
+                 bg=BG, fg=DIM, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
+
+        # ── Command list ──────────────────────────────────────────────────
+        list_outer = tk.Frame(p, bg=BG)
+        list_outer.pack(fill="x", padx=24)
+
+        ACTION_LABELS = {"open_url": "URL", "open_app": "APP", "type_text": "TYPE"}
+        ACTION_COLORS = {"open_url": "#0a84ff", "open_app": "#30d158", "type_text": "#ff9f0a"}
+
+        def _refresh_list():
+            for w in list_outer.winfo_children():
+                w.destroy()
+            cmds = load_custom_commands()
+            if not cmds:
+                tk.Label(list_outer, text="No custom commands yet. Add one below.",
+                         bg=BG, fg=DIM, font=(FONT, 10)).pack(anchor="w", pady=(0, 8))
+                return
+            for i, cmd in enumerate(cmds):
+                row = tk.Frame(list_outer, bg=CARD, highlightthickness=1,
+                               highlightbackground=SEP)
+                row.pack(fill="x", pady=(0, 4))
+
+                # Action badge
+                act = cmd.get("action", "open_url")
+                badge_bg = ACTION_COLORS.get(act, ACC)
+                badge_lbl = ACTION_LABELS.get(act, "?")
+                tk.Label(row, text=badge_lbl, bg=badge_bg, fg="#ffffff",
+                         font=(FONT, 9, "bold"), width=5).pack(side="left", ipady=8)
+
+                # Trigger + target
+                info = tk.Frame(row, bg=CARD)
+                info.pack(side="left", fill="x", expand=True, padx=10, pady=6)
+                tk.Label(info, text=f'"{cmd.get("trigger","")}"',
+                         bg=CARD, fg=FG, font=(FONT, 11, "bold"),
+                         anchor="w").pack(anchor="w")
+                tk.Label(info, text=cmd.get("target", ""),
+                         bg=CARD, fg=DIM, font=(FONT, 10),
+                         anchor="w").pack(anchor="w")
+
+                # Delete button
+                def _delete(idx=i):
+                    c = load_custom_commands()
+                    c.pop(idx)
+                    save_custom_commands(c)
+                    _refresh_list()
+                del_btn = tk.Label(row, text="✕", bg=CARD, fg=DIM,
+                                   font=(FONT, 12), cursor="hand2", padx=12)
+                del_btn.pack(side="right")
+                del_btn.bind("<Button-1>", lambda e, d=_delete: d())
+                del_btn.bind("<Enter>", lambda e, b=del_btn: b.configure(fg="#ff3b30"))
+                del_btn.bind("<Leave>", lambda e, b=del_btn: b.configure(fg=DIM))
+
+        _refresh_list()
+
+        # ── Add form ──────────────────────────────────────────────────────
+        tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(14, 12))
+        lbl(p, "ADD COMMAND")
+
+        add_frame = tk.Frame(p, bg=BG)
+        add_frame.pack(fill="x", padx=24, pady=(4, 0))
+
+        # Trigger entry
+        tk.Label(add_frame, text="Trigger phrase", bg=BG, fg=DIM,
+                 font=(FONT, 9)).grid(row=0, column=0, sticky="w", pady=(0, 2))
+        trig_f = tk.Frame(add_frame, bg=CARD, highlightthickness=1, highlightbackground=SEP)
+        trig_f.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        trig_entry = tk.Entry(trig_f, bg=CARD, fg=FG, font=(FONT, 12),
+                              insertbackground=FG, relief="flat", bd=0)
+        trig_entry.pack(fill="x", ipady=7, padx=8)
+        trig_entry.insert(0, "e.g. open my website")
+        trig_entry.configure(fg=DIM)
+        def _trig_focus_in(e):
+            if trig_entry.get() == "e.g. open my website":
+                trig_entry.delete(0, "end"); trig_entry.configure(fg=FG)
+        def _trig_focus_out(e):
+            if not trig_entry.get().strip():
+                trig_entry.insert(0, "e.g. open my website"); trig_entry.configure(fg=DIM)
+        trig_entry.bind("<FocusIn>", _trig_focus_in)
+        trig_entry.bind("<FocusOut>", _trig_focus_out)
+        _bind_copy_paste(trig_entry)
+
+        # Action dropdown
+        tk.Label(add_frame, text="Action", bg=BG, fg=DIM,
+                 font=(FONT, 9)).grid(row=0, column=1, sticky="w", pady=(0, 2))
+        action_var = tk.StringVar(value="Open URL")
+        action_map = {"Open URL": "open_url", "Open App": "open_app", "Type Text": "type_text"}
+        act_menu = tk.OptionMenu(add_frame, action_var, *action_map.keys())
+        act_menu.configure(bg=CARD, fg=FG, activebackground=ACC, activeforeground="#fff",
+                           font=(FONT, 12), relief="flat", bd=0,
+                           highlightthickness=1, highlightbackground=SEP,
+                           indicatoron=True, padx=10)
+        act_menu["menu"].configure(bg=CARD, fg=FG, activebackground=ACC,
+                                   activeforeground="#fff", font=(FONT, 12), bd=0)
+        act_menu.grid(row=1, column=1, sticky="ew", padx=(0, 8), ipady=4)
+
+        # Target entry
+        tk.Label(add_frame, text="Target  (URL / app name / text to type)", bg=BG, fg=DIM,
+                 font=(FONT, 9)).grid(row=0, column=2, sticky="w", pady=(0, 2))
+        tgt_f = tk.Frame(add_frame, bg=CARD, highlightthickness=1, highlightbackground=SEP)
+        tgt_f.grid(row=1, column=2, sticky="ew")
+        tgt_entry = tk.Entry(tgt_f, bg=CARD, fg=FG, font=(FONT, 12),
+                             insertbackground=FG, relief="flat", bd=0)
+        tgt_entry.pack(fill="x", ipady=7, padx=8)
+        _bind_copy_paste(tgt_entry)
+
+        add_frame.columnconfigure(0, weight=3)
+        add_frame.columnconfigure(1, weight=2)
+        add_frame.columnconfigure(2, weight=4)
+
+        # Error label + Add button
+        err_lbl = tk.Label(p, text="", bg=BG, fg="#ff3b30", font=(FONT, 10))
+        err_lbl.pack(anchor="w", padx=24, pady=(6, 0))
+
+        def _add_command():
+            trigger = trig_entry.get().strip().lower()
+            action  = action_map.get(action_var.get(), "open_url")
+            target  = tgt_entry.get().strip()
+
+            if not trigger or trigger == "e.g. open my website":
+                err_lbl.configure(text="Trigger phrase is required.")
+                return
+            if len(trigger.split()) < 2:
+                err_lbl.configure(text="Trigger must be at least two words.")
+                return
+            if not target:
+                err_lbl.configure(text="Target is required.")
+                return
+            if action == "open_url" and not target.startswith(("http://", "https://")):
+                target = "https://" + target
+
+            cmds = load_custom_commands()
+            # Prevent duplicate triggers
+            if any(c.get("trigger", "").lower() == trigger for c in cmds):
+                err_lbl.configure(text="A command with that trigger already exists.")
+                return
+
+            cmds.append({"trigger": trigger, "action": action, "target": target})
+            save_custom_commands(cmds)
+            err_lbl.configure(text="")
+            trig_entry.delete(0, "end")
+            trig_entry.insert(0, "e.g. open my website")
+            trig_entry.configure(fg=DIM)
+            tgt_entry.delete(0, "end")
+            action_var.set("Open URL")
+            _refresh_list()
+
+        add_btn = tk.Frame(p, bg=ACC, cursor="hand2")
+        add_btn.pack(anchor="w", padx=24, pady=(8, 0))
+        add_lbl = tk.Label(add_btn, text="  Add Command  ", bg=ACC, fg="#fff",
+                           font=(FONT, 11, "bold"), cursor="hand2")
+        add_lbl.pack(ipady=7)
+        for w in (add_btn, add_lbl):
+            w.bind("<Button-1>", lambda e: _add_command())
+            w.bind("<Enter>", lambda e: add_btn.configure(bg="#1a94ff") or add_lbl.configure(bg="#1a94ff"))
+            w.bind("<Leave>", lambda e: add_btn.configure(bg=ACC) or add_lbl.configure(bg=ACC))
+
         # ── Page: Vocabulary ─────────────────────────────────────────────────
         p = page("Vocabulary")
         ph(p, "Custom Vocabulary")
