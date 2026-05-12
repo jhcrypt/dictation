@@ -3764,9 +3764,29 @@ class DictationApp:
 
         # ── Shared helpers ────────────────────────────────────────────────────
         def page(name):
-            f = tk.Frame(content_host, bg=BG)
-            pages[name] = f
-            return f
+            outer = tk.Frame(content_host, bg=BG)
+            pages[name] = outer
+            canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0)
+            scrollbar = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+            inner = tk.Frame(canvas, bg=BG)
+            inner.bind("<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+            canvas.create_window((0, 0), window=inner, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.set)
+            canvas.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+            def _on_mousewheel(e):
+                canvas.yview_scroll(int(-1 * e.delta), "units")
+            def _bind_scroll_recursive(w):
+                w.bind("<MouseWheel>", _on_mousewheel)
+                for child in w.winfo_children():
+                    _bind_scroll_recursive(child)
+            inner.bind("<Configure>", lambda e: (
+                canvas.configure(scrollregion=canvas.bbox("all")),
+                _bind_scroll_recursive(inner)
+            ))
+            canvas.bind("<MouseWheel>", _on_mousewheel)
+            return inner
 
         def ph(parent, text):
             """Page heading."""
@@ -4318,7 +4338,7 @@ class DictationApp:
         info_card(p, "Professional app checklist",
                   "Use the Setup page for first-run configuration, keep the recommended defaults for reliability, and copy the setup summary when debugging or sharing support details.")
         info_card(p, "Start dictating",
-                  f"Press Right Option once to start, then press it again to stop. Say 'Hey {_asst_name()}' to start by voice; {_asst_name()} will now wait for a natural pause instead of assuming a short command.")
+                  f"Press Right Option once to start, then press it again to stop. Say 'Hey Jarvis' to start by voice; {_asst_name()} will then wait for a natural pause instead of assuming a short command.")
         info_card(p, "What each status means",
                   "Gray means ready. Red means recording. Blue means transcribing or processing. Green means the text was inserted or a command completed.")
         info_card(p, "Best results",
