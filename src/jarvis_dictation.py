@@ -3219,51 +3219,42 @@ class DictationApp:
             self._msg_timer = self.root.after(5000, lambda: self._apply_state("idle"))
         self.root.after(0, _show)
 
-    # Siri-style wave layers: (amplitude_factor, freq_mult, phase_offset, color, linewidth)
-    _SIRI_WAVES = [
-        (0.82, 1.00, 0.00, "#ffffff", 2),
-        (0.62, 1.30, 1.10, "#0a84ff", 2),
-        (0.52, 0.75, 2.20, "#bf5af2", 2),
-        (0.42, 1.55, 3.30, "#5ac8fa", 1),
-        (0.34, 0.90, 4.40, "#30d158", 1),
-    ]
+    _NUM_BARS = 22
+    _BAR_W    = 2
+    _BAR_STEP = 3   # 2px bar + 1px gap — 22 bars x 3px = 66px starting at x=8
 
     def start_wave(self):
-        import math
         self.canvas.itemconfig(self.dot, state="hidden")
-        self._wave_items = []
-        for _, _, _, color, lw in self._SIRI_WAVES:
-            item = self.canvas.create_line(0, 0, 0, 0, fill=color, width=lw, smooth=True)
-            self._wave_items.append(item)
+        self._bars = []
+        cx = self.H // 2
+        for i in range(self._NUM_BARS):
+            x1 = 8 + i * self._BAR_STEP
+            x2 = x1 + self._BAR_W
+            self._bars.append(self.canvas.create_rectangle(
+                x1, cx - 1, x2, cx + 1, fill=self.RED, outline=""))
         self._wave_phase = 0.0
-        self._wave_scale = 0.06   # smoothed amplitude — starts near flat
         if recording:
-            self._wave_job = self.root.after(16, self._animate_wave)
+            self._wave_job = self.root.after(30, self._animate_wave)
         else:
             self.root.after(0, self.stop_wave)
 
     def _animate_wave(self):
+        if not hasattr(self, '_bars') or not self._bars: return
         import math
-        if not hasattr(self, '_wave_items') or not self._wave_items: return
-        # Slow EMA — amplitude glides over ~14 frames for fluid response
-        target = min(1.0, get_current_rms() * 35 + 0.08)
-        self._wave_scale = self._wave_scale * 0.93 + target * 0.07
-        self._wave_phase += 0.065
-        cy   = self.H // 2
-        # Gentle idle breathing so waves always move even in silence
-        breathe = 0.06 * math.sin(self._wave_phase * 0.4)
-        mamp = (cy - 7) * (self._wave_scale + breathe)
-        for item, (amp_f, freq, poff, color, lw) in zip(self._wave_items, self._SIRI_WAVES):
-            pts = []
-            for j in range(81):
-                x = 8 + (64 * j / 80)
-                # Two harmonics — primary + subtle second at 1.7x frequency
-                # makes shape organic rather than mechanically perfect
-                primary   = math.sin(self._wave_phase * freq + poff + j * 0.20)
-                secondary = math.sin(self._wave_phase * freq * 1.7 + poff + j * 0.11) * 0.22
-                y = cy + (primary + secondary) * mamp * amp_f
-                pts.extend([x, y])
-            self.canvas.coords(item, pts)
+        scale = min(1.0, get_current_rms() * 18 + 0.15)
+        self._wave_phase += 0.18
+        cx  = self.H // 2
+        mid = self._NUM_BARS / 2
+        for i, bar in enumerate(self._bars):
+            dist   = abs(i - mid) / mid
+            height = max(2, int((cx - 6) * scale *
+                         (math.sin(self._wave_phase + i * 0.45) * 0.5 + 0.5) *
+                         (1 - dist * 0.5)))
+            brightness = int(255 * (1 - dist * 0.65))
+            x1, _, x2, _ = self.canvas.coords(bar)
+            self.canvas.coords(bar, x1, cx - height, x2, cx + height)
+            self.canvas.itemconfig(bar,
+                fill=f"#{brightness:02x}{int(brightness*0.18):02x}{int(brightness*0.12):02x}")
         if recording:
             self._wave_job = self.root.after(30, self._animate_wave)
         else:
@@ -3273,11 +3264,11 @@ class DictationApp:
         job = getattr(self, '_wave_job', None)
         self._wave_job = None
         if job: self.root.after_cancel(job)
-        if hasattr(self, '_wave_items'):
-            for item in self._wave_items:
-                try: self.canvas.delete(item)
+        if hasattr(self, '_bars'):
+            for bar in self._bars:
+                try: self.canvas.delete(bar)
                 except Exception: pass
-            self._wave_items = []
+            self._bars = []
         try: self.canvas.itemconfig(self.dot, state="normal")
         except Exception: pass
 
