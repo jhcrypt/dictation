@@ -1764,6 +1764,28 @@ def _fast_jarvis_match(lower):
     if kill_match: return ("kill_app", {"app": kill_match.group(1).strip()})
     return None
 
+def _deduplicate_whisper(text: str) -> str:
+    """Collapse Whisper hallucination loops (e.g. 'Testing. Testing. Testing...').
+
+    Whisper sometimes gets stuck generating the same word or phrase hundreds of
+    times on short or noisy audio. This detects a repeating window of 1-6 words
+    at the start of the output and returns only the first occurrence.
+    """
+    words = text.split()
+    if len(words) < 8:
+        return text
+    for window in range(1, 7):
+        chunk = words[:window]
+        i, repeats = window, 1
+        while i + window <= len(words) and words[i:i + window] == chunk:
+            repeats += 1
+            i += window
+        if repeats >= 3:
+            log_event("whisper", f"hallucination detected — collapsed {len(words)} words to {window}")
+            return " ".join(chunk)
+    return text
+
+
 def transcribe_and_type(wav_path, raw_frames):
     global last_text, cancelled, snippet_state, snippet_trigger
     if cancelled:
@@ -1800,10 +1822,10 @@ def transcribe_and_type(wav_path, raw_frames):
     if settings.get("cloud_mode") and not settings.get("safe_mode", False) and get_openai_key():
         raw_text = transcribe_cloud(wav_path)
         if not raw_text:
-            segments, _ = whisper.transcribe(wav_path, beam_size=_BEAM, language=language_to_use, condition_on_previous_text=False, initial_prompt=personal_prompt, vad_filter=True, no_speech_threshold=0.6)
+            segments, _ = whisper.transcribe(wav_path, beam_size=_BEAM, language=language_to_use, condition_on_previous_text=False, initial_prompt=personal_prompt, vad_filter=True, no_speech_threshold=0.6, compression_ratio_threshold=2.4)
             raw_text = " ".join(seg.text for seg in segments).strip()
     else:
-        segments, _ = whisper.transcribe(wav_path, beam_size=_BEAM, language=language_to_use, condition_on_previous_text=False, initial_prompt=personal_prompt, vad_filter=True, no_speech_threshold=0.6)
+        segments, _ = whisper.transcribe(wav_path, beam_size=_BEAM, language=language_to_use, condition_on_previous_text=False, initial_prompt=personal_prompt, vad_filter=True, no_speech_threshold=0.6, compression_ratio_threshold=2.4)
         raw_text = " ".join(seg.text for seg in segments).strip()
 
     # Ollama refinement — protected by short-phrase bypass and a safety filter.
@@ -1812,6 +1834,7 @@ def transcribe_and_type(wav_path, raw_frames):
         words = t.lower().split()
         return len(words) >= 4 and len(set(words)) / len(words) < 0.4
 
+    raw_text = _deduplicate_whisper(raw_text)
     whisper_text = raw_text
     ollama_text = ""
     ollama_status = "not used"
