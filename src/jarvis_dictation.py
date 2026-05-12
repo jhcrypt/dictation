@@ -3317,6 +3317,21 @@ class DictationApp:
         list_inner.bind("<Configure>", lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")))
         list_canvas.pack(fill="both", expand=True)
 
+        # How-it-works note in sidebar
+        tk.Frame(sidebar, bg=SEP, height=1).pack(fill="x")
+        note_frame = tk.Frame(sidebar, bg=SIDEBAR)
+        note_frame.pack(fill="x", padx=14, pady=10)
+        tk.Label(note_frame, text="How snippets work", bg=SIDEBAR, fg=FG,
+                 font=(FONT, 10, "bold"), justify="left").pack(anchor="w")
+        tk.Label(note_frame,
+                 text="Say a trigger phrase while\ndictating and Jarvis replaces\nit with the full expansion.",
+                 bg=SIDEBAR, fg=DIM, font=(FONT, 9), justify="left").pack(anchor="w", pady=(3, 0))
+        tk.Frame(sidebar, bg=SEP, height=1).pack(fill="x")
+        tk.Label(sidebar,
+                 text="Example:\n\"sign email\" →\n\"Best regards, John\"",
+                 bg=SIDEBAR, fg=DIM, font=(FONT, 9), justify="left").pack(anchor="w", padx=14, pady=8)
+        tk.Frame(sidebar, bg=SEP, height=1).pack(fill="x")
+
         # Add new button at bottom of sidebar — no separator, matches settings style
         new_btn = tk.Label(sidebar, text="+ New snippet", bg=SIDEBAR, fg=ACC,
                            font=(FONT, 12), cursor="hand2", pady=10)
@@ -3348,8 +3363,8 @@ class DictationApp:
         body = tk.Frame(detail, bg=BG)
         body.pack(fill="both", expand=True, padx=20, pady=16)
 
-        tk.Label(body, text="TRIGGER PHRASE", bg=BG, fg=DIM,
-                 font=(FONT, 9, "bold")).pack(anchor="w")
+        tk.Label(body, text="TRIGGER PHRASE  —  what you say to activate this snippet",
+                 bg=BG, fg=DIM, font=(FONT, 9, "bold")).pack(anchor="w")
         trigger_var = tk.StringVar()
 
         # Simple dark card frames — fully interactive, no canvas layering
@@ -3363,16 +3378,18 @@ class DictationApp:
         trigger_entry.pack(fill="x", ipady=9, padx=10)
         _bind_copy_paste(trigger_entry)
 
-        tk.Label(body, text="EXPANSION", bg=BG, fg=DIM,
-                 font=(FONT, 9, "bold")).pack(anchor="w")
+        tk.Label(body, text="EXPANSION  —  the full text that gets typed when triggered",
+                 bg=BG, fg=DIM, font=(FONT, 9, "bold")).pack(anchor="w")
         content_f = tk.Frame(body, bg=CARD, highlightthickness=1,
                              highlightbackground=SEP, highlightcolor=ACC)
-        content_f.pack(fill="both", expand=True, pady=(4, 0))
+        content_f.pack(fill="both", expand=True, pady=(4, 8))
         content_text = tk.Text(content_f, bg=CARD, fg=FG, font=(FONT, 13),
                                relief="flat", insertbackground=FG, wrap="word",
                                padx=10, pady=10, bd=0, highlightthickness=0)
         content_text.pack(fill="both", expand=True)
         _bind_copy_paste(content_text)
+        tk.Label(body, text="Tip: snippets match inside dictated sentences — you don't need to say them in isolation.",
+                 bg=BG, fg=DIM, font=(FONT, 9), justify="left", wraplength=420).pack(anchor="w")
 
         def _btn(parent, text, cmd, accent=False, danger=False):
             """Rounded pill button drawn on a Canvas."""
@@ -3554,7 +3571,7 @@ class DictationApp:
         # Center on screen
         # Slightly taller to prevent bottom action buttons from being clipped
         # by the macOS/Tk title-bar/client-area calculation on some displays.
-        W, H = 700, 620
+        W, H = 700, 680
         sw, sh = _win.winfo_screenwidth(), _win.winfo_screenheight()
         _win.geometry(f"{W}x{H}+{sw//2 - W//2}+{sh//2 - H//2}")
         _win.update_idletasks()
@@ -4047,7 +4064,7 @@ class DictationApp:
         # ── Page: Custom Commands ────────────────────────────────────────────
         p = page("Custom Commands")
         ph(p, "Custom Commands")
-        tk.Label(p, text="Say your trigger phrase after 'Jarvis' to run the command.\nTrigger must be at least two words. Custom commands run before built-ins.",
+        tk.Label(p, text="Say your trigger phrase after 'Jarvis' to run the command.\nTrigger must be at least two words. Custom commands run before built-ins.\nChanges save automatically — no save button needed.",
                  bg=BG, fg=DIM, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
 
         # ── Command list ──────────────────────────────────────────────────
