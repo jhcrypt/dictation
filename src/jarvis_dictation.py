@@ -4106,58 +4106,61 @@ class DictationApp:
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(14, 12))
         lbl(p, "ADD COMMAND")
 
-        add_frame = tk.Frame(p, bg=BG)
-        add_frame.pack(fill="x", padx=24, pady=(4, 0))
-
-        # Trigger entry
-        tk.Label(add_frame, text="Trigger phrase", bg=BG, fg=DIM,
-                 font=(FONT, 9)).grid(row=0, column=0, sticky="w", pady=(0, 2))
-        trig_f = tk.Frame(add_frame, bg=CARD, highlightthickness=1, highlightbackground=SEP)
-        trig_f.grid(row=1, column=0, sticky="ew", padx=(0, 8))
-        trig_entry = tk.Entry(trig_f, bg=CARD, fg=FG, font=(FONT, 12),
-                              insertbackground=FG, relief="flat", bd=0)
-        trig_entry.pack(fill="x", ipady=7, padx=8)
-        trig_entry.insert(0, "e.g. open my website")
-        trig_entry.configure(fg=DIM)
-        def _trig_focus_in(e):
-            if trig_entry.get() == "e.g. open my website":
-                trig_entry.delete(0, "end"); trig_entry.configure(fg=FG)
-        def _trig_focus_out(e):
-            if not trig_entry.get().strip():
-                trig_entry.insert(0, "e.g. open my website"); trig_entry.configure(fg=DIM)
-        trig_entry.bind("<FocusIn>", _trig_focus_in)
-        trig_entry.bind("<FocusOut>", _trig_focus_out)
-        _bind_copy_paste(trig_entry)
-
-        # Action dropdown
-        tk.Label(add_frame, text="Action", bg=BG, fg=DIM,
-                 font=(FONT, 9)).grid(row=0, column=1, sticky="w", pady=(0, 2))
         action_var = tk.StringVar(value="Open URL")
         action_map = {"Open URL": "open_url", "Open App": "open_app", "Type Text": "type_text"}
-        act_menu = tk.OptionMenu(add_frame, action_var, *action_map.keys())
-        act_menu.configure(bg=CARD, fg=FG, activebackground=ACC, activeforeground="#fff",
-                           font=(FONT, 12), relief="flat", bd=0,
-                           highlightthickness=1, highlightbackground=SEP,
-                           indicatoron=True, padx=10)
-        act_menu["menu"].configure(bg=CARD, fg=FG, activebackground=ACC,
-                                   activeforeground="#fff", font=(FONT, 12), bd=0)
-        act_menu.grid(row=1, column=1, sticky="ew", padx=(0, 8), ipady=4)
 
-        # Target entry
-        tk.Label(add_frame, text="Target  (URL / app name / text to type)", bg=BG, fg=DIM,
-                 font=(FONT, 9)).grid(row=0, column=2, sticky="w", pady=(0, 2))
-        tgt_f = tk.Frame(add_frame, bg=CARD, highlightthickness=1, highlightbackground=SEP)
-        tgt_f.grid(row=1, column=2, sticky="ew")
-        tgt_entry = tk.Entry(tgt_f, bg=CARD, fg=FG, font=(FONT, 12),
-                             insertbackground=FG, relief="flat", bd=0)
-        tgt_entry.pack(fill="x", ipady=7, padx=8)
-        _bind_copy_paste(tgt_entry)
+        def _field(parent, label_text):
+            tk.Label(parent, text=label_text, bg=BG, fg=DIM,
+                     font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
+            f = tk.Frame(parent, bg=CARD, highlightthickness=1,
+                         highlightbackground=SEP, highlightcolor=ACC)
+            f.pack(fill="x", padx=24)
+            e = tk.Entry(f, bg=CARD, fg=FG, font=(FONT, 13), relief="flat",
+                         insertbackground=FG, bd=0, highlightthickness=0)
+            e.pack(fill="x", ipady=8, padx=10)
+            _bind_copy_paste(e)
+            return e
 
-        add_frame.columnconfigure(0, weight=3)
-        add_frame.columnconfigure(1, weight=2)
-        add_frame.columnconfigure(2, weight=4)
+        trig_entry = _field(p, "TRIGGER PHRASE")
+        trig_entry.insert(0, "e.g. open my website")
+        trig_entry.configure(fg=DIM)
+        def _trig_in(e):
+            if trig_entry.get() == "e.g. open my website":
+                trig_entry.delete(0, "end"); trig_entry.configure(fg=FG)
+        def _trig_out(e):
+            if not trig_entry.get().strip():
+                trig_entry.insert(0, "e.g. open my website"); trig_entry.configure(fg=DIM)
+        trig_entry.bind("<FocusIn>",  _trig_in)
+        trig_entry.bind("<FocusOut>", _trig_out)
 
-        # Error label + Add button
+        # Action — row of three toggle-style buttons
+        tk.Label(p, text="ACTION", bg=BG, fg=DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
+        act_row = tk.Frame(p, bg=BG)
+        act_row.pack(anchor="w", padx=24)
+        act_btns = {}
+        def _select_action(chosen):
+            action_var.set(chosen)
+            for name, (btn, lbl_w) in act_btns.items():
+                on = (name == chosen)
+                btn.configure(bg=ACC if on else CARD,
+                              highlightbackground=ACC if on else SEP)
+                lbl_w.configure(bg=ACC if on else CARD,
+                                fg="#fff" if on else DIM)
+        for act_name in action_map:
+            btn_f = tk.Frame(act_row, bg=CARD, highlightthickness=1,
+                             highlightbackground=SEP, cursor="hand2")
+            btn_f.pack(side="left", padx=(0, 6))
+            btn_l = tk.Label(btn_f, text=act_name, bg=CARD, fg=DIM,
+                             font=(FONT, 11), padx=14, cursor="hand2")
+            btn_l.pack(ipady=6)
+            act_btns[act_name] = (btn_f, btn_l)
+            for w in (btn_f, btn_l):
+                w.bind("<Button-1>", lambda e, n=act_name: _select_action(n))
+        _select_action("Open URL")
+
+        tgt_entry = _field(p, "TARGET  —  URL / app name / text to type")
+
         err_lbl = tk.Label(p, text="", bg=BG, fg="#ff3b30", font=(FONT, 10))
         err_lbl.pack(anchor="w", padx=24, pady=(6, 0))
 
@@ -4167,22 +4170,17 @@ class DictationApp:
             target  = tgt_entry.get().strip()
 
             if not trigger or trigger == "e.g. open my website":
-                err_lbl.configure(text="Trigger phrase is required.")
-                return
+                err_lbl.configure(text="Trigger phrase is required."); return
             if len(trigger.split()) < 2:
-                err_lbl.configure(text="Trigger must be at least two words.")
-                return
+                err_lbl.configure(text="Trigger must be at least two words."); return
             if not target:
-                err_lbl.configure(text="Target is required.")
-                return
+                err_lbl.configure(text="Target is required."); return
             if action == "open_url" and not target.startswith(("http://", "https://", "spotify:", "music:", "mailto:")):
                 target = "https://" + target
 
             cmds = load_custom_commands()
-            # Prevent duplicate triggers
             if any(c.get("trigger", "").lower() == trigger for c in cmds):
-                err_lbl.configure(text="A command with that trigger already exists.")
-                return
+                err_lbl.configure(text="A command with that trigger already exists."); return
 
             cmds.append({"trigger": trigger, "action": action, "target": target})
             save_custom_commands(cmds)
@@ -4191,11 +4189,11 @@ class DictationApp:
             trig_entry.insert(0, "e.g. open my website")
             trig_entry.configure(fg=DIM)
             tgt_entry.delete(0, "end")
-            action_var.set("Open URL")
+            _select_action("Open URL")
             _refresh_list()
 
         add_btn = tk.Frame(p, bg=ACC, cursor="hand2")
-        add_btn.pack(anchor="w", padx=24, pady=(8, 0))
+        add_btn.pack(anchor="w", padx=24, pady=(10, 0))
         add_lbl = tk.Label(add_btn, text="  Add Command  ", bg=ACC, fg="#fff",
                            font=(FONT, 11, "bold"), cursor="hand2")
         add_lbl.pack(ipady=7)
