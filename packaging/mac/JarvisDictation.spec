@@ -175,7 +175,7 @@ app = BUNDLE(
     # Bundle display name uses a space so macOS Finder shows "Jarvis Dictation".
     # The executable inside remains JarvisDictation (no space).
     name='Jarvis Dictation.app',
-    icon=None,
+    icon=os.path.join(spec_dir, 'assets', 'jarvis_dictation.icns'),
     bundle_identifier='com.jhcrypt.jarvis-dictation',
     info_plist={
         # ── Identity ──────────────────────────────────────────────────────────

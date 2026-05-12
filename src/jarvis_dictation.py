@@ -492,6 +492,28 @@ def _safe_print(*args, **kwargs):
     except (ValueError, OSError):
         pass
 
+def _run_on_main(fn):
+    """Run fn() on the Tk main thread and block until it completes.
+
+    pynput's darwin Controller calls TSMGetInputSourceProperty to resolve
+    characters to key codes.  TSM requires the main thread; calling it from
+    a background thread raises dispatch_assert_queue_fail in the packaged
+    .app.  Use this trampoline for every pynput press/type call that originates
+    from a worker thread.
+    """
+    if threading.current_thread() is threading.main_thread():
+        return fn()
+    done = threading.Event()
+    result_box = [None]
+    def _call():
+        try:
+            result_box[0] = fn()
+        finally:
+            done.set()
+    app.root.after(0, _call)
+    done.wait()
+    return result_box[0]
+
 # ── openwakeword model path resolver ─────────────────────────────────────────
 def _get_oww_model_path() -> str:
     """Return the absolute path to hey_jarvis_v0.1.onnx.
@@ -971,8 +993,9 @@ def execute_jarvis_command(action, params):
 # ── Symspell ──────────────────────────────────────────────────────────────────
 try:
     from symspellpy import SymSpell, Verbosity
+    import symspellpy as _symspellpy_pkg
     _sym = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-    _DICT = os.path.expanduser("~/miniconda3/lib/python3.11/site-packages/symspellpy/frequency_dictionary_en_82_765.txt")
+    _DICT = os.path.join(os.path.dirname(_symspellpy_pkg.__file__), "frequency_dictionary_en_82_765.txt")
     USE_SYMSPELL = os.path.exists(_DICT) and _sym.load_dictionary(_DICT, term_index=0, count_index=1)
 except ImportError:
     USE_SYMSPELL = False
@@ -1514,19 +1537,23 @@ def paste_text(text):
 
             if not verified:
                 log_event("paste", "clipboard verification failed — typing directly")
-                typer.type(text + " ")
+                _run_on_main(lambda: typer.type(text + " "))
                 return
 
             # ── 2. Send Cmd+V ─────────────────────────────────────────────────
             sent = False
 
             # Primary: pynput Controller — no osascript/System Events needed.
+            # Must run on main thread: pynput calls TSMGetInputSourceProperty
+            # to resolve 'v' → keycode, which requires the main dispatch queue.
             try:
                 from pynput.keyboard import Controller as _KbdCtrl, Key as _Key
-                _kbd = _KbdCtrl()
-                with _kbd.pressed(_Key.cmd):
-                    _kbd.press('v')
-                    _kbd.release('v')
+                def _pynput_cmd_v():
+                    _kbd = _KbdCtrl()
+                    with _kbd.pressed(_Key.cmd):
+                        _kbd.press('v')
+                        _kbd.release('v')
+                _run_on_main(_pynput_cmd_v)
                 log_event("paste", "sent cmd+v")
                 sent = True
             except Exception as _pe:
@@ -1551,7 +1578,7 @@ def paste_text(text):
 
             if not sent:
                 log_event("paste", "cmd+v failed — typing directly")
-                typer.type(text + " ")
+                _run_on_main(lambda: typer.type(text + " "))
                 return
 
             # Give the target app time to consume the clipboard before restore.
@@ -1832,7 +1859,7 @@ def transcribe_and_type(wav_path, raw_frames):
 
     PUNCT_COMMANDS = {"period":".","full stop":".","comma":",","exclamation point":"!","exclamation mark":"!","question mark":"?","colon":":","semicolon":";","ellipsis":"...","open paren":"(","close paren":")","dash":" — ","hyphen":"-"}
     if lower in PUNCT_COMMANDS:
-        typer.type(PUNCT_COMMANDS[lower])
+        _run_on_main(lambda cmd=PUNCT_COMMANDS[lower]: typer.type(cmd))
         app.show_message(PUNCT_COMMANDS[lower], "#0a84ff")
         app.set_state("idle")
         return
@@ -1860,8 +1887,10 @@ def transcribe_and_type(wav_path, raw_frames):
         return
         
     if lower == "select all":
-        with typer.pressed(Key.cmd):
-            typer.press("a"); typer.release("a")
+        def _select_all():
+            with typer.pressed(Key.cmd):
+                typer.press("a"); typer.release("a")
+        _run_on_main(_select_all)
         app.show_message("Select all", "#0a84ff")
         app.set_state("idle")
         return
@@ -1901,18 +1930,22 @@ def transcribe_and_type(wav_path, raw_frames):
         return
         
     if lower == "copy all":
-        with typer.pressed(Key.cmd):
-            typer.press("a"); typer.release("a")
-        time.sleep(0.05)
-        with typer.pressed(Key.cmd):
-            typer.press("c"); typer.release("c")
+        def _copy_all():
+            with typer.pressed(Key.cmd):
+                typer.press("a"); typer.release("a")
+            time.sleep(0.05)
+            with typer.pressed(Key.cmd):
+                typer.press("c"); typer.release("c")
+        _run_on_main(_copy_all)
         app.show_message("Copied all!", "#0a84ff")
         app.set_state("idle")
         return
-        
+
     if lower in ("paste", "paste that"):
-        with typer.pressed(Key.cmd):
-            typer.press("v"); typer.release("v")
+        def _paste_cmd():
+            with typer.pressed(Key.cmd):
+                typer.press("v"); typer.release("v")
+        _run_on_main(_paste_cmd)
         app.show_message("Pasted!", "#0a84ff")
         app.set_state("idle")
         return
