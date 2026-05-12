@@ -3236,22 +3236,22 @@ class DictationApp:
             item = self.canvas.create_line(0, 0, 0, 0, fill=color, width=lw, smooth=True)
             self._wave_items.append(item)
         self._wave_phase = 0.0
+        self._wave_scale = 0.06   # smoothed amplitude — starts near flat
         if recording:
-            self._wave_job = self.root.after(30, self._animate_wave)
+            self._wave_job = self.root.after(16, self._animate_wave)
         else:
             self.root.after(0, self.stop_wave)
 
     def _animate_wave(self):
         import math
         if not hasattr(self, '_wave_items') or not self._wave_items: return
-        rms   = get_current_rms()
-        # Near-zero base so silence is clearly flat; high multiplier so
-        # speech swells the waves dramatically, matching the old bar behaviour.
-        scale = min(1.0, rms * 35 + 0.06)
-        # Phase advances faster when louder — waves feel more energetic with speech
-        self._wave_phase += 0.08 + scale * 0.14
+        # Exponential moving average — smooths RMS so amplitude glides
+        # instead of snapping. 0.88/0.12 gives ~8 frames to reach target.
+        target = min(1.0, get_current_rms() * 35 + 0.06)
+        self._wave_scale = self._wave_scale * 0.88 + target * 0.12
+        self._wave_phase += 0.09   # constant speed — no jitter from volume changes
         cy   = self.H // 2
-        mamp = (cy - 7) * scale
+        mamp = (cy - 7) * self._wave_scale
         for item, (amp_f, freq, poff, color, lw) in zip(self._wave_items, self._SIRI_WAVES):
             pts = []
             for j in range(49):
