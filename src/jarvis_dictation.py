@@ -3763,14 +3763,11 @@ class DictationApp:
             outer = tk.Frame(content_host, bg=BG)
             pages[name] = outer
             canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0)
-            scrollbar = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
             inner = tk.Frame(canvas, bg=BG)
             inner.bind("<Configure>",
                 lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
             canvas.create_window((0, 0), window=inner, anchor="nw")
-            canvas.configure(yscrollcommand=scrollbar.set)
-            canvas.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
+            canvas.pack(fill="both", expand=True)
             def _on_mousewheel(e):
                 canvas.yview_scroll(int(-1 * e.delta), "units")
             canvas.bind("<MouseWheel>", _on_mousewheel)
