@@ -237,35 +237,51 @@ Press **Escape** at any time while recording to discard the audio without transc
 
 ---
 
-## AI Cleanup — Ollama
+## AI Cleanup — Local AI Cleanup (Optional)
 
-[Ollama](https://ollama.com) runs a local language model on your Mac to clean up Whisper's raw transcription. No internet connection is used.
+> **Jarvis Dictation works without this.** Dictation, hotkeys, snippets, Jarvis commands, and history all work without Ollama. Local AI Cleanup is an optional enhancement.
 
-### What Ollama does
+[Ollama](https://ollama.com) runs a local language model on your Mac to polish Whisper's raw transcription. No internet connection is used. Your voice never leaves your Mac.
+
+### What Local AI Cleanup does
 
 - Fixes punctuation, capitalisation, and spacing.
 - Applies the active writing profile's tone and style.
 - Preserves your words — it does not add, invent, or substantially rewrite content.
 
-### What Ollama does NOT do
+### What it does NOT do
 
 - It does not answer questions or act as a chatbot.
 - It does not correct normal manual typing — only dictated text.
 - It is bypassed automatically for very short phrases (one or two words).
 - Any result that changes meaning, word count, or answers a question is rejected and the original Whisper text is used instead.
 
-### Enabling Ollama
+### Setting it up
 
 1. Install Ollama from [https://ollama.com](https://ollama.com).
-2. Pull a model: `ollama pull llama3` (or any compatible model).
-3. Make sure Ollama is running before launching Jarvis Dictation.
-4. Enable in Settings → **AI Cleanup** → Enable Ollama.
+2. Open Settings → **AI Cleanup** in the app.
+3. The status card will show what is missing. Click **Install Recommended Model** to pull `qwen2.5:3b`.
+4. Click **Check Again** after making changes to refresh the status.
+
+Or install the model manually:
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+### Cleanup mode
+
+| Mode | Behaviour |
+|---|---|
+| **auto** (default) | Use Local AI Cleanup if available; skip silently if not |
+| **on** | Always try to use it; show a warning if unavailable |
+| **off** | Never use Local AI Cleanup |
 
 ### Correction strength
 
 | Strength | Behaviour |
 |---|---|
-| **Off** | Ollama is disabled; raw Whisper text is used |
+| **Off** | Disabled; raw Whisper text is used |
 | **Light** | Minimal corrections — punctuation and obvious errors only |
 | **Standard** | Balanced cleanup (recommended) |
 | **Strong** | More thorough rewriting while still preserving meaning |
@@ -789,12 +805,33 @@ First-run guidance. Recommended steps:
 
 ### AI Cleanup
 
+The AI Cleanup page shows a live status card so you always know whether Local AI Cleanup is ready, and what to do if it isn't.
+
+| Status | Meaning |
+|---|---|
+| **✓ Local AI Cleanup ready** | Ollama is running and the recommended model is installed |
+| **⚠ Ollama not installed** | Download from ollama.com |
+| **⚠ Ollama installed but not running** | Start Ollama from Applications |
+| **⚠ Recommended model not installed** | Click "Install Recommended Model" |
+
+**Buttons:**
+
+| Button | Action |
+|---|---|
+| **Check Again** | Re-probe Ollama status |
+| **Open Ollama Download Page** | Opens ollama.com/download |
+| **Install Recommended Model** | Runs `ollama pull qwen2.5:3b` after you click |
+| **Test Cleanup** | Sends a sample phrase through Ollama and shows the result |
+| **Disable AI Cleanup** | Turns off Local AI Cleanup immediately |
+
+**Settings:**
+
 | Setting | Default | Description |
 |---|---|---|
-| **Enable Ollama** | On | Use local AI to clean up transcribed text |
-| **Correction strength** | Standard | How aggressively Ollama rewrites the text |
-| **Safe Mode** | Off | Disable all AI cleanup and Jarvis commands |
-| **Context-aware formatting** | On | Adjust tone based on the active app |
+| **Local AI Cleanup mode** | auto | auto / on / off — controls when cleanup is attempted |
+| **Correction strength** | Standard | How aggressively the model rewrites the text |
+| **Safe Mode** | Off | Disables all AI cleanup and Jarvis commands |
+| **Context-aware formatting** | On | Adjusts tone based on the active app |
 
 ---
 
