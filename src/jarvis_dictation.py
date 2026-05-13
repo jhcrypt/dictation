@@ -4520,22 +4520,18 @@ class DictationApp:
             ai_cleanup_mode_var.set("off")
             self.show_message("Local AI Cleanup disabled", "#ff9f0a")
 
+        # 2×2 grid — all four buttons the same width (BTN_W)
         # Row 1: Check Again | Open Ollama Download Page
         _r1 = tk.Frame(p, bg=BG)
         _r1.pack(fill="x", padx=24, pady=(0, 6))
-        _make_action_btn(_r1, "Check Again",               _do_check_again).pack(side="left", padx=(0, 8))
-        _make_action_btn(_r1, "Open Ollama Download Page",  _do_open_download).pack(side="left")
+        _make_action_btn(_r1, "Check Again",              _do_check_again).pack(side="left", padx=(0, 8))
+        _make_action_btn(_r1, "Open Ollama Download Page", _do_open_download).pack(side="left")
 
-        # Row 2: Test Cleanup (standalone — Disable is redundant with the toggle above)
+        # Row 2: Test Cleanup | Install Recommended Model
         _r2 = tk.Frame(p, bg=BG)
         _r2.pack(fill="x", padx=24, pady=(0, 6))
-        _make_action_btn(_r2, "Test Cleanup", _do_test_cleanup).pack(side="left")
-
-        # Row 3: Install Recommended Model — full-width accent button
-        _r3 = tk.Frame(p, bg=BG)
-        _r3.pack(fill="x", padx=24, pady=(0, 6))
-        ib = _make_action_btn(_r3, "Install Recommended Model", _do_install_model,
-                              width=BTN_WF, accent=True)
+        _make_action_btn(_r2, "Test Cleanup",              _do_test_cleanup).pack(side="left", padx=(0, 8))
+        ib = _make_action_btn(_r2, "Install Recommended Model", _do_install_model, accent=True)
         ib.pack(side="left")
         install_btn_ref[0] = ib
 
