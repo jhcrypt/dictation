@@ -1070,7 +1070,7 @@ def execute_jarvis_command(action, params):
                     if app: app.show_message(f"Opening {target}", "#30d158")
             elif cmd_action == "type_text":
                 if target:
-                    paste_text(target)
+                    paste_text(_repair_mojibake(target, label="custom command"))
 
         elif action == "play_media":
             query = params.get("query", "")
@@ -1328,6 +1328,13 @@ def load_custom_commands() -> list:
             with open(CUSTOM_COMMANDS_FILE) as f:
                 data = json.load(f)
                 if isinstance(data, list):
+                    # Repair any mojibake stored in type_text targets so
+                    # previously-saved corrupted commands are fixed transparently.
+                    for cmd in data:
+                        if cmd.get("action") == "type_text" and cmd.get("target"):
+                            cmd["target"] = _repair_mojibake(
+                                cmd["target"], label="custom command load"
+                            )
                     return data
     except Exception:
         pass
@@ -1732,39 +1739,54 @@ _MOJIBAKE_MAP = [
     ("‚Ä¶",    "..."), # horizontal ellipsis
 ]
 
-def _repair_mojibake(text: str) -> str:
+def _repair_mojibake(text: str, label: str = "text") -> str:
     """Replace mojibake sequences with their intended characters.
 
     Also collapses repeated spaces and removes spaces before punctuation.
     Logs once per call when any substitution is made.
+
+    Args:
+        text:  The string to clean.
+        label: Context tag used in the log line, e.g. "custom command".
     """
     if not text:
         return text
     original = text
     for bad, good in _MOJIBAKE_MAP:
         text = text.replace(bad, good)
-    # Collapse multiple spaces → single space
-    import re as _re
-    text = _re.sub(r" {2,}", " ", text)
+    # Collapse multiple spaces / tabs → single space
+    text = re.sub(r"[ \t]{2,}", " ", text)
     # Remove spaces immediately before sentence-ending punctuation
-    text = _re.sub(r" +([.,!?;:])", r"\1", text)
+    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
     if text != original:
-        _safe_print("[text] repaired mojibake punctuation")
+        _safe_print(f"[{label}] repaired mojibake punctuation")
     return text
 
 # ── Self-test (runs once at import, silent on pass) ───────────────────────────
 def _run_mojibake_tests():
+    # Custom Command type_text acceptance tests (the exact reported cases)
+    assert _repair_mojibake(
+        "Drag¬¨‚Ä†Jarvis Dictation¬¨‚Ä†to your Applications folder",
+        label="custom command"
+    ) == "Drag Jarvis Dictation to your Applications folder", "custom cmd test 1 failed"
+
+    assert _repair_mojibake(
+        "On first launch, right-click the app and select¬¨‚Ä†Open¬¨‚Ä†to bypass",
+        label="custom command"
+    ) == "On first launch, right-click the app and select Open to bypass", "custom cmd test 2 failed"
+
+    # General dictation path tests
     cases = [
-        ("Drag¬¨‚Ä†Jarvis Dictation¬¨‚Ä†to your Applications folder",
-         "Drag Jarvis Dictation to your Applications folder"),
-        ("On first launch, right-click the app and select¬¨‚Ä†Open¬¨‚Ä†to bypass the macOS security prompt",
-         "On first launch, right-click the app and select Open to bypass the macOS security prompt"),
-        ("It‚Äôs a ‚Äúcool‚Äù thing",
-         "It's a \"cool\" thing"),
+        ("It‚Äôs a ‚Äúcool‚Äù thing",        "It's a \"cool\" thing"),
+        ("hello  world",                        "hello world"),
+        ("hello ,world",                        "hello,world"),
+        ("\xa0non-breaking\xa0space\xa0",       " non-breaking space "),
     ]
     for inp, expected in cases:
         result = _repair_mojibake(inp)
-        assert result == expected, f"mojibake test failed:\n  in:  {inp!r}\n  got: {result!r}\n  exp: {expected!r}"
+        assert result == expected, (
+            f"mojibake test failed:\n  in:  {inp!r}\n  got: {result!r}\n  exp: {expected!r}"
+        )
 _run_mojibake_tests()
 
 def smart_punctuate(text):
@@ -4694,6 +4716,11 @@ class DictationApp:
                 err_lbl.configure(text="Target is required."); return
             if action == "open_url" and not target.startswith(("http://", "https://", "spotify:", "music:", "mailto:")):
                 target = "https://" + target
+
+            # Normalize type_text targets before saving so corrupted
+            # whitespace / smart punctuation never persists on disk.
+            if action == "type_text":
+                target = _repair_mojibake(target, label="custom command save")
 
             cmds = load_custom_commands()
             if any(c.get("trigger", "").lower() == trigger for c in cmds):
