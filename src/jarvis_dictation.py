@@ -558,8 +558,66 @@ def _get_oww_model_path() -> str:
 # If the caller has already timed out, the worker discards its own result
 # rather than leaving it in the queue to poison the next dictation.
 OLLAMA_TIMEOUT = 12.0  # seconds — llama3:latest (8B) needs more headroom on Intel
+OLLAMA_MODEL   = "qwen2.5:3b"   # recommended model — shown in onboarding UI
 
 import uuid as _uuid
+
+# ── Ollama status detection ───────────────────────────────────────────────────
+# Values: "ready" | "not_installed" | "not_running" | "model_missing"
+# Cached at startup; refreshed by the "Check Again" button in Settings.
+_ollama_status_cache: str = "unknown"
+
+def _check_ollama_status(model: str = OLLAMA_MODEL) -> str:
+    """Return one of: ready | not_installed | not_running | model_missing.
+
+    Checks are fast shell probes — this is safe to call from any thread.
+    Does NOT start Ollama or download anything.
+    """
+    import shutil, subprocess as _sp
+    # 1. Is the ollama Python library installed?
+    try:
+        import ollama as _ol  # noqa: F401
+    except ImportError:
+        _safe_print("[ollama] status: not installed")
+        return "not_installed"
+
+    # 2. Is the ollama CLI present on PATH?  (library can be installed even if
+    #    the desktop app is not — check both.)
+    cli_present = shutil.which("ollama") is not None
+
+    # 3. Is the server responding?
+    try:
+        _sp.run(["ollama", "list"], capture_output=True, timeout=3, check=True)
+    except (FileNotFoundError, _sp.CalledProcessError, _sp.TimeoutExpired):
+        # CLI missing OR server not running
+        if not cli_present:
+            _safe_print("[ollama] status: not installed")
+            return "not_installed"
+        _safe_print("[ollama] status: server not running")
+        return "not_running"
+    except Exception:
+        _safe_print("[ollama] status: server not running")
+        return "not_running"
+
+    # 4. Is the recommended model present?
+    try:
+        result = _sp.run(["ollama", "list"], capture_output=True, timeout=5, text=True)
+        if model not in result.stdout:
+            _safe_print(f"[ollama] status: model missing ({model})")
+            return "model_missing"
+    except Exception:
+        _safe_print("[ollama] status: model missing (list failed)")
+        return "model_missing"
+
+    _safe_print("[ollama] status: ready")
+    return "ready"
+
+
+def _refresh_ollama_status() -> str:
+    """Re-run status check, update cache, and return the result."""
+    global _ollama_status_cache
+    _ollama_status_cache = _check_ollama_status()
+    return _ollama_status_cache
 
 # Queues carry (job_id, text, writing_profile) tuples so stale results can be identified
 _ollama_req_q: _queue.Queue = _queue.Queue(maxsize=1)
@@ -615,9 +673,9 @@ def _ollama_worker():
     try:
         import ollama as _ol
     except ImportError:
-        _safe_print("[ollama] library not installed — refinement disabled")
+        _safe_print("[ollama] status: not installed")
         return
-    _safe_print("[ollama] worker ready")
+    _safe_print("[ollama] status: ready")
     while True:
         job = _ollama_req_q.get()         # blocks until a job arrives
         if job is None: break             # poison pill — exit
@@ -625,15 +683,15 @@ def _ollama_worker():
         try:
             t0 = time.time()
             resp = _ol.chat(
-                model="qwen2.5:3b",
+                model=OLLAMA_MODEL,
                 messages=[
                     {"role": "system", "content": _ollama_prompt_for_strength(profile)},
                     {"role": "user", "content": text},
                 ],
                 options={
-                    "repeat_penalty": 1.15, 
-                    "num_predict": 180, 
-                    "temperature": 0.35, 
+                    "repeat_penalty": 1.15,
+                    "num_predict": 180,
+                    "temperature": 0.35,
                     "top_P": 0.85,
                 }
             )
@@ -664,6 +722,10 @@ def _ollama_worker():
                 _ollama_res_q.put_nowait((job_id, result))
             except _queue.Full:
                 pass   # caller timed out between our check and put — discard
+
+# Probe Ollama status once at startup in a background thread so the UI
+# can show the correct badge without blocking the main thread.
+threading.Thread(target=_refresh_ollama_status, daemon=True, name="ollama-status").start()
 
 threading.Thread(target=_ollama_worker, daemon=True, name="ollama-worker").start()
 
@@ -769,8 +831,29 @@ def _ollama_result_is_safe(original: str, refined: str) -> tuple[bool, str]:
 def _should_skip_ollama(text: str) -> tuple[bool, str]:
     if settings.get("safe_mode", False):
         return True, "safe mode"
+
+    # ai_cleanup_mode: "off" always skips; "on" skips if unavailable;
+    # "auto" (default) skips silently if unavailable — never shows an error.
+    mode = settings.get("ai_cleanup_mode", "auto")
+    if mode == "off":
+        return True, "disabled"
     if not settings.get("use_ollama", True) or not OLLAMA_ENABLED:
         return True, "disabled"
+
+    # For "on" mode, check live status and log clearly.
+    # For "auto" mode, the worker will fail gracefully anyway — no extra check needed.
+    if mode == "on":
+        status = _ollama_status_cache
+        if status == "not_installed":
+            _safe_print("[ollama] cleanup skipped — unavailable (not installed)")
+            return True, "unavailable"
+        if status == "not_running":
+            _safe_print("[ollama] cleanup skipped — unavailable (server not running)")
+            return True, "unavailable"
+        if status == "model_missing":
+            _safe_print("[ollama] cleanup skipped — unavailable (model missing)")
+            return True, "unavailable"
+
     if settings.get("correction_strength", "Standard") == "Off":
         return True, "correction off"
     if _is_short_phrase_for_ollama(text):
@@ -1086,6 +1169,7 @@ DEFAULT_SETTINGS = {
     "min_record_seconds": MIN_RECORD_SECONDS,
     "hotkey_debounce_seconds": HOTKEY_DEBOUNCE_SECONDS,
     "safe_mode": False,
+    "ai_cleanup_mode": "auto",   # "auto" | "on" | "off"
     "correction_strength": "Standard",
     "writing_profile": "General",
     "auto_profile_detection": True,
@@ -3775,6 +3859,7 @@ class DictationApp:
         format_var = tk.BooleanVar(value=settings.get("context_format", True))
         auto_var   = tk.BooleanVar(value=settings.get("auto_detect", True))
         ollama_var = tk.BooleanVar(value=settings.get("use_ollama", True))
+        ai_cleanup_mode_var = tk.StringVar(value=settings.get("ai_cleanup_mode", "auto"))
         sounds_var = tk.BooleanVar(value=settings.get("play_sounds", True))
         startup_tips_var = tk.BooleanVar(value=settings.get("show_startup_tips", True))
         safe_mode_var = tk.BooleanVar(value=settings.get("safe_mode", False))
@@ -4182,20 +4267,201 @@ class DictationApp:
         save_btn_row(p, lambda: _save())
 
         # ── Page: AI Cleanup ─────────────────────────────────────────────────
-        p = page("AI Cleanup")
-        ph(p, "AI Cleanup")
-        toggle_row(p, ollama_var, "Enable Ollama",
-                   "Cleans up dictated text after Whisper transcribes it")
+        p = page("AI Cleanup", scrollable=True)
+        ph(p, "Local AI Cleanup")
+
+        # ── Status card ───────────────────────────────────────────────────────
+        STATUS_COLORS = {
+            "ready":         "#30d158",
+            "not_installed": "#ff9f0a",
+            "not_running":   "#ff9f0a",
+            "model_missing": "#ff9f0a",
+            "unknown":       "#6a6a6a",
+        }
+        STATUS_LABELS = {
+            "ready":         "✓  Local AI Cleanup ready",
+            "not_installed": "⚠  Ollama not installed",
+            "not_running":   "⚠  Ollama installed but not running",
+            "model_missing": "⚠  Recommended model not installed",
+            "unknown":       "—  Status unknown",
+        }
+        STATUS_DETAIL = {
+            "ready":
+                f"Ollama is installed, running, and the recommended model ({OLLAMA_MODEL}) is available. "
+                "Dictated text will be polished automatically.",
+            "not_installed":
+                "Ollama is not installed on this Mac. "
+                "Dictation still works normally without it — you just won't get AI cleanup.",
+            "not_running":
+                "Ollama is installed but the server is not running. "
+                "Start Ollama from your Applications folder, then click Check Again.",
+            "model_missing":
+                f"Ollama is running but the recommended model ({OLLAMA_MODEL}) is not downloaded yet. "
+                "Click 'Install Recommended Model' below.",
+            "unknown":
+                "Status has not been checked yet. Click 'Check Again' to probe.",
+        }
+
+        status_frame = tk.Frame(p, bg=CARD, highlightthickness=1, highlightbackground=SEP)
+        status_frame.pack(fill="x", padx=24, pady=(4, 8))
+
+        status_icon_lbl = tk.Label(status_frame, text="", bg=CARD,
+                                   font=(FONT, 13, "bold"))
+        status_icon_lbl.pack(anchor="w", padx=14, pady=(10, 2))
+
+        status_detail_lbl = tk.Label(status_frame, text="", bg=CARD, fg=DIM,
+                                     font=(FONT, 10), wraplength=380, justify="left")
+        status_detail_lbl.pack(anchor="w", padx=14, pady=(0, 10))
+
+        fallback_lbl = tk.Label(p, text="Dictation still works without Local AI Cleanup.",
+                                bg=BG, fg=DIM, font=(FONT, 10, "italic"))
+        fallback_lbl.pack(anchor="w", padx=24, pady=(0, 6))
+
+        def _update_status_card(s: str):
+            col = STATUS_COLORS.get(s, "#6a6a6a")
+            status_icon_lbl.configure(text=STATUS_LABELS.get(s, s), fg=col)
+            status_detail_lbl.configure(text=STATUS_DETAIL.get(s, ""))
+
+        _update_status_card(_ollama_status_cache)
+
+        # ── Action buttons ────────────────────────────────────────────────────
+        btn_row = tk.Frame(p, bg=BG)
+        btn_row.pack(fill="x", padx=24, pady=(0, 6))
+
+        def _make_action_btn(parent, text, cmd, accent=False):
+            bg_col  = ACC if accent else CARD
+            fg_col  = "#ffffff" if accent else FG
+            btn_w   = 200
+            c = tk.Canvas(parent, width=btn_w, height=ACTION_BUTTON_H, bg=BG,
+                          highlightthickness=0, cursor="hand2")
+            def _draw(col):
+                c.delete("all")
+                r = 7
+                c.create_arc(0, 0, 2*r, 2*r, start=90, extent=90, fill=col, outline=col)
+                c.create_arc(btn_w-2*r, 0, btn_w, 2*r, start=0, extent=90, fill=col, outline=col)
+                c.create_arc(0, ACTION_BUTTON_H-2*r, 2*r, ACTION_BUTTON_H, start=180, extent=90, fill=col, outline=col)
+                c.create_arc(btn_w-2*r, ACTION_BUTTON_H-2*r, btn_w, ACTION_BUTTON_H, start=270, extent=90, fill=col, outline=col)
+                c.create_rectangle(r, 0, btn_w-r, ACTION_BUTTON_H, fill=col, outline=col)
+                c.create_rectangle(0, r, btn_w, ACTION_BUTTON_H-r, fill=col, outline=col)
+                c.create_text(btn_w//2, ACTION_BUTTON_H//2, text=text,
+                              fill=fg_col, font=(FONT, 11))
+            _draw(bg_col)
+            hover_col = "#1a6fd4" if accent else "#2e2e2e"
+            c.bind("<Enter>", lambda e: _draw(hover_col))
+            c.bind("<Leave>", lambda e: _draw(bg_col))
+            c.bind("<Button-1>", lambda e: cmd())
+            return c
+
+        def _do_check_again():
+            _update_status_card("unknown")
+            p.after(80, lambda: _update_status_card(_refresh_ollama_status()))
+
+        def _do_open_download():
+            import subprocess as _sp
+            _sp.Popen(["open", "https://ollama.com/download"])
+
+        install_btn_ref = [None]   # mutable container so inner function can update it
+
+        def _do_install_model():
+            """Pull qwen2.5:3b — only runs when user explicitly clicks the button."""
+            import subprocess as _sp, threading as _th
+            install_btn_ref[0].configure(cursor="arrow") if install_btn_ref[0] else None
+            status_icon_lbl.configure(
+                text=f"⏳  Downloading {OLLAMA_MODEL} — this may take a minute…",
+                fg="#0a84ff")
+            status_detail_lbl.configure(
+                text="Do not close the app. The download runs in the background.")
+            def _pull():
+                try:
+                    result = _sp.run(
+                        ["ollama", "pull", OLLAMA_MODEL],
+                        capture_output=True, text=True, timeout=600
+                    )
+                    if result.returncode == 0:
+                        p.after(0, lambda: _update_status_card(_refresh_ollama_status()))
+                        p.after(0, lambda: self.show_message(
+                            f"{OLLAMA_MODEL} installed!", self.GREEN))
+                    else:
+                        p.after(0, lambda: status_icon_lbl.configure(
+                            text=f"✗  Download failed — {result.stderr[:60]}",
+                            fg="#ff3b30"))
+                        p.after(0, lambda: status_detail_lbl.configure(
+                            text="Make sure Ollama is running, then try again."))
+                except Exception as exc:
+                    p.after(0, lambda: status_icon_lbl.configure(
+                        text=f"✗  Download error: {str(exc)[:60]}", fg="#ff3b30"))
+            _th.Thread(target=_pull, daemon=True, name="ollama-pull").start()
+
+        def _do_test_cleanup():
+            """Run one sample phrase through Ollama and show the result."""
+            sample = "this is a test of the local ai cleanup feature its working great"
+            status_icon_lbl.configure(text="⏳  Testing cleanup…", fg="#0a84ff")
+            status_detail_lbl.configure(text='Input: "' + sample + '"')
+            def _run():
+                try:
+                    import ollama as _ol
+                    resp = _ol.chat(
+                        model=OLLAMA_MODEL,
+                        messages=[
+                            {"role": "system", "content": _ollama_prompt_for_strength()},
+                            {"role": "user",   "content": sample},
+                        ],
+                        options={"repeat_penalty": 1.15, "num_predict": 180,
+                                 "temperature": 0.35, "top_P": 0.85},
+                    )
+                    out = resp["message"]["content"].strip()
+                    p.after(0, lambda: status_icon_lbl.configure(
+                        text="✓  Test passed", fg="#30d158"))
+                    p.after(0, lambda o=out: status_detail_lbl.configure(
+                        text='Output: "' + o + '"'))
+                except Exception as exc:
+                    p.after(0, lambda: status_icon_lbl.configure(
+                        text="✗  Test failed", fg="#ff3b30"))
+                    p.after(0, lambda: status_detail_lbl.configure(
+                        text=str(exc)[:120]))
+            import threading as _th
+            _th.Thread(target=_run, daemon=True, name="ollama-test").start()
+
+        def _do_disable():
+            ollama_var.set(False)
+            ai_cleanup_mode_var.set("off")
+            self.show_message("Local AI Cleanup disabled", "#ff9f0a")
+
+        # Row 1: Check Again + Open Download Page
+        _make_action_btn(btn_row, "Check Again",              _do_check_again).pack(side="left", padx=(0, 8))
+        _make_action_btn(btn_row, "Open Ollama Download Page", _do_open_download).pack(side="left")
+
+        btn_row2 = tk.Frame(p, bg=BG)
+        btn_row2.pack(fill="x", padx=24, pady=(0, 6))
+        ib = _make_action_btn(btn_row2, "Install Recommended Model", _do_install_model, accent=True)
+        ib.pack(side="left", padx=(0, 8))
+        install_btn_ref[0] = ib
+        _make_action_btn(btn_row2, "Test Cleanup",   _do_test_cleanup).pack(side="left", padx=(0, 8))
+        _make_action_btn(btn_row2, "Disable AI Cleanup", _do_disable).pack(side="left")
+
+        tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(10, 8))
+
+        # ── Mode selector ─────────────────────────────────────────────────────
+        lbl(p, "LOCAL AI CLEANUP MODE")
+        combo(p, ai_cleanup_mode_var,
+              ["auto", "on", "off"], width=14)
+        helper_text(p, (
+            "auto — use Local AI Cleanup if available, skip silently if not (recommended).\n"
+            "on   — always try to use it; show a warning in the HUD if unavailable.\n"
+            "off  — never use Local AI Cleanup."
+        ))
+
+        # ── Correction strength + other toggles ──────────────────────────────
         lbl(p, "CORRECTION STRENGTH")
         combo(p, correction_strength_var, ["Light", "Standard", "Strong", "Off"], width=20)
-        helper_text(p, "Recommended: Standard. Short phrases and unsafe AI rewrites are protected automatically.")
+        helper_text(p, "Recommended: Standard. Short phrases and unsafe AI rewrites are always protected.")
         toggle_row(p, safe_mode_var, "Safe Mode",
-                   "Pure dictation mode: disables Ollama cleanup, Jarvis commands, and cloud transcription")
+                   "Pure dictation: disables Local AI Cleanup, Jarvis commands, and cloud transcription")
         toggle_row(p, format_var, "Context-aware formatting",
-                   "Adjusts tone based on the active app, such as Mail, Spark, Notes, or Terminal")
-        section_note(p, "Dictation safety",
-                     "Ollama only refines dictated text. The app now rejects AI output that looks like an answer, an expansion, or a meaning change.")
-        helper_text(p, "Your working Ollama settings are preserved. Use Writing Profiles for profession-specific cleanup without changing model temperature.")
+                   "Adjusts tone based on the active app — Mail, Spark, Notes, Terminal, etc.")
+        section_note(p, "How it works",
+                     "Local AI Cleanup only polishes your dictated words. It never answers questions, "
+                     "adds content, or changes your meaning. Unsafe rewrites are rejected automatically.")
         save_btn_row(p, lambda: _save())
 
         # ── Page: Writing Profiles ─────────────────────────────────────────────
@@ -4516,7 +4782,8 @@ class DictationApp:
                 "use_ollama":     ollama_var.get(),
                 "play_sounds":    sounds_var.get(),
                 "show_startup_tips": startup_tips_var.get(),
-                "safe_mode":      safe_mode_var.get(),
+                "safe_mode":        safe_mode_var.get(),
+                "ai_cleanup_mode":  ai_cleanup_mode_var.get(),
                 "correction_strength": correction_strength_var.get(),
                 "writing_profile": writing_profile_var.get() if writing_profile_var.get() in WRITING_PROFILES else "General",
                 "auto_profile_detection": auto_profile_var.get(),

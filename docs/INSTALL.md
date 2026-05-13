@@ -69,15 +69,46 @@ python -c "from openwakeword.utils import download_models; download_models()"
 
 ---
 
-## Step 7 — Install Ollama (optional)
+## Step 7 — Set up Local AI Cleanup (optional)
+
+**Jarvis Dictation works without this step.** Dictation, hotkeys, snippets, Jarvis commands, and history all work without Ollama. Local AI Cleanup is an optional enhancement that polishes dictated text on your Mac after Whisper transcribes it.
+
+### Install Ollama
 
 Download and install from [https://ollama.com](https://ollama.com).
 
-Then pull a model:
+### Install the recommended model
+
+After installing Ollama, open a terminal and run:
 
 ```bash
-ollama pull llama3.2:1b
+ollama pull qwen2.5:3b
 ```
+
+This downloads the recommended model (~2 GB). You only need to do this once.
+
+> **Tip:** You can also install the model directly from inside the app. Open Settings → **AI Cleanup** → click **Install Recommended Model**. The app will pull the model for you after you click the button.
+
+### Start Ollama
+
+Ollama runs as a background server. Launch it from your Applications folder, or run:
+
+```bash
+ollama serve
+```
+
+### Verify in the app
+
+Open Settings → **AI Cleanup**. The status card will show one of:
+
+| Status | Meaning |
+|---|---|
+| **✓ Local AI Cleanup ready** | Everything is set up correctly |
+| **⚠ Ollama not installed** | Download from ollama.com |
+| **⚠ Ollama installed but not running** | Start Ollama from Applications |
+| **⚠ Recommended model not installed** | Click "Install Recommended Model" |
+
+Click **Check Again** after making changes to refresh the status.
 
 ---
 

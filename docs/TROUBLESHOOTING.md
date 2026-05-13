@@ -42,13 +42,40 @@ After building:
 
 ---
 
-## Ollama output is strange or incorrect
+## Local AI Cleanup — Ollama not installed
 
-1. Keep the default Ollama settings — they have been tuned carefully.
-2. Try **Safe Mode** in the menu bar — this bypasses Ollama entirely.
-3. Try the **Verbatim** writing profile — this also bypasses AI cleanup.
-4. Make sure Ollama is running: `ollama serve` in a terminal.
-5. Check the model is downloaded: `ollama list`.
+Dictation still works normally without Ollama. You just won't get AI cleanup.
+
+To set it up: download Ollama from [https://ollama.com](https://ollama.com), then open Settings → **AI Cleanup** → click **Install Recommended Model**.
+
+---
+
+## Local AI Cleanup — Ollama installed but not running
+
+Start Ollama from your Applications folder, or run `ollama serve` in a terminal. Then open Settings → **AI Cleanup** → click **Check Again**.
+
+---
+
+## Local AI Cleanup — Recommended model missing
+
+Open Settings → **AI Cleanup** → click **Install Recommended Model**. The app will run `ollama pull qwen2.5:3b` after you confirm. This requires Ollama to be running and approximately 2 GB of free disk space.
+
+Alternatively, pull it manually:
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+---
+
+## Local AI Cleanup — output is strange or incorrect
+
+1. Keep the default settings — they have been tuned carefully for small models.
+2. Try **Safe Mode** in the menu bar — this bypasses AI cleanup entirely.
+3. Try the **Verbatim** writing profile — minimal cleanup mode.
+4. Open Settings → **AI Cleanup** → click **Test Cleanup** to verify the model responds correctly.
+5. Make sure the server is running: `ollama serve`
+6. Check the model is downloaded: `ollama list`
 
 ---
 
