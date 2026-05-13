@@ -1791,6 +1791,11 @@ _run_mojibake_tests()
 
 def smart_punctuate(text):
     if not text or text.rstrip()[-1] in ".!?": return text
+    # Don't add punctuation to email addresses or URLs — they carry their own
+    # terminal structure and a trailing period looks like part of the address.
+    last_token = text.rstrip().split()[-1] if text.rstrip().split() else text.rstrip()
+    if "@" in last_token or re.match(r"https?://", last_token):
+        return text
     question_starters = ("what", "when", "where", "who", "why", "how", "which", "whose", "is ", "are ", "was ", "were ", "will ", "would ", "could ", "should ", "do ", "does ", "did ", "have ", "has ", "had ", "can ", "may ", "might ", "shall ", "am ", "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't", "won't", "wouldn't", "couldn't")
     if any(text.lower().strip().startswith(q) for q in question_starters): return text.rstrip() + "?"
     return text.rstrip() + "."
@@ -4347,7 +4352,6 @@ class DictationApp:
 
         toggle_row(p, ollama_var, "Local AI Cleanup",
                    "Polish dictated text with a local Ollama model after transcription")
-        save_btn_row(p, lambda: _save())
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(4, 10))
 
         # ── Status card ───────────────────────────────────────────────────────
