@@ -66,20 +66,28 @@ echo "Bundle ID       : $(defaults read "$APP_PATH/Contents/Info" CFBundleIdenti
 echo "Display name    : $(defaults read "$APP_PATH/Contents/Info" CFBundleDisplayName)"
 codesign -dvvv "$APP_PATH" 2>&1 | grep -E "Identifier|flags|TeamID"
 
-# ── Strip quarantine attribute ────────────────────────────────────────────────
-# cp -r preserves the com.apple.quarantine xattr, which makes macOS show a
-# "Drag to Applications" prompt the first time the app is launched.
-# Clearing it here (on the dist copy) means any subsequent cp to /Applications
-# won't carry the flag along.
+# ── Strip quarantine attribute from dist copy ─────────────────────────────────
 xattr -cr "$APP_PATH" 2>/dev/null || true
-echo "Quarantine attribute cleared."
+
+# ── Install to /Applications and clear quarantine there too ──────────────────
+# macOS re-flags the binary as quarantined whenever a new build is copied in.
+# We install automatically here so the xattr strip and the copy happen together
+# every time — no manual step, no "right-click to open" prompt.
+INSTALL_PATH="/Applications/${APP_NAME}.app"
+echo ""
+echo "=== Installing to /Applications ==="
+rm -rf "$INSTALL_PATH"
+cp -r "$APP_PATH" "$INSTALL_PATH"
+xattr -cr "$INSTALL_PATH" 2>/dev/null || true
+echo "Installed: $INSTALL_PATH"
+echo "Quarantine cleared on installed copy."
 
 echo ""
 echo "=== Build complete ==="
-echo "App: $APP_PATH"
+echo "App: $INSTALL_PATH"
 echo ""
-echo "To run the app:"
-echo "  open \"$APP_PATH\""
+echo "To launch:"
+echo "  open \"$INSTALL_PATH\""
 echo ""
 echo "After first launch, grant these permissions in System Settings"
 echo "→ Privacy & Security for:  ${APP_NAME}.app"
