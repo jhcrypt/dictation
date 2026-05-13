@@ -66,6 +66,14 @@ echo "Bundle ID       : $(defaults read "$APP_PATH/Contents/Info" CFBundleIdenti
 echo "Display name    : $(defaults read "$APP_PATH/Contents/Info" CFBundleDisplayName)"
 codesign -dvvv "$APP_PATH" 2>&1 | grep -E "Identifier|flags|TeamID"
 
+# ── Strip quarantine attribute ────────────────────────────────────────────────
+# cp -r preserves the com.apple.quarantine xattr, which makes macOS show a
+# "Drag to Applications" prompt the first time the app is launched.
+# Clearing it here (on the dist copy) means any subsequent cp to /Applications
+# won't carry the flag along.
+xattr -cr "$APP_PATH" 2>/dev/null || true
+echo "Quarantine attribute cleared."
+
 echo ""
 echo "=== Build complete ==="
 echo "App: $APP_PATH"
