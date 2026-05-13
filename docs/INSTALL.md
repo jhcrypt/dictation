@@ -73,42 +73,48 @@ python -c "from openwakeword.utils import download_models; download_models()"
 
 **Jarvis Dictation works without this step.** Dictation, hotkeys, snippets, Jarvis commands, and history all work without Ollama. Local AI Cleanup is an optional enhancement that polishes dictated text on your Mac after Whisper transcribes it.
 
-### Install Ollama
+### Setup entirely inside the app
 
-Download and install from [https://ollama.com](https://ollama.com).
+1. Open the app, then go to **Settings → AI Cleanup**.
+2. The status card at the top tells you exactly what to do.
 
-### Install the recommended model
+---
 
-After installing Ollama, open a terminal and run:
+#### If status shows "⚠ Ollama not installed"
+
+1. Click **Open Ollama Download Page** inside the app.
+2. Download and install Ollama for macOS.
+3. Launch **Ollama** from your Applications folder.
+4. Return to Settings → **AI Cleanup** and click **Check Again**.
+
+#### If status shows "⚠ Recommended model not installed"
+
+1. Make sure Ollama is running (its icon appears in the menu bar).
+2. Click **Install Recommended Model** — the app downloads `qwen2.5:3b` (~2 GB).
+3. Wait for the status card to update — do not close the app during the download.
+
+#### If status shows "⚠ Ollama installed but not running"
+
+1. Open **Ollama** from your Applications folder.
+2. Click **Check Again** in Settings → AI Cleanup.
+
+#### If status shows "✓ Local AI Cleanup ready"
+
+You're done. Click **Test Cleanup** to confirm everything is working — you'll see a sample phrase go in and the cleaned result come out.
+
+---
+
+### Alternative: terminal setup
+
+If you prefer the terminal:
 
 ```bash
+# Install Ollama from https://ollama.com, then:
 ollama pull qwen2.5:3b
-```
-
-This downloads the recommended model (~2 GB). You only need to do this once.
-
-> **Tip:** You can also install the model directly from inside the app. Open Settings → **AI Cleanup** → click **Install Recommended Model**. The app will pull the model for you after you click the button.
-
-### Start Ollama
-
-Ollama runs as a background server. Launch it from your Applications folder, or run:
-
-```bash
 ollama serve
 ```
 
-### Verify in the app
-
-Open Settings → **AI Cleanup**. The status card will show one of:
-
-| Status | Meaning |
-|---|---|
-| **✓ Local AI Cleanup ready** | Everything is set up correctly |
-| **⚠ Ollama not installed** | Download from ollama.com |
-| **⚠ Ollama installed but not running** | Start Ollama from Applications |
-| **⚠ Recommended model not installed** | Click "Install Recommended Model" |
-
-Click **Check Again** after making changes to refresh the status.
+Then open Settings → **AI Cleanup** → click **Check Again**.
 
 ---
 

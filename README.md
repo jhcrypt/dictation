@@ -805,30 +805,60 @@ First-run guidance. Recommended steps:
 
 ### AI Cleanup
 
-The AI Cleanup page shows a live status card so you always know whether Local AI Cleanup is ready, and what to do if it isn't.
+The AI Cleanup page shows a live status card at the top so you always know whether Local AI Cleanup is ready. Follow the steps below for your current status.
 
-| Status | Meaning |
+---
+
+#### ⚠ Ollama not installed
+
+1. Click **Open Ollama Download Page** — this opens [ollama.com/download](https://ollama.com/download) in your browser.
+2. Download and install the Ollama app for macOS.
+3. Launch **Ollama** from your Applications folder.
+4. Return to Settings → **AI Cleanup** and click **Check Again**.
+5. If the status now shows *Recommended model not installed*, click **Install Recommended Model**.
+
+---
+
+#### ⚠ Ollama installed but not running
+
+1. Open **Ollama** from your Applications folder (it runs as a menu bar icon).
+2. Click **Check Again** — the status should update within a few seconds.
+
+---
+
+#### ⚠ Recommended model not installed
+
+1. Make sure Ollama is running (menu bar icon should be visible).
+2. Click **Install Recommended Model** — the app downloads `qwen2.5:3b` (~2 GB) in the background.
+3. Progress is shown in the status card. Do not close the app while it downloads.
+4. When complete the status card will automatically update to *Local AI Cleanup ready*.
+
+---
+
+#### ✓ Local AI Cleanup ready
+
+Everything is set up. Dictated text is polished automatically after each recording.
+
+- Click **Test Cleanup** at any time to verify — the page shows a sample input and the model's output.
+- Use **Disable AI Cleanup** to turn it off instantly without going into settings.
+
+---
+
+**Buttons at a glance:**
+
+| Button | What it does |
 |---|---|
-| **✓ Local AI Cleanup ready** | Ollama is running and the recommended model is installed |
-| **⚠ Ollama not installed** | Download from ollama.com |
-| **⚠ Ollama installed but not running** | Start Ollama from Applications |
-| **⚠ Recommended model not installed** | Click "Install Recommended Model" |
-
-**Buttons:**
-
-| Button | Action |
-|---|---|
-| **Check Again** | Re-probe Ollama status |
-| **Open Ollama Download Page** | Opens ollama.com/download |
-| **Install Recommended Model** | Runs `ollama pull qwen2.5:3b` after you click |
-| **Test Cleanup** | Sends a sample phrase through Ollama and shows the result |
-| **Disable AI Cleanup** | Turns off Local AI Cleanup immediately |
+| **Check Again** | Re-probes Ollama — use this after starting Ollama or installing the model |
+| **Open Ollama Download Page** | Opens [ollama.com/download](https://ollama.com/download) |
+| **Install Recommended Model** | Downloads `qwen2.5:3b` — only runs when you click it, never automatic |
+| **Test Cleanup** | Sends a sample phrase through the model and shows the live result |
+| **Disable AI Cleanup** | Turns off Local AI Cleanup immediately and sets mode to Off |
 
 **Settings:**
 
 | Setting | Default | Description |
 |---|---|---|
-| **Local AI Cleanup mode** | auto | auto / on / off — controls when cleanup is attempted |
+| **Local AI Cleanup mode** | auto | `auto` — skip silently if unavailable · `on` — warn if unavailable · `off` — never use |
 | **Correction strength** | Standard | How aggressively the model rewrites the text |
 | **Safe Mode** | Off | Disables all AI cleanup and Jarvis commands |
 | **Context-aware formatting** | On | Adjusts tone based on the active app |
