@@ -4345,6 +4345,11 @@ class DictationApp:
         p = page("AI Cleanup", scrollable=True)
         ph(p, "Local AI Cleanup")
 
+        toggle_row(p, ollama_var, "Local AI Cleanup",
+                   "Polish dictated text with a local Ollama model after transcription")
+        save_btn_row(p, lambda: _save())
+        tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(4, 10))
+
         # ── Status card ───────────────────────────────────────────────────────
         STATUS_COLORS = {
             "ready":         "#30d158",
