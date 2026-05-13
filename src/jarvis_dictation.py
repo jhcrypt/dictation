@@ -1965,28 +1965,28 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
-    if lower in ("make bold", "bold that") and last_text:
+    if any(p in lower for p in ("make bold", "bold that")) and last_text:
         for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
         last_text = f"**{last_text}**"; paste_text(last_text); app.show_message("Bolded!", "#0a84ff"); app.set_state("idle"); return
-    if lower in ("make italic", "italic that") and last_text:
+    if any(p in lower for p in ("make italic", "italic that")) and last_text:
         for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
         last_text = f"*{last_text}*"; paste_text(last_text); app.show_message("Italicized!", "#0a84ff"); app.set_state("idle"); return
-    if lower in ("format as code", "code that", "make code") and last_text:
+    if any(p in lower for p in ("format as code", "code that", "make code")) and last_text:
         for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
         last_text = f"`{last_text}`"; paste_text(last_text); app.show_message("Code formatted!", "#0a84ff"); app.set_state("idle"); return
-    if lower in ("make heading", "heading that", "make title") and last_text:
+    if any(p in lower for p in ("make heading", "heading that", "make title")) and last_text:
         for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
         last_text = f"# {last_text}"; paste_text(last_text); app.show_message("Heading!", "#0a84ff"); app.set_state("idle"); return
-    if lower in ("all caps", "make caps", "capitalize that") and last_text:
+    if any(p in lower for p in ("all caps", "make caps", "capitalize that")) and last_text:
         for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
         last_text = last_text.upper(); paste_text(last_text); app.show_message("ALL CAPS!", "#0a84ff"); app.set_state("idle"); return
-    if lower in ("make bullet", "bullet that", "create list", "make list") and last_text:
+    if any(p in lower for p in ("make bullet", "bullet that", "create list", "make list")) and last_text:
         for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
         last_text = "\n".join(f"• {s.strip()}" for s in last_text.split('.') if s.strip()); paste_text(last_text); app.show_message("Bulleted!", "#0a84ff"); app.set_state("idle"); return
-    if lower in ("make quote", "quote that", "block quote") and last_text:
+    if any(p in lower for p in ("make quote", "quote that", "block quote")) and last_text:
         for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
         last_text = f"> {last_text}"; paste_text(last_text); app.show_message("Quoted!", "#0a84ff"); app.set_state("idle"); return
-    if lower in ("strikethrough that", "strike that") and last_text:
+    if any(p in lower for p in ("strikethrough that", "strike that")) and last_text:
         for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
         last_text = f"~~{last_text}~~"; paste_text(last_text); app.show_message("Strikethrough!", "#0a84ff"); app.set_state("idle"); return
 
