@@ -4310,7 +4310,7 @@ class DictationApp:
         status_icon_lbl.pack(anchor="w", padx=14, pady=(10, 2))
 
         status_detail_lbl = tk.Label(status_frame, text="", bg=CARD, fg=DIM,
-                                     font=(FONT, 10), wraplength=380, justify="left")
+                                     font=(FONT, 10), wraplength=420, justify="left")
         status_detail_lbl.pack(anchor="w", padx=14, pady=(0, 10))
 
         fallback_lbl = tk.Label(p, text="Dictation still works without Local AI Cleanup.",
@@ -4325,30 +4325,35 @@ class DictationApp:
         _update_status_card(_ollama_status_cache)
 
         # ── Action buttons ────────────────────────────────────────────────────
-        btn_row = tk.Frame(p, bg=BG)
-        btn_row.pack(fill="x", padx=24, pady=(0, 6))
+        # Layout: 3 rows, max 2 buttons per row.
+        # Row 1: Check Again | Open Ollama Download Page  (220px each)
+        # Row 2: Install Recommended Model  (full-width accent)
+        # Row 3: Test Cleanup | Disable AI Cleanup  (220px each)
+        # All rows are padded to 24px on each side to match the rest of the page.
 
-        def _make_action_btn(parent, text, cmd, accent=False):
-            bg_col  = ACC if accent else CARD
-            fg_col  = "#ffffff" if accent else FG
-            btn_w   = 200
-            c = tk.Canvas(parent, width=btn_w, height=ACTION_BUTTON_H, bg=BG,
+        BTN_W  = 220   # standard button width — two fit comfortably in ~460px content
+        BTN_WF = 460   # full-width button — Install Recommended Model
+
+        def _make_action_btn(parent, label, cmd, width=BTN_W, accent=False):
+            bg_col   = ACC if accent else CARD
+            fg_col   = "#ffffff" if accent else FG
+            hover_c  = "#1a6fd4" if accent else "#2e2e2e"
+            c = tk.Canvas(parent, width=width, height=ACTION_BUTTON_H, bg=BG,
                           highlightthickness=0, cursor="hand2")
             def _draw(col):
                 c.delete("all")
                 r = 7
-                c.create_arc(0, 0, 2*r, 2*r, start=90, extent=90, fill=col, outline=col)
-                c.create_arc(btn_w-2*r, 0, btn_w, 2*r, start=0, extent=90, fill=col, outline=col)
+                c.create_arc(0, 0, 2*r, 2*r,             start=90,  extent=90, fill=col, outline=col)
+                c.create_arc(width-2*r, 0, width, 2*r,   start=0,   extent=90, fill=col, outline=col)
                 c.create_arc(0, ACTION_BUTTON_H-2*r, 2*r, ACTION_BUTTON_H, start=180, extent=90, fill=col, outline=col)
-                c.create_arc(btn_w-2*r, ACTION_BUTTON_H-2*r, btn_w, ACTION_BUTTON_H, start=270, extent=90, fill=col, outline=col)
-                c.create_rectangle(r, 0, btn_w-r, ACTION_BUTTON_H, fill=col, outline=col)
-                c.create_rectangle(0, r, btn_w, ACTION_BUTTON_H-r, fill=col, outline=col)
-                c.create_text(btn_w//2, ACTION_BUTTON_H//2, text=text,
+                c.create_arc(width-2*r, ACTION_BUTTON_H-2*r, width, ACTION_BUTTON_H, start=270, extent=90, fill=col, outline=col)
+                c.create_rectangle(r, 0, width-r, ACTION_BUTTON_H, fill=col, outline=col)
+                c.create_rectangle(0, r, width, ACTION_BUTTON_H-r, fill=col, outline=col)
+                c.create_text(width//2, ACTION_BUTTON_H//2, text=label,
                               fill=fg_col, font=(FONT, 11))
             _draw(bg_col)
-            hover_col = "#1a6fd4" if accent else "#2e2e2e"
-            c.bind("<Enter>", lambda e: _draw(hover_col))
-            c.bind("<Leave>", lambda e: _draw(bg_col))
+            c.bind("<Enter>",    lambda e: _draw(hover_c))
+            c.bind("<Leave>",    lambda e: _draw(bg_col))
             c.bind("<Button-1>", lambda e: cmd())
             return c
 
@@ -4360,12 +4365,11 @@ class DictationApp:
             import subprocess as _sp
             _sp.Popen(["open", "https://ollama.com/download"])
 
-        install_btn_ref = [None]   # mutable container so inner function can update it
+        install_btn_ref = [None]
 
         def _do_install_model():
             """Pull qwen2.5:3b — only runs when user explicitly clicks the button."""
             import subprocess as _sp, threading as _th
-            install_btn_ref[0].configure(cursor="arrow") if install_btn_ref[0] else None
             status_icon_lbl.configure(
                 text=f"⏳  Downloading {OLLAMA_MODEL} — this may take a minute…",
                 fg="#0a84ff")
@@ -4383,17 +4387,17 @@ class DictationApp:
                             f"{OLLAMA_MODEL} installed!", self.GREEN))
                     else:
                         p.after(0, lambda: status_icon_lbl.configure(
-                            text=f"✗  Download failed — {result.stderr[:60]}",
+                            text="✗  Download failed — see terminal for details",
                             fg="#ff3b30"))
                         p.after(0, lambda: status_detail_lbl.configure(
                             text="Make sure Ollama is running, then try again."))
                 except Exception as exc:
                     p.after(0, lambda: status_icon_lbl.configure(
-                        text=f"✗  Download error: {str(exc)[:60]}", fg="#ff3b30"))
+                        text="✗  Download error: " + str(exc)[:50], fg="#ff3b30"))
             _th.Thread(target=_pull, daemon=True, name="ollama-pull").start()
 
         def _do_test_cleanup():
-            """Run one sample phrase through Ollama and show the result."""
+            """Run one sample phrase through the local model and show the result."""
             sample = "this is a test of the local ai cleanup feature its working great"
             status_icon_lbl.configure(text="⏳  Testing cleanup…", fg="#0a84ff")
             status_detail_lbl.configure(text='Input: "' + sample + '"')
@@ -4427,17 +4431,25 @@ class DictationApp:
             ai_cleanup_mode_var.set("off")
             self.show_message("Local AI Cleanup disabled", "#ff9f0a")
 
-        # Row 1: Check Again + Open Download Page
-        _make_action_btn(btn_row, "Check Again",              _do_check_again).pack(side="left", padx=(0, 8))
-        _make_action_btn(btn_row, "Open Ollama Download Page", _do_open_download).pack(side="left")
+        # Row 1: Check Again | Open Ollama Download Page
+        _r1 = tk.Frame(p, bg=BG)
+        _r1.pack(fill="x", padx=24, pady=(0, 6))
+        _make_action_btn(_r1, "Check Again",              _do_check_again).pack(side="left", padx=(0, 8))
+        _make_action_btn(_r1, "Open Ollama Download Page", _do_open_download).pack(side="left")
 
-        btn_row2 = tk.Frame(p, bg=BG)
-        btn_row2.pack(fill="x", padx=24, pady=(0, 6))
-        ib = _make_action_btn(btn_row2, "Install Recommended Model", _do_install_model, accent=True)
-        ib.pack(side="left", padx=(0, 8))
+        # Row 2: Install Recommended Model — full-width accent button
+        _r2 = tk.Frame(p, bg=BG)
+        _r2.pack(fill="x", padx=24, pady=(0, 6))
+        ib = _make_action_btn(_r2, "Install Recommended Model", _do_install_model,
+                              width=BTN_WF, accent=True)
+        ib.pack(side="left")
         install_btn_ref[0] = ib
-        _make_action_btn(btn_row2, "Test Cleanup",   _do_test_cleanup).pack(side="left", padx=(0, 8))
-        _make_action_btn(btn_row2, "Disable AI Cleanup", _do_disable).pack(side="left")
+
+        # Row 3: Test Cleanup | Disable AI Cleanup
+        _r3 = tk.Frame(p, bg=BG)
+        _r3.pack(fill="x", padx=24, pady=(0, 6))
+        _make_action_btn(_r3, "Test Cleanup",      _do_test_cleanup).pack(side="left", padx=(0, 8))
+        _make_action_btn(_r3, "Disable AI Cleanup", _do_disable).pack(side="left")
 
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(10, 8))
 
