@@ -1,0 +1,231 @@
+--- jarvis_dictation.py
++++ jarvis_dictation_v6_1_18_spark_desktop.py
+@@ -1,8 +1,15 @@
+ #!/usr/bin/env python
+ """
+-Jarvis Dictation v6.1.15 — Intel Mac
++Jarvis Dictation v6.1.18 — Intel Mac
+ Hold Right Option to record, release to transcribe and type.
+ 100% offline by default. Optional OpenAI/Ollama refinement.
++
++v6.1.18 fixes:
++  - Spark Desktop support on M1 Macs: email commands now try Spark Desktop,
++    Spark, Mail, then Outlook; Email profile/formatting explicitly recognizes
++    Spark Desktop.
++  - Paste reliability preserved: clipboard is verified before Cmd+V and
++    previous clipboard is restored after paste.
+ 
+ v6.1.15 fixes:
+   - Menu bar icon restored: strong PyObjC reference prevents GC from wiping
+@@ -260,7 +267,7 @@
+ # into this queue; Tk drains it from its own event loop.
+ _input_event_q: _queue.SimpleQueue = _queue.SimpleQueue()
+ 
+-APP_VERSION = "6.1.15"
++APP_VERSION = "6.1.18 Spark Desktop Email Fix"
+ HOTKEY_DEBOUNCE_SECONDS = 0.18
+ MIN_RECORD_SECONDS = 0.30
+ 
+@@ -378,6 +385,8 @@
+ APP_FORMAT_RULES = {
+     "mail":     "formal email tone, proper punctuation, capitalize first word",
+     "spark":    "formal email tone, proper punctuation, capitalize first word",
++    "spark desktop": "formal email tone, proper punctuation, capitalize first word",
++    "readdle":  "formal email tone, proper punctuation, capitalize first word",
+     "outlook":  "formal email tone, proper punctuation, capitalize first word",
+     "notes":    "clear concise notes format",
+     # We use broader keywords to catch terminal/coding apps
+@@ -428,6 +437,8 @@
+ APP_PROFILE_RULES = {
+     "mail": "Email",
+     "spark": "Email",
++    "spark desktop": "Email",
++    "readdle": "Email",
+     "outlook": "Email",
+     "gmail": "Email",
+     "terminal": "Developer",
+@@ -758,7 +769,7 @@
+     if text:
+         text = text[0].upper() + text[1:]
+ 
+-    if rule_key in ("mail", "spark", "word", "pages"):
++    if rule_key in ("mail", "spark", "spark desktop", "readdle", "outlook", "word", "pages"):
+         # Ensure sentence endings have proper punctuation
+         if text and text[-1] not in ".!?":
+             text += "."
+@@ -778,6 +789,48 @@
+ 
+     print(f"[format] {app_name}: applied '{rule_key}' rule")
+     return text
++
++
++def _open_first_available_app(candidates, show_message=True):
++    """Open the first macOS app name that exists.
++
++    Some apps use different bundle/display names on different Macs. Spark is
++    commonly reported as "Spark Desktop" on Apple Silicon and "Spark" on some
++    Intel installs. Keep this helper small and side-effect-light so Jarvis
++    commands can try safe fallbacks without changing the rest of the command
++    system.
++    """
++    seen = set()
++    for candidate in candidates:
++        candidate = (candidate or "").strip()
++        if not candidate or candidate in seen:
++            continue
++        seen.add(candidate)
++        try:
++            result = subprocess.run(
++                ["open", "-a", candidate],
++                capture_output=True,
++                text=True,
++                timeout=4,
++            )
++            if result.returncode == 0:
++                if show_message and app:
++                    app.show_message(f"Opening {candidate}", "#30d158")
++                return candidate
++        except Exception as e:
++            print(f"[jarvis] open app fallback failed for {candidate}: {e}")
++    return ""
++
++
++def _preferred_email_app_candidates(preferred: str = ""):
++    """Return email app fallbacks, with Spark Desktop first for M1 Macs."""
++    candidates = [preferred, "Spark Desktop", "Spark", "Mail", "Microsoft Outlook"]
++    cleaned = []
++    for item in candidates:
++        item = (item or "").strip()
++        if item and item not in cleaned:
++            cleaned.append(item)
++    return cleaned
+ 
+ def execute_jarvis_command(action, params):
+     global _last_jarvis_time
+@@ -797,6 +850,14 @@
+                 if result.returncode != 0: subprocess.Popen(["open", "-a", app_name.lower()])
+             if app: app.show_message(f"Opening {app_name}", "#30d158")
+ 
++        elif action == "open_email_app":
++            opened = _open_first_available_app(
++                _preferred_email_app_candidates(params.get("preferred", "")),
++                show_message=True,
++            )
++            if not opened and app:
++                app.show_message("Could not open email app", "#ff3b30")
++
+         elif action == "web_search":
+             query = params.get("query", "")
+             subprocess.Popen(["open", f"https://duckduckgo.com/?q={query.replace(' ', '+')}"])
+@@ -846,11 +907,13 @@
+             safe_to      = _osa_escape(to)
+             safe_subject = _osa_escape(subject)
+             safe_body    = _osa_escape(body)
++            spark_app = _open_first_available_app(["Spark Desktop", "Spark"], show_message=False) or "Spark Desktop"
++            safe_spark_app = _osa_escape(spark_app)
+             lines = [
+-                'tell application "Spark" to activate',
++                f'tell application "{safe_spark_app}" to activate',
+                 'delay 2.5',
+                 'tell application "System Events"',
+-                '    tell process "Spark"',
++                f'    tell process "{safe_spark_app}"',
+                 '        keystroke "n" using command down',
+                 '        delay 2.0',
+             ]
+@@ -878,7 +941,7 @@
+                 lines += [f'        keystroke "{safe_body}"']
+             lines += ['    end tell', 'end tell']
+             subprocess.Popen(["osascript", "-e", "\n".join(lines)])
+-            if app: app.show_message(f"Composing email to {to[:20]}" if to else "Opening Spark", "#30d158")
++            if app: app.show_message(f"Composing email to {to[:20]}" if to else f"Opening {spark_app}", "#30d158")
+ 
+         elif action == "close_app":
+             app_name = params.get("app", "")
+@@ -1417,19 +1480,59 @@
+ _paste_lock = threading.Lock()   # prevents clipboard desync from overlapping pastes
+ 
+ def paste_text(text):
++    """Paste dictated text reliably without leaving the clipboard changed.
++
++    Older versions restored the previous clipboard too quickly after Cmd+V,
++    which could cause the target app to paste the old clipboard instead of the
++    dictation. This version verifies the clipboard first, retries briefly, then
++    waits after Cmd+V before restoring the original clipboard.
++    """
+     with _paste_lock:
++        paste_payload = (text + " ").encode()
+         try:
+             import subprocess as _sp
+-            prev = _sp.run(["pbpaste"], capture_output=True).stdout
+-            _sp.run(["pbcopy"], input=(text + " ").encode(), timeout=2)
+-            import time as _t; _t.sleep(0.12)
++            import time as _t
++
++            log_event("paste", f"preparing {len(text)} chars")
++            prev = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
++
++            verified = False
++            for attempt in range(8):
++                _sp.run(["pbcopy"], input=paste_payload, timeout=2)
++                _t.sleep(0.08 + (attempt * 0.03))
++                current = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
++                if current == paste_payload:
++                    verified = True
++                    log_event("paste", "clipboard verified")
++                    break
++                log_event("paste", f"retry {attempt + 1}")
++
++            if not verified:
++                log_event("paste", "failed clipboard verification; falling back to typing")
++                try:
++                    _sp.run(["pbcopy"], input=prev, timeout=2)
++                except Exception:
++                    pass
++                typer.type(text + " ")
++                return
++
++            _sp.run([
++                "osascript",
++                "-e",
++                'tell application "System Events" to keystroke "v" using command down'
++            ], timeout=3)
++            log_event("paste", "sent cmd+v")
++
++            # Give the target app time to consume the clipboard before restore.
++            _t.sleep(0.35)
++            _sp.run(["pbcopy"], input=prev, timeout=2)
++            log_event("paste", "restored previous clipboard")
++        except Exception as e:
++            log_event("paste", f"failed: {e}")
+             try:
+-                _sp.run(["osascript", "-e", 'tell application "System Events" to keystroke "v" using command down'], timeout=3)
+-                _t.sleep(0.1)
+-            finally:
+-                _sp.run(["pbcopy"], input=prev, timeout=2)
+-        except Exception:
+-            typer.type(text + " ")
++                typer.type(text + " ")
++            except Exception:
++                pass
+ 
+ def smart_punctuate(text):
+     if not text or text.rstrip()[-1] in ".!?": return text
+@@ -1442,6 +1545,8 @@
+     open_match = re.match(r"^open (.+)$", lower)
+     if open_match:
+         target = open_match.group(1).strip()
++        if target in ("email", "inbox", "mail", "spark", "my email"):
++            return ("open_email_app", {"preferred": "Spark Desktop"})
+         websites = {
+             "youtube": "https://www.youtube.com", "google": "https://www.google.com", 
+             "duckduckgo": "https://duckduckgo.com", "gmail": "https://mail.google.com", 
+@@ -1459,7 +1564,7 @@
+         return ("open_app", {"app": target.capitalize(), "url": ""})
+ 
+     if any(p in lower for p in ("open email", "check email", "open spark", "check spark", "open my email", "check my email", "open inbox")):
+-        return ("open_app", {"app": "Spark", "url": ""})
++        return ("open_email_app", {"preferred": "Spark Desktop"})
+ 
+     app_keywords = {
+         "notes": "Notes", "calendar": "Calendar", "messages": "Messages",

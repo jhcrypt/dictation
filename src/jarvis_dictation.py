@@ -1865,6 +1865,7 @@ def transcribe_and_type(wav_path, raw_frames):
         return
 
     # 1. Use the final protected raw_text for output so "UI" stays "UI"
+    _prev_last_text = last_text   # save before overwrite — used by formatting commands
     text = smart_punctuate(apply_snippets(symspell_correct(raw_text)))
     last_text = text
     log_event("final", repr(text))
@@ -1965,30 +1966,47 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
-    if any(p in lower for p in ("make bold", "bold that")) and last_text:
-        for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
-        last_text = f"**{last_text}**"; paste_text(last_text); app.show_message("Bolded!", "#0a84ff"); app.set_state("idle"); return
-    if any(p in lower for p in ("make italic", "italic that")) and last_text:
-        for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
-        last_text = f"*{last_text}*"; paste_text(last_text); app.show_message("Italicized!", "#0a84ff"); app.set_state("idle"); return
-    if any(p in lower for p in ("format as code", "code that", "make code")) and last_text:
-        for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
-        last_text = f"`{last_text}`"; paste_text(last_text); app.show_message("Code formatted!", "#0a84ff"); app.set_state("idle"); return
-    if any(p in lower for p in ("make heading", "heading that", "make title")) and last_text:
-        for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
-        last_text = f"# {last_text}"; paste_text(last_text); app.show_message("Heading!", "#0a84ff"); app.set_state("idle"); return
-    if any(p in lower for p in ("all caps", "make caps", "capitalize that")) and last_text:
-        for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
-        last_text = last_text.upper(); paste_text(last_text); app.show_message("ALL CAPS!", "#0a84ff"); app.set_state("idle"); return
-    if any(p in lower for p in ("make bullet", "bullet that", "create list", "make list")) and last_text:
-        for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
-        last_text = "\n".join(f"• {s.strip()}" for s in last_text.split('.') if s.strip()); paste_text(last_text); app.show_message("Bulleted!", "#0a84ff"); app.set_state("idle"); return
-    if any(p in lower for p in ("make quote", "quote that", "block quote")) and last_text:
-        for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
-        last_text = f"> {last_text}"; paste_text(last_text); app.show_message("Quoted!", "#0a84ff"); app.set_state("idle"); return
-    if any(p in lower for p in ("strikethrough that", "strike that")) and last_text:
-        for _ in range(len(last_text) + 1): typer.press(Key.backspace); typer.release(Key.backspace)
-        last_text = f"~~{last_text}~~"; paste_text(last_text); app.show_message("Strikethrough!", "#0a84ff"); app.set_state("idle"); return
+    # ── Formatting commands ────────────────────────────────────────────────────
+    # Two modes:
+    #   Inline:     "testing one two all caps"  → strips trigger, formats preceding text only
+    #   Standalone: says "all caps" alone        → backspaces prev recording, formats it
+    def _apply_fmt(triggers, fmt_fn, label):
+        global last_text
+        hit = next((p for p in triggers if p in lower), None)
+        if hit is None:
+            return False
+        # Inline: check whether there is real content before the trigger in this transcription
+        hit_idx = text.lower().find(hit)
+        before = text[:hit_idx].strip(" .,!? ") if hit_idx > 0 else ""
+        if before:
+            # Inline — type only the formatted preceding text, skip the trigger phrase
+            formatted = fmt_fn(before)
+            last_text = formatted
+            paste_text(formatted)
+            app.show_message(label, "#0a84ff")
+            app.set_state("idle")
+            return True
+        # Standalone — backspace the previous recording and replace with formatted version
+        target = _prev_last_text
+        if not target:
+            return False
+        for _ in range(len(target) + 1):
+            typer.press(Key.backspace); typer.release(Key.backspace)
+        formatted = fmt_fn(target)
+        last_text = formatted
+        paste_text(formatted)
+        app.show_message(label, "#0a84ff")
+        app.set_state("idle")
+        return True
+
+    if _apply_fmt(("make bold", "bold that"),                                    lambda t: f"**{t}**",                                                "Bolded!"): return
+    if _apply_fmt(("make italic", "italic that"),                                lambda t: f"*{t}*",                                                  "Italicized!"): return
+    if _apply_fmt(("format as code", "code that", "make code"),                  lambda t: f"`{t}`",                                                  "Code formatted!"): return
+    if _apply_fmt(("make heading", "heading that", "make title"),                lambda t: f"# {t}",                                                  "Heading!"): return
+    if _apply_fmt(("all caps", "make caps", "capitalize that"),                  lambda t: t.upper(),                                                 "ALL CAPS!"): return
+    if _apply_fmt(("make bullet", "bullet that", "create list", "make list"),    lambda t: "\n".join(f"• {s.strip()}" for s in t.split('.') if s.strip()), "Bulleted!"): return
+    if _apply_fmt(("make quote", "quote that", "block quote"),                   lambda t: f"> {t}",                                                  "Quoted!"): return
+    if _apply_fmt(("strikethrough that", "strike that"),                         lambda t: f"~~{t}~~",                                                "Strikethrough!"): return
 
     if lower in ("copy that", "copy last"):
         if last_text:
@@ -2364,9 +2382,7 @@ def _trigger_wake():
     app.set_state("recording")
     app.root.after(0, app.start_wave)
     app.root.after(100, lambda: app.canvas.itemconfig(
-        app.label,
-        text=f"Jarvis recording... keep speaking. Press {settings.get('hotkey_label', 'Right Option')} to stop",
-        fill=app.TEXT_WHITE
+        app.label, text="Keep speaking · press ⌥ to stop", fill=app.TEXT_WHITE
     ))
     log_event("wake", "Jarvis dictation started")
     threading.Thread(target=play_sound, args=("start",), daemon=True).start()
@@ -3089,6 +3105,9 @@ class DictationApp:
 
     def __init__(self, root):
         self.root, self._ready, self._blink_job, self._blink_on, self._msg_timer = root, False, None, True, None
+        self._marquee_item = None
+        self._marquee_running = False
+        self._scroll_job = None
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.96)
@@ -3174,15 +3193,58 @@ class DictationApp:
     def set_state(self, state):
         self.root.after(0, self._apply_state, state)
 
+    def _start_marquee(self, text, color):
+        """Scroll text across the HUD content area (x=47…W-55) in a loop."""
+        self._stop_marquee()
+        self.canvas.itemconfig(self.label, text="")          # hide static label
+        self._marquee_item = self.canvas.create_text(
+            self.W + 20, self.H // 2,
+            text=text, font=("Helvetica Neue", 13), fill=color, anchor="w"
+        )
+        # Keep dot, appname, appicon and ✕ visually above the scrolling text
+        self.canvas.tag_raise(self.dot)
+        self.canvas.tag_raise(self.appname)
+        self.canvas.tag_raise(self.appicon)
+        self.canvas.tag_raise("close")
+        self._marquee_x = float(self.W + 20)
+        self._marquee_running = True
+        self._tick_marquee()
+
+    def _tick_marquee(self):
+        if not self._marquee_running or not self._marquee_item:
+            return
+        self._marquee_x -= 1.5
+        bb = self.canvas.bbox(self._marquee_item)
+        if bb and bb[2] < 47:               # text fully past the divider — loop
+            self._marquee_x = float(self.W + 20)
+        self.canvas.coords(self._marquee_item, self._marquee_x, self.H // 2)
+        self._scroll_job = self.root.after(30, self._tick_marquee)
+
+    def _stop_marquee(self):
+        self._marquee_running = False
+        if self._scroll_job:
+            self.root.after_cancel(self._scroll_job)
+            self._scroll_job = None
+        if self._marquee_item:
+            try:
+                self.canvas.delete(self._marquee_item)
+            except Exception:
+                pass
+            self._marquee_item = None
+        # Restore static label to its normal position/width
+        self.canvas.coords(self.label, 80, self.H // 2)
+        self.canvas.itemconfig(self.label, width=260)
+
     def _apply_state(self, state):
         if self._blink_job:
             self.root.after_cancel(self._blink_job)
             self._blink_job = None
         if state != "recording":
             self.stop_wave()
+            self._stop_marquee()
         if state == "idle":
             self.canvas.itemconfig(self.dot, fill=self.TEXT_DIM)
-            self.canvas.itemconfig(self.label, text=f"{'Press' if settings.get('toggle_mode') else 'Hold'} {settings.get('hotkey_label', 'Right Option')} to dictate", fill=self.TEXT_DIM)
+            self.canvas.itemconfig(self.label, text="Hold ⌥ to dictate", fill=self.TEXT_DIM)
         elif state == "recording":
             self.canvas.itemconfig(self.dot, fill=self.RED)
             self.canvas.itemconfig(self.label, text=f"Recording... {'press' if settings.get('toggle_mode') else 'release'} to stop", fill=self.TEXT_WHITE)
