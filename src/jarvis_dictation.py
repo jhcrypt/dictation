@@ -568,38 +568,38 @@ _ollama_status_cache: str = "unknown"
 def _check_ollama_status(model: str = OLLAMA_MODEL) -> str:
     """Return one of: ready | not_installed | not_running | model_missing.
 
-    Checks are fast shell probes — this is safe to call from any thread.
-    Does NOT start Ollama or download anything.
+    Uses CLI probes as the primary signal — the Ollama desktop app installs
+    the CLI regardless of whether the Python 'ollama' library is bundled.
+    Safe to call from any thread. Does NOT start Ollama or download anything.
     """
     import shutil, subprocess as _sp
-    # 1. Is the ollama Python library installed?
-    try:
-        import ollama as _ol  # noqa: F401
-    except ImportError:
-        _safe_print("[ollama] status: not installed")
+
+    # 1. Is the ollama CLI present on PATH?
+    #    Search common install locations in case /usr/local/bin isn't on PATH
+    #    inside the packaged .app environment.
+    cli_path = (
+        shutil.which("ollama")
+        or (os.path.exists("/usr/local/bin/ollama") and "/usr/local/bin/ollama")
+        or (os.path.exists("/opt/homebrew/bin/ollama") and "/opt/homebrew/bin/ollama")
+        or None
+    )
+    if not cli_path:
+        _safe_print("[ollama] status: not installed (CLI not found)")
         return "not_installed"
 
-    # 2. Is the ollama CLI present on PATH?  (library can be installed even if
-    #    the desktop app is not — check both.)
-    cli_present = shutil.which("ollama") is not None
-
-    # 3. Is the server responding?
+    # 2. Is the server responding?
     try:
-        _sp.run(["ollama", "list"], capture_output=True, timeout=3, check=True)
-    except (FileNotFoundError, _sp.CalledProcessError, _sp.TimeoutExpired):
-        # CLI missing OR server not running
-        if not cli_present:
-            _safe_print("[ollama] status: not installed")
-            return "not_installed"
+        _sp.run([cli_path, "list"], capture_output=True, timeout=4, check=True)
+    except _sp.CalledProcessError:
         _safe_print("[ollama] status: server not running")
         return "not_running"
-    except Exception:
+    except (_sp.TimeoutExpired, FileNotFoundError, OSError, Exception):
         _safe_print("[ollama] status: server not running")
         return "not_running"
 
-    # 4. Is the recommended model present?
+    # 3. Is the recommended model present?
     try:
-        result = _sp.run(["ollama", "list"], capture_output=True, timeout=5, text=True)
+        result = _sp.run([cli_path, "list"], capture_output=True, timeout=5, text=True)
         if model not in result.stdout:
             _safe_print(f"[ollama] status: model missing ({model})")
             return "model_missing"
@@ -4405,7 +4405,13 @@ class DictationApp:
             status_icon_lbl.configure(text=STATUS_LABELS.get(s, s), fg=col)
             status_detail_lbl.configure(text=STATUS_DETAIL.get(s, ""))
 
+        # Show cached value immediately, then refresh in background so the
+        # card always reflects the current state when the page is opened.
         _update_status_card(_ollama_status_cache)
+        def _auto_refresh():
+            fresh = _refresh_ollama_status()
+            p.after(0, lambda: _update_status_card(fresh))
+        threading.Thread(target=_auto_refresh, daemon=True, name="ollama-status-ui").start()
 
         # ── Action buttons ────────────────────────────────────────────────────
         # Layout: 3 rows, max 2 buttons per row.
