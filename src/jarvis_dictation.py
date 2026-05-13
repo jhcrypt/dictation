@@ -8,8 +8,10 @@ v6.1.18 fixes:
   - Spark Desktop support on M1 Macs: email commands now try Spark Desktop,
     Spark, Mail, then Outlook; Email profile/formatting explicitly recognizes
     Spark Desktop.
-  - Paste reliability preserved: clipboard is verified before Cmd+V and
-    previous clipboard is restored after paste.
+  - Paste reliability preserved: clipboard is verified before Cmd+V.
+    Previous clipboard is NOT restored by default (eliminates old-content
+    paste race); set restore_clipboard_after_paste=true to re-enable with
+    a mandatory 2.0 s delay.
 
 v6.1.15 fixes:
   - Menu bar icon restored: strong PyObjC reference prevents GC from wiping
@@ -29,7 +31,7 @@ v4 fixes:
   - audio_frames guarded by a threading.Lock() (race condition fix)
   - AppleScript injection prevention via _osa_escape()
   - OpenAI key stored in macOS Keychain (falls back to settings JSON)
-  - paste_text clipboard restore wrapped in finally (no clipboard clobber)
+  - paste_text clipboard restore is now opt-in via restore_clipboard_after_paste setting
   - Snippets and vocab cached in memory (no disk read per dictation)
   - Duplicate/inconsistent silence thresholds unified to named constants
   - app-is-None guard on all callbacks that fire before main() completes
@@ -1541,10 +1543,48 @@ def save_wav(frames, path):
 
 _paste_lock = threading.Lock()   # prevents clipboard desync from overlapping pastes
 
-def paste_text(text):
-    """Paste dictated text reliably without leaving the clipboard changed.
+_MOJIBAKE_MAP = [
+    # Broken UTF-8 smart punctuation produced when macOS encodes Mac-Roman
+    # curly quotes/dashes into a UTF-8 stream that gets mis-decoded.
+    ("‚Äô", "’"),   # right single quotation mark  →  '
+    ("‚Äú", "“"),   # left  double quotation mark  →  "
+    ("‚Äù", "”"),   # right double quotation mark  →  "
+    ("‚Äî", "—"),   # em dash                      →  —
+    ("‚Äì", "–"),   # en dash                      →  –
+    ("‚Ä¶", "…"),   # horizontal ellipsis          →  …
+    ("¬†", " "),  # ¬† non-breaking space sequence → space
+    # Normalise Unicode typographic chars to plain ASCII for paste safety
+    ("’", "'"),     # right single quote → apostrophe
+    ("‘", "'"),     # left  single quote → apostrophe
+    ("“", '"'),     # left  double quote → straight double quote
+    ("”", '"'),     # right double quote → straight double quote
+    ("—", " - "),   # em dash            → spaced hyphen
+    ("–", "-"),     # en dash            → hyphen
+    ("…", "..."),   # ellipsis           → three dots
+]
 
-    Clipboard flow: save → write → verify → send Cmd+V → restore (always).
+def _repair_mojibake(text):
+    """Fix broken UTF-8 smart-punctuation sequences before pasting."""
+    repaired = text
+    for broken, fixed in _MOJIBAKE_MAP:
+        repaired = repaired.replace(broken, fixed)
+    if repaired != text:
+        log_event("text", "repaired mojibake punctuation")
+    return repaired
+
+
+def paste_text(text):
+    """Paste dictated text reliably.
+
+    Clipboard flow: write → verify → send Cmd+V → optionally restore.
+
+    By default the previous clipboard is NOT restored, so the dictated text
+    stays on the clipboard after pasting (eliminates the race where a too-fast
+    restore causes the target app to paste the old content instead).
+
+    Set  restore_clipboard_after_paste = true  in Settings to re-enable
+    restore.  A 2.0 s delay is enforced before restoring so the target app
+    always sees the dictated text first.
 
     Cmd+V transport order:
       1. pynput Controller (works in .app without Automation/System Events)
@@ -1554,6 +1594,7 @@ def paste_text(text):
     osascript / System Events is intentionally not used — it requires a separate
     Automation TCC grant that the packaged .app does not have by default.
     """
+    text = _repair_mojibake(text)
     with _paste_lock:
         paste_payload = (text + " ").encode()
         import subprocess as _sp
@@ -1562,74 +1603,81 @@ def paste_text(text):
         log_event("paste", f"preparing {len(text)} chars")
         prev = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
 
+        # ── 1. Write + verify clipboard ───────────────────────────────────────
+        verified = False
+        for attempt in range(8):
+            _sp.run(["pbcopy"], input=paste_payload, timeout=2)
+            _t.sleep(0.08 + attempt * 0.03)
+            if _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout == paste_payload:
+                verified = True
+                log_event("paste", "clipboard verified")
+                break
+            log_event("paste", f"retry {attempt + 1}")
+
+        if not verified:
+            log_event("paste", "clipboard verification failed — typing directly")
+            _run_on_main(lambda: typer.type(text + " "))
+            return
+
+        # ── 2. Send Cmd+V ─────────────────────────────────────────────────────
+        sent = False
+
+        # Primary: pynput Controller — no osascript/System Events needed.
+        # Must run on main thread: pynput calls TSMGetInputSourceProperty
+        # to resolve 'v' → keycode, which requires the main dispatch queue.
         try:
-            # ── 1. Write + verify clipboard ───────────────────────────────────
-            verified = False
-            for attempt in range(8):
-                _sp.run(["pbcopy"], input=paste_payload, timeout=2)
-                _t.sleep(0.08 + attempt * 0.03)
-                if _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout == paste_payload:
-                    verified = True
-                    log_event("paste", "clipboard verified")
-                    break
-                log_event("paste", f"retry {attempt + 1}")
+            from pynput.keyboard import Controller as _KbdCtrl, Key as _Key
+            def _pynput_cmd_v():
+                _kbd = _KbdCtrl()
+                with _kbd.pressed(_Key.cmd):
+                    _kbd.press('v')
+                    _kbd.release('v')
+            _run_on_main(_pynput_cmd_v)
+            log_event("paste", "sent cmd+v")
+            sent = True
+        except Exception as _pe:
+            log_event("paste", f"pynput cmd+v failed ({_pe})")
 
-            if not verified:
-                log_event("paste", "clipboard verification failed — typing directly")
-                _run_on_main(lambda: typer.type(text + " "))
-                return
-
-            # ── 2. Send Cmd+V ─────────────────────────────────────────────────
-            sent = False
-
-            # Primary: pynput Controller — no osascript/System Events needed.
-            # Must run on main thread: pynput calls TSMGetInputSourceProperty
-            # to resolve 'v' → keycode, which requires the main dispatch queue.
+        # Fallback: Quartz CGEventPost.
+        if not sent:
             try:
-                from pynput.keyboard import Controller as _KbdCtrl, Key as _Key
-                def _pynput_cmd_v():
-                    _kbd = _KbdCtrl()
-                    with _kbd.pressed(_Key.cmd):
-                        _kbd.press('v')
-                        _kbd.release('v')
-                _run_on_main(_pynput_cmd_v)
+                import Quartz as _Q
+                _V = 9  # keycode for 'v'
+                _dn = _Q.CGEventCreateKeyboardEvent(None, _V, True)
+                _up = _Q.CGEventCreateKeyboardEvent(None, _V, False)
+                _Q.CGEventSetFlags(_dn, _Q.kCGEventFlagMaskCommand)
+                _Q.CGEventSetFlags(_up, _Q.kCGEventFlagMaskCommand)
+                _Q.CGEventPost(_Q.kCGHIDEventTap, _dn)
+                _t.sleep(0.05)
+                _Q.CGEventPost(_Q.kCGHIDEventTap, _up)
                 log_event("paste", "sent cmd+v")
                 sent = True
-            except Exception as _pe:
-                log_event("paste", f"pynput cmd+v failed ({_pe})")
+            except Exception as _qe:
+                log_event("paste", f"CGEventPost cmd+v failed ({_qe})")
 
-            # Fallback: Quartz CGEventPost.
-            if not sent:
-                try:
-                    import Quartz as _Q
-                    _V = 9  # keycode for 'v'
-                    _dn = _Q.CGEventCreateKeyboardEvent(None, _V, True)
-                    _up = _Q.CGEventCreateKeyboardEvent(None, _V, False)
-                    _Q.CGEventSetFlags(_dn, _Q.kCGEventFlagMaskCommand)
-                    _Q.CGEventSetFlags(_up, _Q.kCGEventFlagMaskCommand)
-                    _Q.CGEventPost(_Q.kCGHIDEventTap, _dn)
-                    _t.sleep(0.05)
-                    _Q.CGEventPost(_Q.kCGHIDEventTap, _up)
-                    log_event("paste", "sent cmd+v")
-                    sent = True
-                except Exception as _qe:
-                    log_event("paste", f"CGEventPost cmd+v failed ({_qe})")
+        if not sent:
+            log_event("paste", "cmd+v failed — typing directly")
+            _run_on_main(lambda: typer.type(text + " "))
+            return
 
-            if not sent:
-                log_event("paste", "cmd+v failed — typing directly")
-                _run_on_main(lambda: typer.type(text + " "))
-                return
+        # ── 3. Post-paste wait ────────────────────────────────────────────────
+        # Give the target app 1.0 s to consume the clipboard before we decide
+        # whether to restore it.  This eliminates the race where the app had
+        # not yet read the clipboard before the old content was written back.
+        _t.sleep(1.0)
 
-            # Give the target app time to consume the clipboard before restore.
-            _t.sleep(0.35)
-
-        finally:
-            # Always restore the previous clipboard.
+        # ── 4. Conditional clipboard restore ─────────────────────────────────
+        _restore = settings.get("restore_clipboard_after_paste", False)
+        if not _restore:
+            log_event("paste", "leaving dictated text on clipboard")
+        else:
+            # Extra 2.0 s on top of the 1.0 s already elapsed (3.0 s total).
+            _t.sleep(2.0)
             try:
                 _sp.run(["pbcopy"], input=prev, timeout=2)
-                log_event("paste", "restored previous clipboard")
+                log_event("paste", "restored previous clipboard after delay")
             except Exception:
-                pass
+                log_event("paste", "clipboard restore failed")
 
 def smart_punctuate(text):
     if not text or text.rstrip()[-1] in ".!?": return text
@@ -4621,7 +4669,8 @@ def start_backend(stream):
     # GIL-releasing function.  Starting the stream after the wake-word thread
     # caused PortAudio's C-level thread init to corrupt the wake-word thread's
     # PyThreadState, producing the fatal GIL abort on time.sleep().
-    stream.start()
+    if stream is not None:
+        stream.start()
     # Key detection is now handled entirely by the Quartz HID tap installed via
     # root.after(1000, _install_suppression_tap).  No pynput keyboard.Listener
     # thread is started here — eliminating the concurrent-SIMD SIGILL entirely.
@@ -5065,7 +5114,42 @@ def main():
     app = DictationApp(root)
     if not settings.get("show_hud", True):
         root.withdraw()
-    stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", device=MIC_DEVICE, callback=audio_callback)
+    # Intel Mac: device index from settings may be invalid if audio devices changed
+    # (e.g. headphones plugged in at startup).  Try configured device first, then
+    # system default (None), then first available input device.
+    stream = None
+    _devices_to_try = [MIC_DEVICE, None] if MIC_DEVICE is not None else [None]
+    for _dev in _devices_to_try:
+        for _rate in [SAMPLE_RATE, 44100, 16000]:
+            try:
+                stream = sd.InputStream(samplerate=_rate, channels=1, dtype="float32",
+                                        device=_dev, callback=audio_callback)
+                print(f"[audio] opened input stream: device={_dev!r} rate={_rate}")
+                break
+            except Exception as _e:
+                print(f"[audio] stream open failed (device={_dev!r} rate={_rate}): {_e}")
+        if stream:
+            break
+    if not stream:
+        # Last resort: try every device that has input channels
+        try:
+            for _i, _d in enumerate(sd.query_devices()):
+                if _d["max_input_channels"] > 0:
+                    for _rate in [SAMPLE_RATE, 44100, 16000]:
+                        try:
+                            stream = sd.InputStream(samplerate=_rate, channels=1,
+                                                    dtype="float32", device=_i,
+                                                    callback=audio_callback)
+                            print(f"[audio] fallback stream: device={_i} rate={_rate}")
+                            break
+                        except Exception:
+                            pass
+                if stream:
+                    break
+        except Exception as _e:
+            print(f"[audio] device enumeration failed: {_e}")
+    if not stream:
+        print("[audio] no input device available — app will run without mic")
     threading.Thread(target=start_backend, args=(stream,), daemon=True).start()
     root.after(500, _init_menubar)
     root.after(600, _drain_input_events)
