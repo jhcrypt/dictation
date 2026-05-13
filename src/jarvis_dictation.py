@@ -1715,6 +1715,58 @@ def paste_text(text):
             except Exception:
                 pass
 
+# ── Mojibake / mangled-whitespace repair ─────────────────────────────────────
+# macOS sometimes encodes non-breaking spaces and smart punctuation as UTF-8
+# byte sequences that pass through as garbled Latin-1 look-alikes.  These
+# repairs must run on ALL user-facing text before display, paste, or save.
+_MOJIBAKE_MAP = [
+    ("¬¨‚Ä†",  " "),   # non-breaking space rendered via two-byte mojibake
+    ("¬†",      " "),   # lone variant
+    ("Â ",      " "),   # UTF-8 NBSP decoded as Latin-1
+    (" ",  " "),   # actual Unicode non-breaking space
+    ("‚Äô",    "'"),   # right single quotation mark
+    ("‚Äú",    '"'),   # left double quotation mark
+    ("‚Äù",    '"'),   # right double quotation mark
+    ("‚Äì",    "-"),   # en dash
+    ("‚Äî",    "-"),   # em dash
+    ("‚Ä¶",    "..."), # horizontal ellipsis
+]
+
+def _repair_mojibake(text: str) -> str:
+    """Replace mojibake sequences with their intended characters.
+
+    Also collapses repeated spaces and removes spaces before punctuation.
+    Logs once per call when any substitution is made.
+    """
+    if not text:
+        return text
+    original = text
+    for bad, good in _MOJIBAKE_MAP:
+        text = text.replace(bad, good)
+    # Collapse multiple spaces → single space
+    import re as _re
+    text = _re.sub(r" {2,}", " ", text)
+    # Remove spaces immediately before sentence-ending punctuation
+    text = _re.sub(r" +([.,!?;:])", r"\1", text)
+    if text != original:
+        _safe_print("[text] repaired mojibake punctuation")
+    return text
+
+# ── Self-test (runs once at import, silent on pass) ───────────────────────────
+def _run_mojibake_tests():
+    cases = [
+        ("Drag¬¨‚Ä†Jarvis Dictation¬¨‚Ä†to your Applications folder",
+         "Drag Jarvis Dictation to your Applications folder"),
+        ("On first launch, right-click the app and select¬¨‚Ä†Open¬¨‚Ä†to bypass the macOS security prompt",
+         "On first launch, right-click the app and select Open to bypass the macOS security prompt"),
+        ("It‚Äôs a ‚Äúcool‚Äù thing",
+         "It's a \"cool\" thing"),
+    ]
+    for inp, expected in cases:
+        result = _repair_mojibake(inp)
+        assert result == expected, f"mojibake test failed:\n  in:  {inp!r}\n  got: {result!r}\n  exp: {expected!r}"
+_run_mojibake_tests()
+
 def smart_punctuate(text):
     if not text or text.rstrip()[-1] in ".!?": return text
     question_starters = ("what", "when", "where", "who", "why", "how", "which", "whose", "is ", "are ", "was ", "were ", "will ", "would ", "could ", "should ", "do ", "does ", "did ", "have ", "has ", "had ", "can ", "may ", "might ", "shall ", "am ", "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't", "won't", "wouldn't", "couldn't")
@@ -1950,7 +2002,7 @@ def transcribe_and_type(wav_path, raw_frames):
 
     # 1. Use the final protected raw_text for output so "UI" stays "UI"
     _prev_last_text = last_text   # save before overwrite — used by formatting commands
-    text = smart_punctuate(apply_snippets(symspell_correct(raw_text)))
+    text = _repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text))))
     last_text = text
     log_event("final", repr(text))
     
@@ -2139,7 +2191,7 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
-    text = smart_punctuate(apply_snippets(symspell_correct(raw_text)))
+    text = _repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text))))
     last_text = text
     _add_to_history(text)
 
