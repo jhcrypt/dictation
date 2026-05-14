@@ -1789,6 +1789,51 @@ def _run_mojibake_tests():
         )
 _run_mojibake_tests()
 
+# ── Module-level rounded-corner frame helper ─────────────────────────────────
+# Mirrors _rounded_card_canvas() (defined inside open_settings) but is
+# available at module level so it can be used in every window.
+def _rr(parent, bg_col, radius=10, padx=0, pady=0):
+    """Return an inner tk.Frame inside a Canvas rounded-corner card.
+
+    Works in any window — does not rely on the settings-window scope.
+    Use for fill='x' containers (cards, input wrappers, status panels).
+    Pack the returned frame's children normally.
+    """
+    try:
+        parent_bg = parent.cget("bg")
+    except Exception:
+        parent_bg = "#1c1c1e"
+    outer = tk.Frame(parent, bg=parent_bg)
+    outer.pack(fill="x", padx=padx, pady=pady)
+    c = tk.Canvas(outer, bg=parent_bg, highlightthickness=0, bd=0)
+    c.pack(fill="x", expand=True)
+    inner = tk.Frame(c, bg=bg_col)
+    win_id = c.create_window(0, 0, window=inner, anchor="nw")
+    def _redraw(event=None):
+        w = c.winfo_width()
+        if w <= 1:
+            c.after(20, _redraw)
+            return
+        h = max(inner.winfo_reqheight(), 20)
+        c.configure(height=h)
+        c.itemconfig(win_id, width=w, height=h)
+        c.delete("rr")
+        R = radius
+        for x0, y0, x1, y1, start in [
+            (0,     0,     2*R,   2*R,   90),
+            (w-2*R, 0,     w,     2*R,   0),
+            (0,     h-2*R, 2*R,   h,     180),
+            (w-2*R, h-2*R, w,     h,     270),
+        ]:
+            c.create_arc(x0, y0, x1, y1, start=start, extent=90,
+                         fill=bg_col, outline="", tags="rr")
+        c.create_rectangle(R, 0, w-R, h, fill=bg_col, outline="", tags="rr")
+        c.create_rectangle(0, R, w, h-R, fill=bg_col, outline="", tags="rr")
+        c.tag_lower("rr")
+    inner.bind("<Configure>", _redraw)
+    c.bind("<Configure>",     _redraw)
+    return inner
+
 def smart_punctuate(text):
     if not text or text.rstrip()[-1] in ".!?": return text
     # Don't add punctuation to email addresses or URLs — they carry their own
@@ -3649,9 +3694,8 @@ class DictationApp:
                  bg=BG, fg=DIM, font=(FONT, 9, "bold")).pack(anchor="w")
         trigger_var = tk.StringVar()
 
-        # Simple dark card frames — fully interactive, no canvas layering
-        trigger_f = tk.Frame(body, bg=CARD, highlightthickness=0)
-        trigger_f.pack(fill="x", pady=(4, 12))
+        # Rounded input frames
+        trigger_f = _rr(body, CARD, radius=8, padx=0, pady=(4, 12))
         trigger_entry = tk.Entry(trigger_f, textvariable=trigger_var,
                                  bg=CARD, fg=FG, font=(FONT, 13),
                                  relief="flat", insertbackground=FG,
@@ -3661,6 +3705,7 @@ class DictationApp:
 
         tk.Label(body, text="EXPANSION  —  the full text that gets typed when triggered",
                  bg=BG, fg=DIM, font=(FONT, 9, "bold")).pack(anchor="w")
+        # content_f is a large expand=True text editor — flat surface intentional
         content_f = tk.Frame(body, bg=CARD, highlightthickness=0)
         content_f.pack(fill="both", expand=True, pady=(4, 8))
         content_text = tk.Text(content_f, bg=CARD, fg=FG, font=(FONT, 13),
@@ -4689,23 +4734,37 @@ class DictationApp:
                  font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
         act_row = tk.Frame(p, bg=BG)
         act_row.pack(anchor="w", padx=24)
-        act_btns = {}
+        _ACT_W, _ACT_H, _ACT_R = 104, 34, 7
+        _act_draws = {}   # name → redraw callable
+
         def _select_action(chosen):
             action_var.set(chosen)
-            for name, (btn, lbl_w) in act_btns.items():
-                on = (name == chosen)
-                btn.configure(bg=ACC if on else CARD)
-                lbl_w.configure(bg=ACC if on else CARD,
-                                fg="#fff" if on else DIM)
+            for name, draw_fn in _act_draws.items():
+                draw_fn(name == chosen)
+
+        def _make_act_btn(parent, label):
+            c = tk.Canvas(parent, width=_ACT_W, height=_ACT_H,
+                          bg=BG, highlightthickness=0, cursor="hand2")
+            c.pack(side="left", padx=(0, 6))
+            def _draw(selected, _c=c, _lbl=label):
+                _c.delete("all")
+                col = ACC if selected else CARD
+                fg  = "#ffffff" if selected else DIM
+                r   = _ACT_R
+                w, h = _ACT_W, _ACT_H
+                _c.create_arc(0,   0,   2*r, 2*r, start=90,  extent=90, fill=col, outline=col)
+                _c.create_arc(w-2*r, 0, w,   2*r, start=0,   extent=90, fill=col, outline=col)
+                _c.create_arc(0,   h-2*r, 2*r, h, start=180, extent=90, fill=col, outline=col)
+                _c.create_arc(w-2*r, h-2*r, w, h, start=270, extent=90, fill=col, outline=col)
+                _c.create_rectangle(r, 0, w-r, h, fill=col, outline=col)
+                _c.create_rectangle(0, r, w, h-r, fill=col, outline=col)
+                _c.create_text(w//2, h//2, text=_lbl, fill=fg, font=(FONT, 11))
+            _draw(False)
+            _act_draws[label] = _draw
+            c.bind("<Button-1>", lambda e, n=label: _select_action(n))
+
         for act_name in action_map:
-            btn_f = tk.Frame(act_row, bg=CARD, highlightthickness=0, cursor="hand2")
-            btn_f.pack(side="left", padx=(0, 6))
-            btn_l = tk.Label(btn_f, text=act_name, bg=CARD, fg=DIM,
-                             font=(FONT, 11), padx=14, cursor="hand2")
-            btn_l.pack(ipady=6)
-            act_btns[act_name] = (btn_f, btn_l)
-            for w in (btn_f, btn_l):
-                w.bind("<Button-1>", lambda e, n=act_name: _select_action(n))
+            _make_act_btn(act_row, act_name)
         _select_action("Open URL")
 
         tgt_entry = _field(p, "TARGET  —  URL / app name / text to type")
@@ -4766,8 +4825,9 @@ class DictationApp:
         # Save button gets its bottom space before the text box expands.
         save_btn_row(p, lambda: _save())
 
-        v_frame = tk.Frame(p, bg=CARD, highlightthickness=0)
-        v_frame.pack(fill="both", expand=True, padx=24, pady=10)
+        v_outer = tk.Frame(p, bg=BG)
+        v_outer.pack(fill="both", expand=True, padx=24, pady=10)
+        v_frame = _rr(v_outer, CARD, radius=10, padx=0, pady=0)
 
         v_scroll = tk.Scrollbar(v_frame, orient="vertical", bg=BG, troughcolor=BG,
                                  width=10, elementborderwidth=0, bd=0)
@@ -4945,8 +5005,7 @@ class DictationApp:
         tk.Label(win, text="Let's do a quick setup so recording feels reliable from the first use.",
                  bg=BG, fg=DIM, font=(FONT, 12), wraplength=390, justify="left").pack(anchor="w", padx=28, pady=(0, 18))
 
-        card = tk.Frame(win, bg=CARD, highlightthickness=0)
-        card.pack(fill="x", padx=28, pady=(0, 16))
+        card = _rr(win, CARD, radius=12, padx=28, pady=(0, 16))
         for txt in (
             "1. Confirm Right Option as the record key",
             "2. Select the correct microphone if needed",
