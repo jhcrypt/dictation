@@ -2691,7 +2691,7 @@ def _wake_word_loop_inner():
             from openwakeword.model import Model as WakeModel
             oww = WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
 
-        _safe_print("[wake] ready — say 'Hey Jarvis' to start dictating")
+        _safe_print(f"[wake] ready — WAKE_ENABLED={WAKE_ENABLED}, threshold={WAKE_THRESHOLD} — say 'Hey Jarvis' to start dictating")
     except Exception as e:
         _safe_print(f"[wake] openwakeword failed ({e}), wake word disabled")
         return
@@ -5219,22 +5219,30 @@ def _tap_record_toggle_stop():
 
 
 def _tap_cancel():
-    global recording, cancelled, _recording_started_by_wake
+    global recording, cancelled, _recording_started_by_wake, _wake_cooldown_until
     if not recording:
         return
     recording = False
     _recording_started_by_wake = False
     cancelled = True
+    # Give the wake-word cooldown a 2-second window so any tail of the
+    # cancelled speech does not immediately re-trigger dictation.
+    _wake_cooldown_until = time.time() + 2.0
     _wake_active.clear()
     with _audio_lock:
         audio_frames.clear()
     if app:
         app.root.after(0, app.stop_wave)
         app.show_message("Cancelled", "#ff9f0a")
+        # Reset cancelled after 600 ms — long enough for any in-flight
+        # transcribe_and_type call to read the flag, short enough that
+        # "Hey Jarvis" resumes listening quickly after a cancel.
+        app.root.after(600, lambda: globals().update({"cancelled": False}))
     threading.Thread(target=resume_media, daemon=True).start()
     if app:
         app.root.after(1500, lambda: app.set_state("idle"))
     log_event("record", "cancelled")
+    _safe_print("[wake] cancelled — wake word will resume in ~2s")
 
 
 def _queue_input_event(name: str):
