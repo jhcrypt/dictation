@@ -1219,7 +1219,7 @@ MODEL, SAMPLE_RATE, CHANNELS, MIC_DEVICE = settings["model"], 48000, 1, settings
 import platform as _platform
 _is_arm = _platform.machine() == "arm64"
 DEVICE, COMPUTE = "cpu", "int8"
-WAKE_WORD, WAKE_ENABLED, WAKE_CHUNK_SECS, WAKE_THRESHOLD, WAKE_MODEL_SIZE = "hey cryptic", True, 2.5, 0.5, "tiny.en"
+WAKE_WORD, WAKE_ENABLED, WAKE_CHUNK_SECS, WAKE_THRESHOLD, WAKE_MODEL_SIZE = "hey cryptic", True, 2.5, 0.75, "tiny.en"
 OLLAMA_ENABLED = settings.get("use_ollama", True)  # live-toggled by Settings → Ollama
 
 # GLOBALS RESTORED
