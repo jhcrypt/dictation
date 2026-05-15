@@ -2951,7 +2951,10 @@ def transcribe_and_type(wav_path, raw_frames):
 
     # Suppress the English vocabulary prompt when transcribing a non-English language —
     # an English initial_prompt biases multilingual models toward English output.
-    _whisper_prompt = personal_prompt if not _is_non_english else None
+    # Distil-whisper models were not trained with initial_prompt conditioning —
+    # passing one causes them to return empty output, so always skip it for distil.
+    _is_distil = active_model_name.startswith("distil-")
+    _whisper_prompt = personal_prompt if (not _is_non_english and not _is_distil) else None
 
     # beam_size=1 (greedy) is 3-5x faster than beam_size=5 on Intel CPU
     _BEAM = 1
