@@ -1,5 +1,32 @@
 # Changelog
 
+## v6.3.0 — Smart Cleanup & Dictation Quality
+
+### New: Dictation Quality preset
+- New **Dictation Quality** dropdown in Settings → Audio & Language: **Fast / Balanced / Accurate**.
+- Balanced is the default. Selecting a quality automatically chooses the right Whisper model for the current language.
+- English + Fast → `tiny.en`, Balanced → `small.en`, Accurate → `medium.en`.
+- Auto-detect / Non-English + Fast → `tiny`, Balanced → `small`, Accurate → `medium`.
+- **Advanced Speech Model** dropdown remains available for manual model selection.
+- Existing users' saved model is preserved on upgrade — quality sync only activates when quality or language is explicitly changed.
+
+### New: Smarter Ollama skip policy
+- Local AI Cleanup now skips Ollama automatically in **Auto** mode when it is unlikely to help, cutting perceived dictation latency roughly in half for short dictation.
+- Skips when: text is under 10 words, question-like, already well-formed, looks like a command, translation mode is active, Ollama worker is busy, non-English transcription, or correction is off.
+- **On** mode still runs Ollama for all eligible English dictation; safe mode, non-English, translation, and commands are always skipped.
+- Skip reason is logged: `[timing] ollama cleanup  skipped: short phrase`.
+
+### New: Pipeline timing logs
+- Every dictation now prints a clear timing breakdown to the terminal.
+- Segments logged: recording stop → WAV saved, Whisper transcription, Ollama cleanup, SymSpell + snippets + punctuate, command detection, personal corrections, translation (if used), paste_text, total stop → paste.
+- Format: `[timing] label                    elapsed ms`.
+
+### New: Documentation
+- `docs/INSTALL_ZIP.md` — end-user install guide for zip recipients (no terminal, no Conda).
+- README updated: Translation feature, Audio & Language settings, Workflows page, distil model explanation, troubleshooting entry for distil models.
+
+### Previous: Distil Model Fix (v6.2.4)
+
 ## v6.2.4 — Distil Model Fix
 
 ### Fix: distil-whisper models now transcribe correctly

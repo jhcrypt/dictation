@@ -304,8 +304,8 @@ _record_key_is_modifier: bool = True
 # into this queue; Tk drains it from its own event loop.
 _input_event_q: _queue.SimpleQueue = _queue.SimpleQueue()
 
-APP_VERSION = "6.2.4 Distil Model Fix"
-BUILD_ID    = "v6.2.4-m1-stable"
+APP_VERSION = "6.3.0 Smart Cleanup & Dictation Quality"
+BUILD_ID    = "v6.3.0-m1-stable"
 HOTKEY_DEBOUNCE_SECONDS = 0.18
 MIN_RECORD_SECONDS = 0.30
 
@@ -320,6 +320,12 @@ def log_event(area: str, message: str):
         print(f"[{area}] {message}")
     except Exception:
         pass
+
+def _timing(label: str, start: float) -> float:
+    """Print elapsed ms since `start` and return time.time() for the next segment."""
+    elapsed = (time.time() - start) * 1000
+    print(f"[timing] {label:<30} {elapsed:6.0f} ms")
+    return time.time()
 
 def _setting_float(name: str, fallback: float) -> float:
     try:
@@ -804,6 +810,46 @@ def _is_short_phrase_for_ollama(text: str) -> bool:
     words = _dictation_words(text)
     return len(words) <= 4
 
+def _is_repetitive(text: str) -> bool:
+    words = (text or "").lower().split()
+    return len(words) >= 4 and len(set(words)) / len(words) < 0.4
+
+def _already_well_formed(text: str) -> bool:
+    """True when text looks like clean, properly punctuated dictation that Ollama can't improve."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if not t[0].isupper():
+        return False
+    if t[-1] not in ".!?":
+        return False
+    words = _dictation_words(t)
+    if not words:
+        return False
+    # Reject if >50% of multi-letter words are ALL CAPS (Whisper artifact — not clean)
+    all_caps = sum(1 for w in words if len(w) > 1 and w.isupper())
+    if all_caps > len(words) * 0.5:
+        return False
+    return True
+
+# Lightweight command-pattern prefixes used to pre-screen text before Ollama.
+# These must match the leading tokens of recognized voice commands so we can
+# skip Ollama for inputs that will be handled by the command pipeline anyway.
+_CMD_PREFIXES: tuple[str, ...] = (
+    "send email", "email to", "compose email", "write an email", "new email",
+    "remind me", "set a reminder", "add reminder", "set reminder",
+    "open ", "close ", "kill ",
+    "search for", "google ", "look up",
+    "set volume", "volume up", "volume down", "mute", "unmute",
+    "hey jarvis", "jarvis ",
+)
+
+def _looks_like_dictation_command(text: str) -> bool:
+    """Heuristic: does text start with a known command pattern?
+    Used only to skip Ollama early — real command execution is downstream."""
+    t = re.sub(r"[^a-z0-9 ]", "", (text or "").lower()).strip()
+    return any(t == p.strip() or t.startswith(p) for p in _CMD_PREFIXES)
+
 def _is_question_like(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
@@ -816,6 +862,24 @@ def _is_question_like(text: str) -> bool:
     )
     first = _dictation_words(t)[:1]
     return t.endswith("?") or (first and first[0] in question_starters)
+
+_QUALITY_MODEL: dict[tuple[str, str | None], str] = {
+    ("Fast",     "English"):     "tiny.en",
+    ("Fast",     "Auto-detect"): "tiny",
+    ("Fast",     None):          "tiny",
+    ("Balanced", "English"):     "small.en",
+    ("Balanced", "Auto-detect"): "small",
+    ("Balanced", None):          "small",
+    ("Accurate", "English"):     "medium.en",
+    ("Accurate", "Auto-detect"): "medium",
+    ("Accurate", None):          "medium",
+}
+
+def _quality_to_model(quality: str, lang: str) -> str | None:
+    """Return the Whisper model for a quality preset + language combination.
+    Returns None for unknown quality values (e.g. "Advanced")."""
+    key = (quality, lang if lang in ("English", "Auto-detect") else None)
+    return _QUALITY_MODEL.get(key)
 
 def _looks_like_assistant_answer(text: str) -> bool:
     t = (text or "").strip().lower()
@@ -864,36 +928,64 @@ def _ollama_result_is_safe(original: str, refined: str) -> tuple[bool, str]:
 
     return True, "accepted"
 
-def _should_skip_ollama(text: str) -> tuple[bool, str]:
+def _should_skip_ollama(
+    text: str,
+    *,
+    mode: str = "auto",
+    is_non_english: bool = False,
+    translation_mode: bool = False,
+) -> tuple[bool, str]:
+    """Return (skip, reason). reason is '' when Ollama should run.
+
+    Checks that apply in every mode:
+      safe mode / disabled / correction off / non-English / repetitive
+
+    auto mode adds smart skips:
+      translation active / command-like / short (<10 words) / question-like /
+      already well-formed / worker busy
+
+    on mode adds only:
+      live Ollama availability / translation active / command-like
+    """
+    # ── Always skip ───────────────────────────────────────────────────────────
     if settings.get("safe_mode", False):
         return True, "safe mode"
-
-    # ai_cleanup_mode: "off" always skips; "on" skips if unavailable;
-    # "auto" (default) skips silently if unavailable — never shows an error.
-    mode = settings.get("ai_cleanup_mode", "auto")
     if mode == "off":
         return True, "disabled"
     if not settings.get("use_ollama", True) or not OLLAMA_ENABLED:
         return True, "disabled"
-
-    # For "on" mode, check live status and log clearly.
-    # For "auto" mode, the worker will fail gracefully anyway — no extra check needed.
-    if mode == "on":
-        status = _ollama_status_cache
-        if status == "not_installed":
-            _safe_print("[ollama] cleanup skipped — unavailable (not installed)")
-            return True, "unavailable"
-        if status == "not_running":
-            _safe_print("[ollama] cleanup skipped — unavailable (server not running)")
-            return True, "unavailable"
-        if status == "model_missing":
-            _safe_print("[ollama] cleanup skipped — unavailable (model missing)")
-            return True, "unavailable"
-
     if settings.get("correction_strength", "Standard") == "Off":
         return True, "correction off"
-    if _is_short_phrase_for_ollama(text):
+    if is_non_english:
+        return True, "non-English"
+    if _is_repetitive(text):
+        return True, "repetitive input"
+
+    # ── "on" mode ─────────────────────────────────────────────────────────────
+    if mode == "on":
+        status = _ollama_status_cache
+        if status in ("not_installed", "not_running", "model_missing"):
+            _safe_print(f"[ollama] cleanup skipped — unavailable ({status})")
+            return True, "unavailable"
+        if translation_mode:
+            return True, "translation active"
+        if _looks_like_dictation_command(text):
+            return True, "command detected"
+        return False, ""
+
+    # ── "auto" mode smart skips ───────────────────────────────────────────────
+    if translation_mode:
+        return True, "translation active"
+    if _looks_like_dictation_command(text):
+        return True, "command detected"
+    if len(_dictation_words(text)) < 10:
         return True, "short phrase"
+    if _is_question_like(text):
+        return True, "question-like"
+    if _already_well_formed(text):
+        return True, "already well-formed"
+    if _ollama_req_q.full():
+        return True, "worker busy"
     return False, ""
 
 def detect_jarvis_intent(text):
@@ -1288,6 +1380,7 @@ DEFAULT_SETTINGS = {
     # "Off" = no dictation translation; any other value = translate dictated text to that language.
     # Completely separate from translate_target_language (selected-text commands only).
     "translate_my_dictation": "Off",
+    "dictation_quality": "Balanced",
 }
 
 def load_settings():
@@ -2887,8 +2980,10 @@ def _deduplicate_whisper(text: str) -> str:
     return text
 
 
-def transcribe_and_type(wav_path, raw_frames):
+def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     global last_text, cancelled, snippet_state, snippet_trigger
+    if _t_stop is None:
+        _t_stop = time.time()
     if cancelled:
         cancelled = False
         app.set_state("idle")
@@ -2960,6 +3055,7 @@ def transcribe_and_type(wav_path, raw_frames):
     _BEAM = 1
 
     _info = None   # TranscriptionInfo — populated by local Whisper paths below
+    _t_whisper = time.time()
     if settings.get("cloud_mode") and not settings.get("safe_mode", False) and get_openai_key():
         raw_text = transcribe_cloud(wav_path)
         if not raw_text:
@@ -2968,6 +3064,7 @@ def transcribe_and_type(wav_path, raw_frames):
     else:
         segments, _info = whisper.transcribe(wav_path, beam_size=_BEAM, task=whisper_task, language=language_to_use, condition_on_previous_text=False, initial_prompt=_whisper_prompt, vad_filter=True, no_speech_threshold=0.6, compression_ratio_threshold=2.4)
         raw_text = " ".join(seg.text for seg in segments).strip()
+    _timing("whisper transcription", _t_whisper)
     print("[WHISPER RAW]=", repr(raw_text))
     print("[unicode] whisper_raw=", repr(raw_text))
 
@@ -2985,12 +3082,6 @@ def transcribe_and_type(wav_path, raw_frames):
     else:
         _detected_language = language_to_use or "en"
 
-    # Ollama refinement — protected by short-phrase bypass and a safety filter.
-    # This keeps Ollama as a cleanup layer instead of letting it answer the user.
-    def _is_repetitive(t):
-        words = t.lower().split()
-        return len(words) >= 4 and len(set(words)) / len(words) < 0.4
-
     raw_text = _deduplicate_whisper(raw_text)
     whisper_text = raw_text
     ollama_text = ""
@@ -3001,24 +3092,29 @@ def transcribe_and_type(wav_path, raw_frames):
     log_event("profile", f"{active_profile}" + (f" via {active_app}" if active_app else ""))
 
     # ── Ollama decision ───────────────────────────────────────────────────────
-    # Always skip Ollama for non-English — an English LLM mangles other languages.
     _cleanup_mode    = settings.get("ai_cleanup_mode", "auto")
     _spoken_lang_log = (settings.get("language", "en")
                         if not settings.get("auto_detect", True) else "auto")
-    if _is_non_english:
-        skip_ollama, skip_reason = True, "non-English transcription"
-        _will_run_ollama = False
-    else:
-        skip_ollama, skip_reason = _should_skip_ollama(raw_text)
-        _will_run_ollama = not skip_ollama and bool(raw_text) and not _is_repetitive(raw_text)
+    _early_translate  = settings.get("translate_my_dictation", "Off")
+    _translation_mode = bool(_early_translate and _early_translate != "Off")
+
+    skip_ollama, skip_reason = _should_skip_ollama(
+        raw_text,
+        mode=_cleanup_mode,
+        is_non_english=_is_non_english,
+        translation_mode=_translation_mode,
+    )
+    _will_run_ollama = not skip_ollama and bool(raw_text)
     print("[ollama decision] spoken_language=",  _spoken_lang_log)
     print("[ollama decision] language_to_use=",  language_to_use)
     print("[ollama decision] detected_language=", _detected_language)
     print("[ollama decision] is_non_english=",    _is_non_english)
     print("[ollama decision] cleanup_mode=",      _cleanup_mode)
+    print("[ollama decision] translation_mode=",  _translation_mode)
     print("[ollama decision] will_run_ollama=",   _will_run_ollama)
     print("[ollama decision] reason=",            skip_reason if skip_ollama else "eligible")
-    if raw_text and not _is_repetitive(raw_text) and not skip_ollama:
+    _t_ollama = time.time()
+    if _will_run_ollama:
         refined = ollama_query(raw_text, active_profile)
         ollama_text = refined or ""
         ok, reason = _ollama_result_is_safe(raw_text, refined or "")
@@ -3031,9 +3127,11 @@ def transcribe_and_type(wav_path, raw_frames):
             ollama_status = f"rejected: {reason}"
             if app and settings.get("show_startup_tips", True):
                 app.show_message("AI cleanup rejected — used original text", "#ff9f0a")
+        _timing("ollama cleanup", _t_ollama)
     else:
-        ollama_status = f"skipped: {skip_reason or 'repetitive input'}"
+        ollama_status = f"skipped: {skip_reason}"
         log_event("ollama", ollama_status)
+        print(f"[timing] ollama cleanup               skipped: {skip_reason}")
         if app and settings.get("show_startup_tips", True) and skip_reason == "short phrase":
             app.show_message("Short phrase — skipped AI cleanup", "#0a84ff")
 
@@ -3045,21 +3143,24 @@ def transcribe_and_type(wav_path, raw_frames):
     _prev_last_text = last_text   # save before overwrite — used by formatting commands
     # SymSpell uses an English dictionary — skip it for non-English transcription
     # to prevent French/Spanish words from being "corrected" to English equivalents.
+    _t_symspell = time.time()
     if _is_non_english:
         text = _repair_mojibake(smart_punctuate(apply_snippets(raw_text)))
     else:
         text = _repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text))))
+    _timing("symspell + snippets + punctuate", _t_symspell)
     last_text = text
     final_text = text
     print("[unicode] after_cleanup=", repr(final_text))
     print("[unicode] before_paste=", repr(final_text))
     print("[FINAL TEXT]=", repr(final_text))
     log_event("final", repr(text))
-    
+
     # 2. Use a separate variable 'lower' ONLY for background command checks
     lower = re.sub(r"[^a-z0-9 ]", "", raw_text.lower()).strip()
     print(f"[cmd] {lower!r}")
 
+    _t_cmd = time.time()
     if JARVIS_ENABLED and not settings.get("safe_mode", False):
         cmd_text = lower[7:].strip() if lower.startswith("jarvis ") else (lower[11:].strip() if lower.startswith("hey jarvis ") else lower)
         print("[command route] whisper_text=", repr(whisper_text))
@@ -3069,6 +3170,7 @@ def transcribe_and_type(wav_path, raw_frames):
         jarvis_intent = _fast_jarvis_match(cmd_text, raw_text=whisper_text)
         if jarvis_intent:
             print("[command route] matched_action=", jarvis_intent[0], "params=", jarvis_intent[1])
+            _timing("command detection", _t_cmd)
             threading.Thread(target=execute_jarvis_command, args=(jarvis_intent[0], jarvis_intent[1]), daemon=True).start()
             app.set_state("idle")
             return
@@ -3248,12 +3350,16 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
+    _timing("command detection", _t_cmd)
+
     # Skip SymSpell for non-English — it uses an English dictionary and corrupts
     # French/Spanish/etc. words.  apply_corrections runs for all languages.
+    _t_corrections = time.time()
     if _is_non_english:
         text = apply_corrections(_repair_mojibake(smart_punctuate(apply_snippets(raw_text))))
     else:
         text = apply_corrections(_repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text)))))
+    _timing("personal corrections", _t_corrections)
     last_text = text
     _add_to_history(text)
 
@@ -3267,11 +3373,13 @@ def transcribe_and_type(wav_path, raw_frames):
     # All Jarvis commands, snippet commands, formatting commands, etc. have
     # already been checked and returned above.  This code only runs for plain
     # dictated text that made it past every command gate.
-    _dictation_target = settings.get("translate_my_dictation", "Off")
+    _dictation_target = _early_translate
     if _dictation_target and _dictation_target != "Off":
         print(f"[dictation-translate] translating to '{_dictation_target}'")
         app.show_message(f"Translating to {_dictation_target}…", "#0a84ff")
+        _t_translate = time.time()
         _dt_result = _ollama_translate(text, _dictation_target)
+        _timing("translation", _t_translate)
         if _dt_result:
             text = _dt_result
             last_text = text   # keep last_text in sync so "scratch that" removes the right length
@@ -3281,7 +3389,10 @@ def transcribe_and_type(wav_path, raw_frames):
     # ─────────────────────────────────────────────────────────────────────────
 
     app.set_transcript(text)
+    _t_paste = time.time()
     paste_text(text)
+    _timing("paste_text", _t_paste)
+    _timing("total stop → paste", _t_stop)
 
     def _background_tasks(t=text, a=active_app, w=whisper_text, o=ollama_text, st=ollama_status, prof=active_profile):
         save_history(t, a, whisper_text=w, ollama_text=o, final_text=t, status=st, profile=prof)
@@ -3825,12 +3936,14 @@ def _process(frames):
         return
 
     _transcription_busy = True
+    _t_stop = time.time()
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         wav_path = f.name
     try:
         log_event("record", f"processing {len(frames)} audio chunks")
         save_wav(frames, wav_path)
-        transcribe_and_type(wav_path, frames)
+        _timing("recording stop → WAV saved", _t_stop)
+        transcribe_and_type(wav_path, frames, _t_stop)
     except Exception as e:
         log_event("error", f"processing failed: {e}")
         if app:
@@ -4966,8 +5079,9 @@ class DictationApp:
                 _win.geometry(f"+{e.x_root - _win._dx}+{e.y_root - _win._dy}")
 
         # ── Variables ─────────────────────────────────────────────────────────
-        model_var  = tk.StringVar(value=settings["model"])
-        hotkey_var = tk.StringVar(value=settings.get("hotkey_label", "Right Option"))
+        model_var   = tk.StringVar(value=settings["model"])
+        quality_var = tk.StringVar(value=settings.get("dictation_quality", "Balanced"))
+        hotkey_var  = tk.StringVar(value=settings.get("hotkey_label", "Right Option"))
         cloud_var  = tk.BooleanVar(value=settings.get("cloud_mode", False))
         key_var    = tk.StringVar(value=get_openai_key())
 
@@ -5437,6 +5551,7 @@ class DictationApp:
                 return fallback
 
         def reset_recommended_defaults():
+            quality_var.set("Balanced")
             model_var.set("small.en")
             hotkey_var.set("Right Option")
             hud_var.set(True)
@@ -5550,8 +5665,14 @@ class DictationApp:
         helper_text(p, "Choose the language you speak into the microphone.")
         helper_text(p, "Speak French → choose French. Speak English → choose English or Auto-detect.")
 
-        lbl(p, "SPEECH MODEL")
+        lbl(p, "DICTATION QUALITY")
+        combo(p, quality_var, ["Fast", "Balanced", "Accurate"])
+        helper_text(p, "Balanced is recommended for everyday dictation.")
+        helper_text(p, "Fast uses a smaller model for quicker results. Accurate uses a larger model for better recognition.")
+
+        lbl(p, "ADVANCED SPEECH MODEL")
         combo(p, model_var, ["tiny.en","base.en","small.en","medium.en","large-v2","large-v3","distil-medium.en","distil-large-v3","tiny","base","small","medium"])
+        helper_text(p, "Optional override. Changing Dictation Quality above will update this automatically.")
         helper_text(p, "English-only models end in .en. Use multilingual models for French, Spanish, and other languages.")
 
         # Dynamic warning — shown when an English-only model is paired with a non-English language.
@@ -5574,20 +5695,40 @@ class DictationApp:
             "distil-large-v3":  "large-v3",
         }
 
-        # Reentrancy guard — model_var.set() inside the callback would otherwise
-        # re-trigger the trace, causing the restart-card logic to fire twice and
-        # leaving the card hidden even when the model actually changed.
+        # Reentrancy guard prevents trace callbacks from re-triggering each other.
         _combo_in_progress = [False]
+        # Set to True after initial correction pass so user interactions trigger
+        # quality→model sync but the initial page-open does not silently change
+        # an existing user's saved model.
+        _quality_sync_enabled = [False]
 
-        def _on_audio_combo_change(*_):
+        def _restart_card_check():
+            changed = (
+                mic_var.get()   != _initials["mic"]   or
+                model_var.get() != _initials["model"] or
+                lang_var.get()  != _initials["lang"]
+            )
+            if changed:
+                _restart_wrapper.pack(fill="x", after=_restart_anchor)
+            else:
+                _restart_wrapper.pack_forget()
+
+        def _on_quality_or_lang_change(*_):
+            """Fires when quality or language changes.
+            Derives model from quality preset (after initial load), then runs
+            the English-only incompatibility check."""
             if _combo_in_progress[0]:
                 return
             _combo_in_progress[0] = True
             try:
                 lang = lang_var.get()
+                q    = quality_var.get()
+                # Sync model from quality preset (only after initial page-open).
+                if _quality_sync_enabled[0]:
+                    derived = _quality_to_model(q, lang)
+                    if derived:
+                        model_var.set(derived)
                 # Auto-correct incompatible model + language combination.
-                # Pick the multilingual equivalent so the dropdown visibly moves
-                # to a reachable model rather than snapping back to the same value.
                 if lang not in ("English", "Auto-detect") and _is_en_only_model(model_var.get()):
                     suggested = _ML_EQUIV.get(model_var.get(), "small")
                     model_var.set(suggested)
@@ -5596,30 +5737,29 @@ class DictationApp:
                     )
                 else:
                     _model_warn.config(text="")
-                # Show restart card only when something has changed from baseline.
-                changed = (
-                    mic_var.get()   != _initials["mic"]   or
-                    model_var.get() != _initials["model"] or
-                    lang_var.get()  != _initials["lang"]
-                )
-                if changed:
-                    _restart_wrapper.pack(fill="x", after=_restart_anchor)
-                else:
-                    _restart_wrapper.pack_forget()
+                _restart_card_check()
             finally:
                 _combo_in_progress[0] = False
 
-        mic_var.trace_add("write",  _on_audio_combo_change)
-        lang_var.trace_add("write", _on_audio_combo_change)
-        model_var.trace_add("write", _on_audio_combo_change)
+        def _on_model_or_mic_change(*_):
+            """Fires when the Speech Model or microphone changes directly.
+            Only updates the restart card — never overrides a manual model choice."""
+            if _combo_in_progress[0]:
+                return
+            _restart_card_check()
 
-        # Run the initial correction pass (fixes any invalid saved model+language).
-        # Then re-snapshot the baseline to the post-correction values and force-hide
-        # the card — so the correction itself never counts as a user change.
-        _on_audio_combo_change()
+        quality_var.trace_add("write", _on_quality_or_lang_change)
+        lang_var.trace_add("write",    _on_quality_or_lang_change)
+        mic_var.trace_add("write",     _on_model_or_mic_change)
+        model_var.trace_add("write",   _on_model_or_mic_change)
+
+        # Run initial English-only correction (no quality sync yet).
+        # Re-snapshot baseline so the correction never counts as a user change.
+        _on_quality_or_lang_change()
         _initials["model"] = model_var.get()
         _initials["lang"]  = lang_var.get()
         _restart_wrapper.pack_forget()
+        _quality_sync_enabled[0] = True   # enable quality sync for all future interactions
 
         lbl(p, "TRANSLATE MY DICTATION TO")
         combo(p, dictation_translate_var, list(DICTATION_TRANSLATION_LANGUAGES.keys()))
@@ -6637,8 +6777,9 @@ class DictationApp:
 
             settings["manual_vocabulary"] = v_box.get("1.0", "end-1c").strip()    
             settings.update({
-                "model":          model_var.get(),
-                "hotkey_label":   hotkey_var.get(),
+                "model":             model_var.get(),
+                "dictation_quality": quality_var.get(),
+                "hotkey_label":      hotkey_var.get(),
                 "mic_device":     new_mic,
                 "show_hud":       hud_var.get(),
                 "toggle_mode":    toggle_var.get(),

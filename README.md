@@ -16,23 +16,24 @@
 8. [AI Cleanup — Ollama](#ai-cleanup--ollama)
 9. [Writing Profiles](#writing-profiles)
 10. [Context-Aware Formatting](#context-aware-formatting)
-11. [Voice Commands — Scratch & Undo](#voice-commands--scratch--undo)
-12. [Voice Commands — Formatting](#voice-commands--formatting)
-13. [Voice Commands — Editing & Navigation](#voice-commands--editing--navigation)
-14. [Voice Commands — Text Operations](#voice-commands--text-operations)
-15. [Jarvis Commands — App & System Control](#jarvis-commands--app--system-control)
-16. [Snippets](#snippets)
-17. [Dictation History](#dictation-history)
-18. [Custom Commands](#custom-commands)
-19. [Custom Vocabulary](#custom-vocabulary)
-20. [Safe Mode](#safe-mode)
-21. [Hey Jarvis Wake Word](#hey-jarvis-wake-word)
-22. [Cloud Transcription](#cloud-transcription)
-23. [Menu Bar Reference](#menu-bar-reference)
-24. [Settings Panel — All Pages](#settings-panel--all-pages)
-25. [Privacy & Security](#privacy--security)
-26. [Building the App from Source](#building-the-app-from-source)
-27. [Troubleshooting](#troubleshooting)
+11. [Translation](#translation)
+12. [Voice Commands — Scratch & Undo](#voice-commands--scratch--undo)
+13. [Voice Commands — Formatting](#voice-commands--formatting)
+14. [Voice Commands — Editing & Navigation](#voice-commands--editing--navigation)
+15. [Voice Commands — Text Operations](#voice-commands--text-operations)
+16. [Jarvis Commands — App & System Control](#jarvis-commands--app--system-control)
+17. [Snippets](#snippets)
+18. [Dictation History](#dictation-history)
+19. [Custom Commands](#custom-commands)
+20. [Custom Vocabulary](#custom-vocabulary)
+21. [Safe Mode](#safe-mode)
+22. [Hey Jarvis Wake Word](#hey-jarvis-wake-word)
+23. [Cloud Transcription](#cloud-transcription)
+24. [Menu Bar Reference](#menu-bar-reference)
+25. [Settings Panel — All Pages](#settings-panel--all-pages)
+26. [Privacy & Security](#privacy--security)
+27. [Building the App from Source](#building-the-app-from-source)
+28. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -186,14 +187,16 @@ Toggle mode is the recommended default. Change in Settings → Dictation.
 | Model | Speed | Accuracy | Recommended for |
 |---|---|---|---|
 | `tiny.en` | Fastest | Lower | Testing only |
-| `base.en` | Fast | Good | Intel Macs, quick notes |
+| `base.en` | Fast | Good | Quick notes, lower-RAM Macs |
 | `small.en` | Moderate | Best balance | **Recommended default** |
 | `medium.en` | Slow | High | When accuracy matters most |
 | `large-v2 / large-v3` | Very slow | Highest | Fast Apple Silicon only |
-| `distil-medium.en` | Moderate | High | Apple Silicon |
-| `distil-large-v3` | Moderate | Highest | Apple Silicon |
+| `distil-medium.en` | Fast | High | Good Intel alternative to medium.en |
+| `distil-large-v3` | Moderate | Highest | Near large-v3 quality at lower cost |
 
-Switch models from the menu bar → **Whisper Model** or Settings → **Audio**.
+**About distil models:** distil-whisper is a compressed, faster variant of the standard Whisper models produced by Hugging Face. They match or approach the accuracy of their full-size counterparts while being significantly faster. They are English-only. The first time you select a distil model the app downloads its weights automatically (~500 MB for distil-medium.en, ~1.5 GB for distil-large-v3).
+
+Switch models from the menu bar → **Whisper Model** or Settings → **Audio & Language**.
 
 ### Spell correction
 
@@ -324,6 +327,39 @@ When **Auto-detect profile by app** is enabled, the profile switches automatical
 When **Context-aware formatting** is enabled (Settings → AI Cleanup), Jarvis Dictation applies light formatting adjustments based on the active app — independent of the writing profile. For example, email clients receive a formal tone pass, and developer tools preserve technical casing.
 
 This is separate from Writing Profiles and layered on top. Disable it in Settings if you want the profile to be the only influence.
+
+---
+
+## Translation
+
+Jarvis Dictation can translate your dictation into another language as a post-transcription step. This is entirely local — the translation is performed by your Ollama model, not the internet.
+
+### How it works
+
+1. You speak in your normal language.
+2. Whisper transcribes the audio.
+3. Ollama translates the transcription to your chosen output language.
+4. The translated text is pasted at the cursor.
+
+### Setting it up
+
+Settings → **Audio & Language** → **Translate My Dictation To**
+
+| Option | Behaviour |
+|---|---|
+| **Off** (default) | No translation — text is pasted in the spoken language |
+| **English** | Output is translated to English |
+| **French** | Output is translated to French |
+| **Spanish** | Output is translated to Spanish |
+| **German** | Output is translated to German |
+| **Italian** | Output is translated to Italian |
+| **Portuguese** | Output is translated to Portuguese |
+
+### Notes
+
+- Requires Ollama to be installed and running with a model downloaded.
+- Translation does not affect Jarvis commands, snippets, or formatting commands — those are matched before translation runs.
+- Combine with **I'm Speaking** to set up a cross-language workflow (e.g. I'm Speaking = French → Translate To = English types in English even when you dictate in French).
 
 ---
 
@@ -770,7 +806,7 @@ Open Settings from the menu bar or with the shortcut **Ctrl+,**.
 First-run guidance. Recommended steps:
 
 1. Confirm your record key (Right Option + toggle mode is the stable default).
-2. Confirm your microphone on the Audio page.
+2. Confirm your microphone on the Audio & Language page.
 3. Keep the simple defaults: small.en, local Whisper, Ollama, Jarvis enabled, Cloud mode off.
 4. Try one short dictation to verify the setup.
 5. Click **Mark setup complete**.
@@ -791,15 +827,20 @@ First-run guidance. Recommended steps:
 
 ---
 
-### Audio
+### Audio & Language
 
 | Setting | Default | Description |
 |---|---|---|
 | **Microphone** | System default | Choose which audio input device to use |
-| **Whisper model** | small.en | The transcription model to use |
-| **Auto-detect language** | On | Let Whisper identify the spoken language automatically |
+| **I'm Speaking** | English | Your spoken language — controls Whisper's language hint |
+| **Speech Model** | small.en | The Whisper model to use for transcription |
+| **Translate My Dictation To** | Off | Translate each dictation into the chosen language after transcription (requires Ollama) |
 
-> Microphone and model changes are most reliable after restarting the app.
+**I'm Speaking** sets the language you speak in. Whisper uses this as a hint rather than auto-detecting, which improves accuracy. If you choose a non-English language, the app will automatically suggest switching to a multilingual model (one without `.en` in the name) since English-only models cannot transcribe other languages.
+
+**Translate My Dictation To** is independent of **I'm Speaking**. You can dictate in English and translate to French, or dictate in Spanish and translate to English — any combination is valid.
+
+> Model changes take effect on the next dictation. If the model has not been downloaded, the app will fetch it automatically on first use.
 
 ---
 
@@ -872,6 +913,25 @@ Everything is set up. Dictated text is polished automatically after each recordi
 | **Default profile** | General | The profile used when auto-detection does not apply |
 | **Auto-detect profile by app** | On | Automatically switch profile based on which app is active |
 | **Show active profile** | On | Log the profile in History and display it in the HUD |
+
+---
+
+### Workflows
+
+A reference page showing every voice pattern the app supports, with example phrases you can copy.
+
+Six workflow cards cover:
+
+| Card | What it explains |
+|---|---|
+| **Basic Dictation** | Core push-to-talk flow, scratch/undo, formatting commands |
+| **Email Drafts** | Composing and sending email by voice |
+| **Reminders** | Creating reminders with natural language |
+| **Translation** | Setting up cross-language dictation |
+| **System Controls** | Volume, app control, screenshots |
+| **Contacts** | Emailing contacts by name |
+
+Each card includes example phrases and a **Copy examples** button.
 
 ---
 
@@ -975,7 +1035,7 @@ Then grant Microphone, Accessibility, and Input Monitoring permissions to **Jarv
 ### Microphone is not working
 
 - Check that **Microphone** permission is granted to Jarvis Dictation.
-- Go to Settings → **Audio** and select the correct input device.
+- Go to Settings → **Audio & Language** and select the correct input device.
 - Restart the app after changing the microphone device.
 
 ### Hotkey does not trigger recording
@@ -1011,6 +1071,12 @@ Then grant Microphone, Accessibility, and Input Monitoring permissions to **Jarv
 
 - Release the hotkey, wait a second, then try again.
 - If the issue persists, click **Quit Jarvis Dictation** in the menu bar and relaunch.
+
+### Distil model produces no output or only punctuation
+
+- Distil-whisper models (`distil-medium.en`, `distil-large-v3`) are fully supported from v6.2.4 onwards.
+- If you are on an older version, update to v6.2.4 — this was a known bug caused by the personal vocabulary prompt, now fixed.
+- Distil models are English-only. Do not use them with a non-English **I'm Speaking** setting.
 
 ### Getting a support summary
 
