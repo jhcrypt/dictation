@@ -1,5 +1,14 @@
 # Changelog
 
+## v6.2.4 — Distil Model Fix
+
+### Fix: distil-whisper models now transcribe correctly
+- `distil-medium.en` and `distil-large-v3` were producing `,.` instead of real text.
+- Root cause: distil models were not trained with `initial_prompt` conditioning. Passing the personal vocabulary prompt caused them to return empty output silently.
+- Fix: prompt is now suppressed for all distil models. Transcription works correctly.
+
+### Previous: UI Polish (v6.2.3)
+
 ## v6.2.3 — UI Polish
 
 ### Rounded corners — consistent throughout

@@ -304,8 +304,8 @@ _record_key_is_modifier: bool = True
 # into this queue; Tk drains it from its own event loop.
 _input_event_q: _queue.SimpleQueue = _queue.SimpleQueue()
 
-APP_VERSION = "6.2.3 UI Polish"
-BUILD_ID    = "v6.2.3-m1-stable"
+APP_VERSION = "6.2.4 Distil Model Fix"
+BUILD_ID    = "v6.2.4-m1-stable"
 HOTKEY_DEBOUNCE_SECONDS = 0.18
 MIN_RECORD_SECONDS = 0.30
 
