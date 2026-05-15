@@ -1,5 +1,28 @@
 # Changelog
 
+## v6.2.3 — UI Polish
+
+### Rounded corners — consistent throughout
+- All cards, containers, inputs, buttons, and list rows now use the same corner radius, matching the AI Cleanup action buttons.
+- Fixed `_rounded_card_canvas` and `_rr` so the inner frame is inset from canvas edges — rounded arcs are now visible on all cards (previously the inner frame covered them, making cards appear square).
+- Custom Commands, Contacts, and Corrections list rows are now visually rounded containers.
+- URL / APP / TYPE badges in Custom Commands are Canvas-drawn rounded pills.
+
+### Button alignment & sizing
+- AI Cleanup 2×2 button grid rebuilt with `place()` geometry — all four buttons are now pixel-identical in width and height regardless of label length.
+- Responsive layout: buttons fill the full row width with no dead space on the right.
+- All action button text is bold for uniform visual weight across dark and accent buttons.
+
+### Help page
+- "Restart Now" and "Later" buttons are now Canvas-drawn with rounded corners.
+- "Copy setup summary" converted to a full-width rounded button.
+- Added 24 px breathing room at the bottom of the Help page.
+
+### Snippets window
+- Delete and Save Changes button bar height increased so bottom corners are no longer clipped.
+
+### Previous: Language & Translation Controls (v6.2.2)
+
 ## v6.2.2 — Language & Translation Controls
 
 ### New: Translate My Dictation To

@@ -304,8 +304,8 @@ _record_key_is_modifier: bool = True
 # into this queue; Tk drains it from its own event loop.
 _input_event_q: _queue.SimpleQueue = _queue.SimpleQueue()
 
-APP_VERSION = "6.2.2 Language & Translation Controls"
-BUILD_ID    = "v6.2.2-m1-stable"
+APP_VERSION = "6.2.3 UI Polish"
+BUILD_ID    = "v6.2.3-m1-stable"
 HOTKEY_DEBOUNCE_SECONDS = 0.18
 MIN_RECORD_SECONDS = 0.30
 
@@ -2128,6 +2128,7 @@ def _rr(parent, bg_col, radius=10, padx=0, pady=0):
     Use for fill='x' containers (cards, input wrappers, status panels).
     Pack the returned frame's children normally.
     """
+    INSET = 3
     try:
         parent_bg = parent.cget("bg")
     except Exception:
@@ -2137,17 +2138,18 @@ def _rr(parent, bg_col, radius=10, padx=0, pady=0):
     c = tk.Canvas(outer, bg=parent_bg, highlightthickness=0, bd=0)
     c.pack(fill="x", expand=True)
     inner = tk.Frame(c, bg=bg_col)
-    win_id = c.create_window(0, 0, window=inner, anchor="nw")
+    win_id = c.create_window(INSET, INSET, window=inner, anchor="nw")
     def _redraw(event=None):
         w = c.winfo_width()
         if w <= 1:
             c.after(20, _redraw)
             return
-        h = max(inner.winfo_reqheight(), 20)
+        R  = radius
+        ih = max(inner.winfo_reqheight(), 20)
+        h  = ih + 2 * INSET
         c.configure(height=h)
-        c.itemconfig(win_id, width=w, height=h)
+        c.itemconfig(win_id, width=w - 2 * INSET, height=ih)
         c.delete("rr")
-        R = radius
         for x0, y0, x1, y1, start in [
             (0,     0,     2*R,   2*R,   90),
             (w-2*R, 0,     w,     2*R,   0),
@@ -4721,7 +4723,7 @@ class DictationApp:
 
         # Action bar packed FIRST (bottom) so it's always visible
         tk.Frame(detail, bg=SEP, height=1).pack(side="bottom", fill="x")
-        abar = tk.Frame(detail, bg=BG, height=52)
+        abar = tk.Frame(detail, bg=BG, height=58)
         abar.pack(side="bottom", fill="x")
         abar.pack_propagate(False)
 
@@ -4924,6 +4926,13 @@ class DictationApp:
         ACC_DIM = "#1a3a5c"
         FG      = "#f0f0f0"
         DIM     = "#6a6a6a"
+        HINT    = "#8ab4f8"   # blue used for all instructional / helper text
+        # ── Shared corner-radius constants ───────────────────────────────────
+        UI_RADIUS_CARD   =  8   # cards, info panels, storage boxes
+        UI_RADIUS_BUTTON =  8   # all buttons (primary, secondary, action toggles)
+        UI_RADIUS_INPUT  =  8   # text inputs, dropdowns, text boxes
+        UI_RADIUS_BADGE  =  6   # small badges/icons
+        # ─────────────────────────────────────────────────────────────────────
         FONT    = "Helvetica Neue"
 
         _win = tk.Toplevel(self.root)
@@ -5147,8 +5156,8 @@ class DictationApp:
             (button, popup, items) inherits our dark colours.
             Corner radius via a Canvas rounded-rect underneath.
             """
-            R = 7          # corner radius px
-            PX = 12        # horizontal padding inside pill
+            R = UI_RADIUS_INPUT   # corner radius px
+            PX = 12               # horizontal padding inside pill
             PY = 6         # vertical padding
 
             # Measure approximate pixel width from char width
@@ -5206,7 +5215,7 @@ class DictationApp:
             txt.pack(side="left", fill="x", expand=True)
             tk.Label(txt, text=label, bg=BG, fg=FG, font=(FONT, 13), anchor="w").pack(anchor="w")
             if desc:
-                tk.Label(txt, text=desc, bg=BG, fg=DIM, font=(FONT, 10), anchor="w").pack(anchor="w")
+                tk.Label(txt, text=desc, bg=BG, fg=HINT, font=(FONT, 10), anchor="w").pack(anchor="w")
             # Custom toggle pill
             pill_w, pill_h = 40, 22
             pill_c = tk.Canvas(row, width=pill_w, height=pill_h, bg=BG,
@@ -5238,7 +5247,7 @@ class DictationApp:
             bar.pack_propagate(False)
             tk.Frame(parent, bg=SEP, height=1).pack(fill="x", side="bottom")
             # Rounded pill save button
-            R, btn_h = 7, ACTION_BUTTON_H
+            R, btn_h = UI_RADIUS_BUTTON, ACTION_BUTTON_H
             btn_text = "Save changes"
             btn_w = PRIMARY_BUTTON_W
 
@@ -5268,17 +5277,19 @@ class DictationApp:
 
         # ── Shared polish helpers ────────────────────────────────────────────
         def helper_text(parent, text):
-            tk.Label(parent, text=text, bg=BG, fg=DIM,
+            tk.Label(parent, text=text, bg=BG, fg=HINT,
                      font=(FONT, 10), justify="left", wraplength=430
             ).pack(anchor="w", padx=24, pady=(4, 8))
 
         def _rounded_card_canvas(parent, bg_col, radius, padx, pady):
             """Return an inner tk.Frame sitting inside a Canvas rounded-corner card.
 
-            The canvas draws a filled rounded rectangle behind the inner frame.
+            The inner frame is inset from the canvas edges so the rounded arcs
+            drawn on the canvas background are visible at the corners.
             All content should be packed into the returned inner frame.
             """
-            R = radius
+            R     = radius
+            INSET = 3   # inset so arc corners are not covered by the inner frame
             outer = tk.Frame(parent, bg=BG)
             outer.pack(fill="x", padx=padx, pady=pady)
 
@@ -5286,16 +5297,17 @@ class DictationApp:
             c.pack(fill="x", expand=True)
 
             inner = tk.Frame(c, bg=bg_col)
-            win_id = c.create_window(0, 0, window=inner, anchor="nw")
+            win_id = c.create_window(INSET, INSET, window=inner, anchor="nw")
 
             def _redraw(event=None):
                 w = c.winfo_width()
                 if w <= 1:
                     c.after(20, _redraw)
                     return
-                h = max(inner.winfo_reqheight(), 20)
+                ih = max(inner.winfo_reqheight(), 20)
+                h  = ih + 2 * INSET
                 c.configure(height=h)
-                c.itemconfig(win_id, width=w, height=h)
+                c.itemconfig(win_id, width=w - 2 * INSET, height=ih)
                 c.delete("rr")
                 fill = bg_col
                 c.create_arc(0, 0, 2*R, 2*R,             start=90,  extent=90,  fill=fill, outline="", tags="rr")
@@ -5304,18 +5316,18 @@ class DictationApp:
                 c.create_arc(w-2*R, h-2*R, w, h,         start=270, extent=90,  fill=fill, outline="", tags="rr")
                 c.create_rectangle(R, 0, w-R, h,         fill=fill, outline="",  tags="rr")
                 c.create_rectangle(0, R, w, h-R,         fill=fill, outline="",  tags="rr")
-                c.tag_lower("rr")   # background behind the inner frame window
+                c.tag_lower("rr")
 
             inner.bind("<Configure>", _redraw)
             c.bind("<Configure>",     _redraw)
             return inner
 
         def section_note(parent, title, text):
-            inner = _rounded_card_canvas(parent, "#191919", radius=12,
+            inner = _rounded_card_canvas(parent, "#191919", radius=UI_RADIUS_CARD,
                                          padx=24, pady=(10, 8))
             tk.Label(inner, text=title, bg="#191919", fg=FG,
                      font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
-            tk.Label(inner, text=text, bg="#191919", fg=DIM,
+            tk.Label(inner, text=text, bg="#191919", fg=HINT,
                      font=(FONT, 10), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 10))
 
@@ -5327,24 +5339,37 @@ class DictationApp:
             Callers that need to flush Settings state first should pass their
             own function; the default is kept for any other use-site.
             """
-            inner = _rounded_card_canvas(parent, "#191919", radius=12,
+            inner = _rounded_card_canvas(parent, "#191919", radius=UI_RADIUS_CARD,
                                          padx=24, pady=(10, 8))
             tk.Label(inner, text=title, bg="#191919", fg=FG,
                      font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
-            tk.Label(inner, text=body, bg="#191919", fg=DIM,
+            tk.Label(inner, text=body, bg="#191919", fg=HINT,
                      font=(FONT, 10), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 8))
             btn_row = tk.Frame(inner, bg="#191919")
             btn_row.pack(anchor="w", padx=12, pady=(0, 10))
             def _make_btn(parent, label, cmd, accent):
                 bg  = ACC if accent else CARD
-                hov = "#1a6fd4" if accent else CARD_HI
-                b = tk.Label(parent, text=label, bg=bg, fg="#ffffff",
-                             font=(FONT, 11, "bold"), padx=14, pady=7, cursor="hand2")
-                b.pack(side="left", padx=(0, 8))
-                b.bind("<Button-1>", lambda e: cmd())
-                b.bind("<Enter>",    lambda e: b.configure(bg=hov))
-                b.bind("<Leave>",    lambda e: b.configure(bg=bg))
+                hov = "#1a6fd4" if accent else "#2e2e2e"
+                BTN_H = 36
+                r     = UI_RADIUS_BUTTON
+                w_est = max(80, len(label) * 9 + 28)
+                c = tk.Canvas(parent, width=w_est, height=BTN_H,
+                              bg="#191919", highlightthickness=0, cursor="hand2")
+                c.pack(side="left", padx=(0, 8))
+                def _draw(col, _c=c, _w=w_est):
+                    _c.delete("all")
+                    _c.create_arc(0, 0, 2*r, 2*r, start=90, extent=90, fill=col, outline=col)
+                    _c.create_arc(_w-2*r, 0, _w, 2*r, start=0, extent=90, fill=col, outline=col)
+                    _c.create_arc(0, BTN_H-2*r, 2*r, BTN_H, start=180, extent=90, fill=col, outline=col)
+                    _c.create_arc(_w-2*r, BTN_H-2*r, _w, BTN_H, start=270, extent=90, fill=col, outline=col)
+                    _c.create_rectangle(r, 0, _w-r, BTN_H, fill=col, outline=col)
+                    _c.create_rectangle(0, r, _w, BTN_H-r, fill=col, outline=col)
+                    _c.create_text(_w//2, BTN_H//2, text=label, fill="#ffffff", font=(FONT, 11, "bold"))
+                _draw(bg)
+                c.bind("<Enter>",    lambda e, d=_draw, h=hov: d(h))
+                c.bind("<Leave>",    lambda e, d=_draw, b2=bg: d(b2))
+                c.bind("<Button-1>", lambda e: cmd())
             _effective_restart = restart_fn if restart_fn is not None else _restart_app
             _make_btn(btn_row, "Restart Now", _effective_restart, accent=True)
             _make_btn(btn_row, "Later",       _win.destroy,       accent=False)
@@ -5358,12 +5383,38 @@ class DictationApp:
             btn.bind("<Leave>", lambda e: btn.configure(bg=ACC if accent else CARD))
             return btn
 
+        def _wide_btn(parent, text, cmd, accent=True, padx=24, pady=(10, 4)):
+            """Full-width Canvas-drawn rounded button — proper rounding guaranteed."""
+            BTN_H   = 42
+            bg_col  = ACC if accent else CARD
+            hov_col = "#1a6fd4" if accent else CARD_HI
+            R       = UI_RADIUS_BUTTON
+            c = tk.Canvas(parent, height=BTN_H, bg=BG, highlightthickness=0, cursor="hand2")
+            c.pack(fill="x", padx=padx, pady=pady)
+            def _draw(col):
+                c.delete("all")
+                w = c.winfo_width()
+                if w <= 1:
+                    return
+                c.create_arc(0, 0, 2*R, 2*R,         start=90,  extent=90, fill=col, outline=col)
+                c.create_arc(w-2*R, 0, w, 2*R,        start=0,   extent=90, fill=col, outline=col)
+                c.create_arc(0, BTN_H-2*R, 2*R, BTN_H, start=180, extent=90, fill=col, outline=col)
+                c.create_arc(w-2*R, BTN_H-2*R, w, BTN_H, start=270, extent=90, fill=col, outline=col)
+                c.create_rectangle(R, 0, w-R, BTN_H, fill=col, outline=col)
+                c.create_rectangle(0, R, w, BTN_H-R,  fill=col, outline=col)
+                c.create_text(w//2, BTN_H//2, text=text, fill="#ffffff", font=(FONT, 12, "bold"))
+            c.bind("<Configure>", lambda e: _draw(bg_col))
+            c.bind("<Enter>",     lambda e: _draw(hov_col))
+            c.bind("<Leave>",     lambda e: _draw(bg_col))
+            c.bind("<Button-1>",  lambda e: cmd())
+            return c
+
         def info_card(parent, title, body):
-            inner = _rounded_card_canvas(parent, CARD, radius=12,
+            inner = _rounded_card_canvas(parent, CARD, radius=UI_RADIUS_CARD,
                                          padx=24, pady=(8, 6))
             tk.Label(inner, text=title, bg=CARD, fg=FG,
                      font=(FONT, 12, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 3))
-            tk.Label(inner, text=body, bg=CARD, fg=DIM,
+            tk.Label(inner, text=body, bg=CARD, fg=HINT,
                      font=(FONT, 10), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 10))
             return inner
@@ -5595,7 +5646,7 @@ class DictationApp:
         tk.Label(p,
                  text="Local AI Cleanup currently improves English dictation. "
                       "For other spoken languages, Jarvis skips cleanup automatically to avoid accidental translation.",
-                 bg=BG, fg=DIM, font=(FONT, 10), justify="left", wraplength=430
+                 bg=BG, fg=HINT, font=(FONT, 10), justify="left", wraplength=430
         ).pack(anchor="w", padx=24, pady=(2, 6))
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(4, 10))
 
@@ -5631,7 +5682,7 @@ class DictationApp:
                 "Status has not been checked yet. Click 'Check Again' to probe.",
         }
 
-        status_frame = _rounded_card_canvas(p, CARD, radius=12, padx=24, pady=(4, 8))
+        status_frame = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_CARD, padx=24, pady=(4, 8))
 
         status_icon_lbl = tk.Label(status_frame, text="", bg=CARD,
                                    font=(FONT, 13, "bold"))
@@ -5642,7 +5693,7 @@ class DictationApp:
         status_detail_lbl.pack(anchor="w", padx=14, pady=(0, 10))
 
         fallback_lbl = tk.Label(p, text="Dictation still works without Local AI Cleanup.",
-                                bg=BG, fg=DIM, font=(FONT, 10, "italic"))
+                                bg=BG, fg=HINT, font=(FONT, 10, "italic"))
         fallback_lbl.pack(anchor="w", padx=24, pady=(0, 6))
 
         def _update_status_card(s: str):
@@ -5659,37 +5710,52 @@ class DictationApp:
         threading.Thread(target=_auto_refresh, daemon=True, name="ollama-status-ui").start()
 
         # ── Action buttons ────────────────────────────────────────────────────
-        # Layout: 3 rows, max 2 buttons per row.
-        # Row 1: Check Again | Open Ollama Download Page  (220px each)
-        # Row 2: Install Recommended Model  (full-width accent)
-        # Row 3: Test Cleanup | Disable AI Cleanup  (220px each)
-        # All rows are padded to 24px on each side to match the rest of the page.
+        # 2×2 grid drawn with place() so every button is pixel-identical.
+        # Each row is a fixed-height frame; buttons are positioned with exact
+        # coordinates calculated from the frame width on <Configure>.
 
-        BTN_W  = 220   # standard button width — two fit comfortably in ~460px content
-        BTN_WF = 460   # full-width button — Install Recommended Model
+        _ABH = ACTION_BUTTON_H   # button height — same for all four
+        _ABR = UI_RADIUS_BUTTON  # corner radius
+        _ABG = 8                  # gap between buttons in a row
 
-        def _make_action_btn(parent, label, cmd, width=BTN_W, accent=False):
-            bg_col   = ACC if accent else CARD
-            fg_col   = "#ffffff" if accent else FG
-            hover_c  = "#1a6fd4" if accent else "#2e2e2e"
-            c = tk.Canvas(parent, width=width, height=ACTION_BUTTON_H, bg=BG,
-                          highlightthickness=0, cursor="hand2")
-            def _draw(col):
-                c.delete("all")
-                r = 7
-                c.create_arc(0, 0, 2*r, 2*r,             start=90,  extent=90, fill=col, outline=col)
-                c.create_arc(width-2*r, 0, width, 2*r,   start=0,   extent=90, fill=col, outline=col)
-                c.create_arc(0, ACTION_BUTTON_H-2*r, 2*r, ACTION_BUTTON_H, start=180, extent=90, fill=col, outline=col)
-                c.create_arc(width-2*r, ACTION_BUTTON_H-2*r, width, ACTION_BUTTON_H, start=270, extent=90, fill=col, outline=col)
-                c.create_rectangle(r, 0, width-r, ACTION_BUTTON_H, fill=col, outline=col)
-                c.create_rectangle(0, r, width, ACTION_BUTTON_H-r, fill=col, outline=col)
-                c.create_text(width//2, ACTION_BUTTON_H//2, text=label,
-                              fill=fg_col, font=(FONT, 11))
-            _draw(bg_col)
-            c.bind("<Enter>",    lambda e: _draw(hover_c))
-            c.bind("<Leave>",    lambda e: _draw(bg_col))
-            c.bind("<Button-1>", lambda e: cmd())
-            return c
+        def _make_btn_pair_row(parent, specs, pady=(0, 6)):
+            """specs = [(label, cmd, accent), (label, cmd, accent)]"""
+            row = tk.Frame(parent, bg=BG, height=_ABH)
+            row.pack(fill="x", padx=24, pady=pady)
+            row.pack_propagate(False)
+
+            canvases = []
+            for label, cmd, accent in specs:
+                bg_col  = ACC if accent else CARD
+                hover_c = "#1a6fd4" if accent else "#2e2e2e"
+                fg_col  = "#ffffff"
+                c = tk.Canvas(row, bg=BG, highlightthickness=0, cursor="hand2")
+                canvases.append((c, label, bg_col, hover_c, fg_col))
+                c.bind("<Button-1>", lambda e, fn=cmd: fn())
+
+            def _layout(event=None):
+                W = row.winfo_width()
+                if W <= 1: return
+                n  = len(canvases)
+                bw = (W - _ABG * (n - 1)) // n
+                for i, (c, label, bg_col, hover_c, fg_col) in enumerate(canvases):
+                    x = i * (bw + _ABG)
+                    c.place(x=x, y=0, width=bw, height=_ABH)
+                    def _draw(col, _c=c, _w=bw, _lbl=label, _fg=fg_col):
+                        _c.delete("all")
+                        _c.create_arc(0, 0, 2*_ABR, 2*_ABR, start=90, extent=90, fill=col, outline=col)
+                        _c.create_arc(_w-2*_ABR, 0, _w, 2*_ABR, start=0, extent=90, fill=col, outline=col)
+                        _c.create_arc(0, _ABH-2*_ABR, 2*_ABR, _ABH, start=180, extent=90, fill=col, outline=col)
+                        _c.create_arc(_w-2*_ABR, _ABH-2*_ABR, _w, _ABH, start=270, extent=90, fill=col, outline=col)
+                        _c.create_rectangle(_ABR, 0, _w-_ABR, _ABH, fill=col, outline=col)
+                        _c.create_rectangle(0, _ABR, _w, _ABH-_ABR, fill=col, outline=col)
+                        _c.create_text(_w//2, _ABH//2, text=_lbl, fill=_fg, font=(FONT, 11, "bold"))
+                    _draw(bg_col)
+                    c.bind("<Enter>", lambda e, d=_draw, h=hover_c: d(h))
+                    c.bind("<Leave>", lambda e, d=_draw, b=bg_col:  d(b))
+
+            row.bind("<Configure>", _layout)
+            return canvases
 
         def _do_check_again():
             _update_status_card("unknown")
@@ -5765,20 +5831,16 @@ class DictationApp:
             ai_cleanup_mode_var.set("off")
             self.show_message("Local AI Cleanup disabled", "#ff9f0a")
 
-        # 2×2 grid — all four buttons the same width (BTN_W)
-        # Row 1: Check Again | Open Ollama Download Page
-        _r1 = tk.Frame(p, bg=BG)
-        _r1.pack(fill="x", padx=24, pady=(0, 6))
-        _make_action_btn(_r1, "Check Again",              _do_check_again).pack(side="left", padx=(0, 8))
-        _make_action_btn(_r1, "Open Ollama Download Page", _do_open_download).pack(side="left")
-
-        # Row 2: Test Cleanup | Install Recommended Model
-        _r2 = tk.Frame(p, bg=BG)
-        _r2.pack(fill="x", padx=24, pady=(0, 6))
-        _make_action_btn(_r2, "Test Cleanup",              _do_test_cleanup).pack(side="left", padx=(0, 8))
-        ib = _make_action_btn(_r2, "Install Recommended Model", _do_install_model, accent=True)
-        ib.pack(side="left")
-        install_btn_ref[0] = ib
+        # 2×2 grid — pixel-identical buttons via place() layout
+        _make_btn_pair_row(p, [
+            ("Check Again",               _do_check_again,   False),
+            ("Open Ollama Download Page",  _do_open_download, False),
+        ])
+        row2 = _make_btn_pair_row(p, [
+            ("Test Cleanup",              _do_test_cleanup,  False),
+            ("Install Recommended Model", _do_install_model, True),
+        ])
+        install_btn_ref[0] = row2[1][0]   # canvas for Install Recommended Model
 
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(10, 8))
 
@@ -5833,11 +5895,24 @@ class DictationApp:
                      "Jarvis wake dictation is tuned for natural sentences. It waits longer before auto-stopping, so you can use Writing Profiles without being cut off.")
         lbl(p, "WAKE DICTATION TIMING")
         row = tk.Frame(p, bg=BG); row.pack(fill="x", padx=24, pady=(2, 8))
-        for label, var, width in (("Grace", wake_grace_var, 6), ("Silence", wake_silence_var, 6), ("Max", wake_max_var, 6)):
+        _TW, _TH, _TR = 84, 34, UI_RADIUS_INPUT   # timing input canvas dimensions
+        for label, var, _wc in (("Grace", wake_grace_var, 6), ("Silence", wake_silence_var, 6), ("Max", wake_max_var, 6)):
             cell = tk.Frame(row, bg=BG); cell.pack(side="left", padx=(0, 14))
-            tk.Label(cell, text=label + " sec", bg=BG, fg=DIM, font=(FONT, 10)).pack(anchor="w")
-            ent = tk.Entry(cell, textvariable=var, width=width, bg=CARD, fg=FG, insertbackground=FG, relief="flat", highlightthickness=0)
-            ent.pack(anchor="w", ipady=5)
+            tk.Label(cell, text=label + " sec", bg=BG, fg=HINT, font=(FONT, 10)).pack(anchor="w")
+            # Canvas draws the rounded background; Entry is placed as a canvas window inside it.
+            ic = tk.Canvas(cell, width=_TW, height=_TH, bg=BG, highlightthickness=0)
+            ic.pack(anchor="w")
+            ic.create_arc(0, 0, 2*_TR, 2*_TR, start=90, extent=90, fill=CARD, outline=CARD)
+            ic.create_arc(_TW-2*_TR, 0, _TW, 2*_TR, start=0, extent=90, fill=CARD, outline=CARD)
+            ic.create_arc(0, _TH-2*_TR, 2*_TR, _TH, start=180, extent=90, fill=CARD, outline=CARD)
+            ic.create_arc(_TW-2*_TR, _TH-2*_TR, _TW, _TH, start=270, extent=90, fill=CARD, outline=CARD)
+            ic.create_rectangle(_TR, 0, _TW-_TR, _TH, fill=CARD, outline=CARD)
+            ic.create_rectangle(0, _TR, _TW, _TH-_TR, fill=CARD, outline=CARD)
+            ent = tk.Entry(cell, textvariable=var, width=_wc, bg=CARD, fg=FG,
+                           insertbackground=FG, relief="flat", highlightthickness=0)
+            ic.create_window(_TW//2, _TH//2, window=ent, anchor="center",
+                             width=_TW-12, height=_TH-8)
+            _bind_copy_paste(ent)
         helper_text(p, "Recommended: Grace 3.5, Silence 4.5, Max 45. Increase Silence if Jarvis still stops too soon.")
         section_note(p, "Stability note",
                      "The wake word is paused while Settings is open, then restored when the window closes.")
@@ -5847,7 +5922,7 @@ class DictationApp:
         p = page("Custom Commands", scrollable=True)
         ph(p, "Custom Commands")
         tk.Label(p, text="Say your trigger phrase after 'Jarvis' to run the command.\nTrigger must be at least two words. Custom commands run before built-ins.\nChanges save automatically — no save button needed.",
-                 bg=BG, fg=DIM, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
+                 bg=BG, fg=HINT, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
 
         # ── Command list ──────────────────────────────────────────────────
         list_outer = tk.Frame(p, bg=BG)
@@ -5862,17 +5937,25 @@ class DictationApp:
             cmds = load_custom_commands()
             if not cmds:
                 tk.Label(list_outer, text="No custom commands yet. Add one below.",
-                         bg=BG, fg=DIM, font=(FONT, 10)).pack(anchor="w", pady=(0, 8))
+                         bg=BG, fg=HINT, font=(FONT, 10)).pack(anchor="w", pady=(0, 8))
                 return
             for i, cmd in enumerate(cmds):
-                row = _rounded_card_canvas(list_outer, CARD, radius=8, padx=0, pady=(0, 4))
+                row = _rounded_card_canvas(list_outer, CARD, radius=UI_RADIUS_CARD, padx=0, pady=(0, 4))
 
-                # Action badge
+                # Action badge — Canvas-drawn rounded pill
                 act = cmd.get("action", "open_url")
                 badge_bg = ACTION_COLORS.get(act, ACC)
                 badge_lbl = ACTION_LABELS.get(act, "?")
-                tk.Label(row, text=badge_lbl, bg=badge_bg, fg="#ffffff",
-                         font=(FONT, 9, "bold"), width=5).pack(side="left", ipady=8)
+                _BW, _BH, _BR = 54, 26, UI_RADIUS_BADGE
+                bc = tk.Canvas(row, width=_BW, height=_BH, bg=CARD, highlightthickness=0)
+                bc.pack(side="left", padx=(10, 0), pady=10)
+                bc.create_arc(0, 0, 2*_BR, 2*_BR, start=90, extent=90, fill=badge_bg, outline=badge_bg)
+                bc.create_arc(_BW-2*_BR, 0, _BW, 2*_BR, start=0, extent=90, fill=badge_bg, outline=badge_bg)
+                bc.create_arc(0, _BH-2*_BR, 2*_BR, _BH, start=180, extent=90, fill=badge_bg, outline=badge_bg)
+                bc.create_arc(_BW-2*_BR, _BH-2*_BR, _BW, _BH, start=270, extent=90, fill=badge_bg, outline=badge_bg)
+                bc.create_rectangle(_BR, 0, _BW-_BR, _BH, fill=badge_bg, outline=badge_bg)
+                bc.create_rectangle(0, _BR, _BW, _BH-_BR, fill=badge_bg, outline=badge_bg)
+                bc.create_text(_BW//2, _BH//2, text=badge_lbl, fill="#ffffff", font=(FONT, 8, "bold"))
 
                 # ✕ must be packed BEFORE the expanding info frame so Tkinter
                 # reserves space for it on the right before fill="x" consumes the rest.
@@ -5913,7 +5996,7 @@ class DictationApp:
         def _field(parent, label_text):
             tk.Label(parent, text=label_text, bg=BG, fg=DIM,
                      font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
-            f = _rounded_card_canvas(parent, CARD, radius=8, padx=24, pady=(0, 0))
+            f = _rounded_card_canvas(parent, CARD, radius=UI_RADIUS_INPUT, padx=24, pady=(0, 0))
             e = tk.Entry(f, bg=CARD, fg=FG, font=(FONT, 13), relief="flat",
                          insertbackground=FG, bd=0, highlightthickness=0)
             e.pack(fill="x", ipady=8, padx=10)
@@ -5937,7 +6020,7 @@ class DictationApp:
                  font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
         act_row = tk.Frame(p, bg=BG)
         act_row.pack(anchor="w", padx=24)
-        _ACT_W, _ACT_H, _ACT_R = 104, 34, 7
+        _ACT_W, _ACT_H, _ACT_R = 104, 34, UI_RADIUS_BUTTON
         _act_draws = {}   # name → redraw callable
 
         def _select_action(chosen):
@@ -6008,15 +6091,7 @@ class DictationApp:
             _select_action("Open URL")
             _refresh_list()
 
-        add_btn = tk.Frame(p, bg=ACC, cursor="hand2")
-        add_btn.pack(anchor="w", padx=24, pady=(10, 0))
-        add_lbl = tk.Label(add_btn, text="  Add Command  ", bg=ACC, fg="#fff",
-                           font=(FONT, 11, "bold"), cursor="hand2")
-        add_lbl.pack(ipady=7)
-        for w in (add_btn, add_lbl):
-            w.bind("<Button-1>", lambda e: _add_command())
-            w.bind("<Enter>", lambda e: add_btn.configure(bg="#1a94ff") or add_lbl.configure(bg="#1a94ff"))
-            w.bind("<Leave>", lambda e: add_btn.configure(bg=ACC) or add_lbl.configure(bg=ACC))
+        _wide_btn(p, "Add Command", _add_command, accent=True, padx=24, pady=(10, 0))
 
         # ── Page: Contacts ───────────────────────────────────────────────────
         p = page("Contacts", scrollable=True)
@@ -6025,7 +6100,7 @@ class DictationApp:
             "Jarvis looks up contacts here when you say an email command.\n"
             "Say a name or alias and Jarvis resolves it to the email address.\n"
             "Changes save automatically."
-        ), bg=BG, fg=DIM, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
+        ), bg=BG, fg=HINT, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
 
         contacts_list_outer = tk.Frame(p, bg=BG)
         contacts_list_outer.pack(fill="x", padx=24)
@@ -6037,10 +6112,10 @@ class DictationApp:
             if not ctcts:
                 tk.Label(contacts_list_outer,
                          text="No contacts yet. Add one below.",
-                         bg=BG, fg=DIM, font=(FONT, 10)).pack(anchor="w", pady=(0, 8))
+                         bg=BG, fg=HINT, font=(FONT, 10)).pack(anchor="w", pady=(0, 8))
                 return
             for i, ct in enumerate(ctcts):
-                row = _rounded_card_canvas(contacts_list_outer, CARD, radius=8, padx=0, pady=(0, 4))
+                row = _rounded_card_canvas(contacts_list_outer, CARD, radius=UI_RADIUS_CARD, padx=0, pady=(0, 4))
 
                 def _del_contact(idx=i):
                     c = load_contacts(); c.pop(idx); save_contacts(c); _refresh_contacts()
@@ -6071,7 +6146,7 @@ class DictationApp:
         def _contact_field(label_text, placeholder=""):
             tk.Label(p, text=label_text, bg=BG, fg=DIM,
                      font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
-            f = _rounded_card_canvas(p, CARD, radius=8, padx=24, pady=(0, 0))
+            f = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_INPUT, padx=24, pady=(0, 0))
             e = tk.Entry(f, bg=CARD, fg=FG, font=(FONT, 13), relief="flat",
                          insertbackground=FG, bd=0, highlightthickness=0)
             e.pack(fill="x", ipady=8, padx=10)
@@ -6118,25 +6193,18 @@ class DictationApp:
                 e.delete(0, "end"); e.insert(0, ph); e.configure(fg=DIM)
             _refresh_contacts()
 
-        add_ct_btn = _rounded_card_canvas(p, ACC, radius=8, padx=24, pady=(10, 4))
-        add_ct_lbl = tk.Label(add_ct_btn, text="  Add Contact  ", bg=ACC, fg="#fff",
-                              font=(FONT, 11, "bold"), cursor="hand2")
-        add_ct_lbl.pack(ipady=7)
-        for w in (add_ct_btn, add_ct_lbl):
-            w.bind("<Button-1>", lambda e: _add_contact())
-            w.bind("<Enter>", lambda e: add_ct_btn.configure(bg="#1a94ff") or add_ct_lbl.configure(bg="#1a94ff"))
-            w.bind("<Leave>", lambda e: add_ct_btn.configure(bg=ACC)       or add_ct_lbl.configure(bg=ACC))
+        _wide_btn(p, "Add Contact", _add_contact, accent=True, padx=24, pady=(10, 4))
 
         # ── Page: Vocabulary ─────────────────────────────────────────────────
         p = page("Vocabulary", scrollable=True)
         ph(p, "Custom Vocabulary")
         lbl(p, "USER DICTIONARY")
         tk.Label(p, text="Type words or names you want Whisper to recognize better.\nSeparate them with commas or new lines.",
-                 bg=BG, fg=DIM, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 10))
+                 bg=BG, fg=HINT, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 10))
 
         v_outer = tk.Frame(p, bg=BG)
         v_outer.pack(fill="x", padx=24, pady=(0, 10))
-        v_frame = _rr(v_outer, CARD, radius=10, padx=0, pady=0)
+        v_frame = _rr(v_outer, CARD, radius=UI_RADIUS_INPUT, padx=0, pady=0)
 
         v_scroll = tk.Scrollbar(v_frame, orient="vertical", bg=BG, troughcolor=BG,
                                  width=10, elementborderwidth=0, bd=0)
@@ -6162,13 +6230,13 @@ class DictationApp:
         lbl(p, "PERSONAL CORRECTIONS")
         tk.Label(p,
                  text='Use this for recurring mistakes. Example: if Jarvis hears "a ten a", replace it with "Aetna".',
-                 bg=BG, fg=DIM, font=(FONT, 10), justify="left", wraplength=380
+                 bg=BG, fg=HINT, font=(FONT, 10), justify="left", wraplength=380
         ).pack(anchor="w", padx=24, pady=(0, 8))
 
         # ── Input card ───────────────────────────────────────────────────────
-        corr_card = _rounded_card_canvas(p, CARD, radius=12, padx=24, pady=(0, 0))
+        corr_card = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_CARD, padx=24, pady=(0, 0))
 
-        tk.Label(corr_card, text="When Jarvis hears:", bg=CARD, fg=DIM,
+        tk.Label(corr_card, text="When Jarvis hears:", bg=CARD, fg=HINT,
                  font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
         wrong_var = tk.StringVar()
         wrong_entry = tk.Entry(corr_card, textvariable=wrong_var, bg="#2a2a2a", fg=FG,
@@ -6178,7 +6246,7 @@ class DictationApp:
         _bind_copy_paste(wrong_entry)
         wrong_entry.bind("<KeyPress>", pause_on_any_key)
 
-        tk.Label(corr_card, text="Replace with:", bg=CARD, fg=DIM,
+        tk.Label(corr_card, text="Replace with:", bg=CARD, fg=HINT,
                  font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(8, 2))
         right_var = tk.StringVar()
         right_entry = tk.Entry(corr_card, textvariable=right_var, bg="#2a2a2a", fg=FG,
@@ -6191,17 +6259,28 @@ class DictationApp:
         corr_status = tk.Label(corr_card, text="", bg=CARD, fg=DIM, font=(FONT, 9))
         corr_status.pack(anchor="w", padx=12, pady=(4, 0))
 
-        add_btn_row = tk.Frame(corr_card, bg=CARD)
-        add_btn_row.pack(anchor="w", padx=12, pady=(8, 12))
-        add_btn = tk.Label(add_btn_row, text="Add Correction", bg=ACC, fg="#ffffff",
-                           font=(FONT, 11, "bold"), padx=14, pady=7, cursor="hand2")
-        add_btn.pack(side="left")
-        add_btn.bind("<Enter>", lambda e: add_btn.configure(bg="#1a6fd4"))
-        add_btn.bind("<Leave>", lambda e: add_btn.configure(bg=ACC))
+        # Canvas-drawn rounded Add Correction button inside the card
+        _CBH, _CBR = 38, UI_RADIUS_BUTTON
+        add_btn = tk.Canvas(corr_card, height=_CBH, bg=CARD, highlightthickness=0, cursor="hand2")
+        add_btn.pack(fill="x", padx=12, pady=(8, 12))
+        def _draw_corr_btn(col=ACC):
+            add_btn.delete("all")
+            w = add_btn.winfo_width()
+            if w <= 1: return
+            add_btn.create_arc(0, 0, 2*_CBR, 2*_CBR, start=90, extent=90, fill=col, outline=col)
+            add_btn.create_arc(w-2*_CBR, 0, w, 2*_CBR, start=0, extent=90, fill=col, outline=col)
+            add_btn.create_arc(0, _CBH-2*_CBR, 2*_CBR, _CBH, start=180, extent=90, fill=col, outline=col)
+            add_btn.create_arc(w-2*_CBR, _CBH-2*_CBR, w, _CBH, start=270, extent=90, fill=col, outline=col)
+            add_btn.create_rectangle(_CBR, 0, w-_CBR, _CBH, fill=col, outline=col)
+            add_btn.create_rectangle(0, _CBR, w, _CBH-_CBR, fill=col, outline=col)
+            add_btn.create_text(w//2, _CBH//2, text="Add Correction", fill="#ffffff", font=(FONT, 11, "bold"))
+        add_btn.bind("<Configure>", lambda e: _draw_corr_btn(ACC))
+        add_btn.bind("<Enter>",     lambda e: _draw_corr_btn("#1a6fd4"))
+        add_btn.bind("<Leave>",     lambda e: _draw_corr_btn(ACC))
 
         # ── Saved corrections list ───────────────────────────────────────────
         lbl(p, "SAVED CORRECTIONS")
-        list_card = _rounded_card_canvas(p, CARD, radius=12, padx=24, pady=(4, 0))
+        list_card = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_CARD, padx=24, pady=(4, 0))
 
         def _rebuild_corrections_list():
             for w in list_card.winfo_children():
@@ -6269,7 +6348,7 @@ class DictationApp:
         ph(p, "Cloud transcription")
         toggle_row(p, cloud_var, "Cloud mode", "Use OpenAI Whisper API instead of the local model when an API key is available")
         lbl(p, "OPENAI API KEY")
-        key_f = _rounded_card_canvas(p, CARD, radius=8, padx=24, pady=(4, 0))
+        key_f = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_INPUT, padx=24, pady=(4, 0))
         key_entry = tk.Entry(key_f, textvariable=key_var, show="•",
                              bg=CARD, fg=FG, font=(FONT, 13), relief="flat",
                              insertbackground=FG, bd=0, highlightthickness=0)
@@ -6278,7 +6357,7 @@ class DictationApp:
         section_note(p, "Privacy",
                      "Local mode keeps transcription on your Mac. Cloud mode sends audio to OpenAI Whisper only when enabled and an API key is saved.")
         tk.Label(p, text="The API key is stored in macOS Keychain when possible.",
-                 bg=BG, fg=DIM, font=(FONT, 10)).pack(anchor="w", padx=24, pady=(4,0))
+                 bg=BG, fg=HINT, font=(FONT, 10)).pack(anchor="w", padx=24, pady=(4,0))
         save_btn_row(p, lambda: _save())
 
         # ── Page: Help ───────────────────────────────────────────────────────
@@ -6286,15 +6365,15 @@ class DictationApp:
         p = page("Workflows", scrollable=True)
         ph(p, "Workflows")
         tk.Label(p, text="Use these voice patterns to tell Jarvis what to do.",
-                 bg=BG, fg=DIM, font=(FONT, 11), anchor="w", justify="left"
+                 bg=BG, fg=HINT, font=(FONT, 11), anchor="w", justify="left"
         ).pack(anchor="w", padx=24, pady=(0, 10))
 
         def wf_card(title, body=None, examples=None, note_label=None, note_text=None):
-            inner = _rounded_card_canvas(p, CARD, radius=12, padx=24, pady=(6, 0))
+            inner = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_CARD, padx=24, pady=(6, 0))
             tk.Label(inner, text=title, bg=CARD, fg=FG,
                      font=(FONT, 12, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 4))
             if body:
-                tk.Label(inner, text=body, bg=CARD, fg=DIM,
+                tk.Label(inner, text=body, bg=CARD, fg=HINT,
                          font=(FONT, 10), justify="left", wraplength=420
                 ).pack(anchor="w", padx=12, pady=(0, 4))
             if examples:
@@ -6309,9 +6388,9 @@ class DictationApp:
             if note_label and note_text:
                 note_frame = tk.Frame(inner, bg=CARD)
                 note_frame.pack(fill="x", padx=12, pady=(2, 4))
-                tk.Label(note_frame, text=note_label, bg=CARD, fg="#b0b0b0",
+                tk.Label(note_frame, text=note_label, bg=CARD, fg=HINT,
                          font=(FONT, 9, "bold"), anchor="w").pack(anchor="w")
-                tk.Label(note_frame, text=note_text, bg=CARD, fg=DIM,
+                tk.Label(note_frame, text=note_text, bg=CARD, fg=HINT,
                          font=(FONT, 10), justify="left", wraplength=400, anchor="w"
                 ).pack(anchor="w")
             if examples:
@@ -6437,13 +6516,13 @@ class DictationApp:
             )
             copy_to_clipboard(summary, "Support summary copied")
 
-        small_button(p, "Copy setup summary", copy_support_summary)
+        _wide_btn(p, "Copy setup summary", copy_support_summary, accent=False, padx=24, pady=(8, 4))
 
         # ── Storage & Cleanup ─────────────────────────────────────────────────
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(16, 4))
         lbl(p, "STORAGE & CLEANUP")
         tk.Label(p, text="Manage local text history, learned vocabulary, and diagnostic logs.\nAudio recordings are not saved.",
-                 bg=BG, fg=DIM, font=(FONT, 10), anchor="w", justify="left").pack(anchor="w", padx=28, pady=(2, 6))
+                 bg=BG, fg=HINT, font=(FONT, 10), anchor="w", justify="left").pack(anchor="w", padx=28, pady=(2, 6))
 
         def _fmt_kb(path):
             try:
@@ -6472,7 +6551,7 @@ class DictationApp:
             return _fmt_kb("~/jarvis_startup_debug.log")
 
         # Storage info card — rebuilt each time the Help page is opened
-        _stor_card = _rounded_card_canvas(p, CARD, radius=12, padx=24, pady=(4, 0))
+        _stor_card = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_CARD, padx=24, pady=(4, 0))
 
         def _stor_row(label, value_fn, clear_fn, btn_label, confirm_msg, status_msg):
             import tkinter.messagebox as _mb
@@ -6535,6 +6614,7 @@ class DictationApp:
                   "Clear the startup diagnostic log?",
                   "Startup log cleared.")
         tk.Frame(_stor_card, bg=CARD, height=10).pack()   # bottom padding
+        tk.Frame(p, bg=BG, height=24).pack()             # Help page bottom breathing room
 
         # ── Save logic ────────────────────────────────────────────────────────
         def _save():
@@ -6701,9 +6781,9 @@ class DictationApp:
         tk.Label(win, text="Welcome to Dictation", bg=BG, fg=FG,
                  font=(FONT, 21, "bold")).pack(anchor="w", padx=28, pady=(28, 6))
         tk.Label(win, text="Let's do a quick setup so recording feels reliable from the first use.",
-                 bg=BG, fg=DIM, font=(FONT, 12), wraplength=390, justify="left").pack(anchor="w", padx=28, pady=(0, 18))
+                 bg=BG, fg=HINT, font=(FONT, 12), wraplength=390, justify="left").pack(anchor="w", padx=28, pady=(0, 18))
 
-        card = _rr(win, CARD, radius=12, padx=28, pady=(0, 16))
+        card = _rr(win, CARD, radius=UI_RADIUS_CARD, padx=28, pady=(0, 16))
         for txt in (
             "1. Confirm Right Option as the record key",
             "2. Select the correct microphone if needed",
