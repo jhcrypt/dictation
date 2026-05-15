@@ -321,10 +321,15 @@ def log_event(area: str, message: str):
     except Exception:
         pass
 
+def _dlog(*args, **kwargs):
+    """Print only when Debug Logging is enabled in settings."""
+    if settings.get("debug_logging", False):
+        print(*args, **kwargs)
+
 def _timing(label: str, start: float) -> float:
     """Print elapsed ms since `start` and return time.time() for the next segment."""
     elapsed = (time.time() - start) * 1000
-    print(f"[timing] {label:<30} {elapsed:6.0f} ms")
+    _dlog(f"[timing] {label:<30} {elapsed:6.0f} ms")
     return time.time()
 
 def _setting_float(name: str, fallback: float) -> float:
@@ -787,14 +792,14 @@ def ollama_query(text: str, profile: str | None = None) -> str:
     try:
         _ollama_req_q.put_nowait((job_id, text, profile or settings.get("writing_profile", "General")))
     except _queue.Full:
-        print("[ollama] busy — skipping refinement")
+        _dlog("[ollama] busy — skipping refinement")
         return text
 
     try:
         result_job_id, result = _ollama_res_q.get(timeout=OLLAMA_TIMEOUT)
         # Sanity check: discard if somehow a mismatched result slipped through
         if result_job_id != job_id:
-            print("[ollama] stale result discarded")
+            _dlog("[ollama] stale result discarded")
             return text
         return result if result else text
     except _queue.Empty:
@@ -1022,7 +1027,7 @@ def format_for_app(text, app_name):
         if text.endswith("."):
             text = text[:-1]
 
-    print(f"[format] {app_name}: applied '{rule_key}' rule")
+    _dlog(f"[format] {app_name}: applied '{rule_key}' rule")
     return text
 
 
@@ -1072,7 +1077,7 @@ def execute_jarvis_command(action, params):
     if time.time() - _last_jarvis_time < 3.0: return
     _last_jarvis_time = time.time()
 
-    print(f"[jarvis] executing: {action} {params}")
+    _dlog(f"[jarvis] executing: {action} {params}")
     if app: app.show_message(f"Jarvis: {action.replace('_', ' ')}...", "#0a84ff")
 
     try:
@@ -1101,35 +1106,35 @@ def execute_jarvis_command(action, params):
         elif action == "set_volume":
             direction = params.get("direction", "")
             level = params.get("level", None)
-            print("[system control] action=set_volume", "direction=", direction, "level=", level)
+            _dlog("[system control] action=set_volume", "direction=", direction, "level=", level)
             if direction == "up":
                 r = subprocess.run(["osascript", "-e", "set volume output volume (output volume of (get volume settings) + 10)"], capture_output=True, text=True)
-                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                _dlog("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
                 if app: app.show_message("Volume up", "#30d158")
             elif direction == "down":
                 r = subprocess.run(["osascript", "-e", "set volume output volume (output volume of (get volume settings) - 10)"], capture_output=True, text=True)
-                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                _dlog("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
                 if app: app.show_message("Volume down", "#30d158")
             elif direction == "mute":
                 r = subprocess.run(["osascript", "-e", "set volume with output muted"], capture_output=True, text=True)
-                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                _dlog("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
                 if app: app.show_message("Muted", "#30d158")
             elif level is not None:
                 r = subprocess.run(["osascript", "-e", f"set volume output volume {level}"], capture_output=True, text=True)
-                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                _dlog("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
                 if app: app.show_message(f"Volume: {level}%", "#30d158")
 
         elif action == "set_brightness":
             direction = params.get("direction", "")
             level = params.get("level", None)
-            print("[system control] action=set_brightness", "direction=", direction, "level=", level)
+            _dlog("[system control] action=set_brightness", "direction=", direction, "level=", level)
             if direction == "up":
                 r = subprocess.run(["osascript", "-e", 'tell application "System Events" to key code 144'], capture_output=True, text=True)
-                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                _dlog("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
                 if app: app.show_message("Brightness up", "#30d158")
             elif direction == "down":
                 r = subprocess.run(["osascript", "-e", 'tell application "System Events" to key code 145'], capture_output=True, text=True)
-                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                _dlog("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
                 if app: app.show_message("Brightness down", "#30d158")
             elif level is not None:
                 # Repeat key presses proportionally — 16 steps span full range
@@ -1146,7 +1151,7 @@ def execute_jarvis_command(action, params):
                     f'end tell'
                 )
                 r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                _dlog("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
                 if app: app.show_message(f"Brightness: {level}%", "#30d158")
 
         elif action == "take_screenshot":
@@ -1381,6 +1386,7 @@ DEFAULT_SETTINGS = {
     # Completely separate from translate_target_language (selected-text commands only).
     "translate_my_dictation": "Off",
     "dictation_quality": "Balanced",
+    "debug_logging": False,
 }
 
 def load_settings():
@@ -1555,7 +1561,7 @@ def _toplevel_opened():
     _modifier_keys_down.clear()
     if _open_wins == 1:           # first window: shut down pynput thread
         _stop_kb_listener()
-        print("[system] pynput listener stopped (window open)")
+        _dlog("[system] pynput listener stopped (window open)")
 
 def _toplevel_closed():
     """Call when any Toplevel window closes (from its <Destroy> handler).
@@ -1916,7 +1922,7 @@ def pause_media():
             try:
                 _send_media_playpause()
                 _browsers_paused.append("Firefox")
-                print("[media] paused Firefox")
+                _dlog("[media] paused Firefox")
             except Exception as e:
                 print(f"[media] Firefox pause error: {e}")
         # Spotify/Music/Podcasts in parallel
@@ -1930,7 +1936,7 @@ def pause_media():
                 ).decode().strip().lower()
                 if state in ("playing", "1"):
                     subprocess.Popen(["osascript", "-e", pause_cmd])
-                    print(f"[media] paused {proc}")
+                    _dlog(f"[media] paused {proc}")
                     return proc
             except Exception: pass
             return None
@@ -1946,18 +1952,18 @@ def pause_media():
 
 def resume_media():
     global _pre_recording_muted, _apps_were_playing, _browsers_paused
-    print(f"[media] resuming — _pre_recording_muted={_pre_recording_muted}")
+    _dlog(f"[media] resuming — _pre_recording_muted={_pre_recording_muted}")
     if not _pre_recording_muted:
         _set_system_mute(False)
-        print("[media] system unmuted")
+        _dlog("[media] system unmuted")
     else:
-        print("[media] was already muted before recording, leaving muted")
+        _dlog("[media] was already muted before recording, leaving muted")
 
     # Resume Firefox via media key
     if "Firefox" in _browsers_paused:
         try:
             _send_media_playpause()
-            print("[media] resumed Firefox")
+            _dlog("[media] resumed Firefox")
         except Exception as e:
             print(f"[media] Firefox resume error: {e}")
 
@@ -2046,7 +2052,7 @@ def paste_text(text):
                 pb.clearContents()
                 pb.setString_forType_(paste_content, NSStringPboardType)
                 readback = pb.stringForType_(NSStringPboardType) or ""
-                print("[unicode] clipboard_roundtrip=", repr(readback))
+                _dlog("[unicode] clipboard_roundtrip=", repr(readback))
                 if readback == paste_content:
                     verified = True
                     log_event("paste", "clipboard verified via AppKit")
@@ -2063,7 +2069,7 @@ def paste_text(text):
                     readback = _sp.run(
                         ["pbpaste"], capture_output=True, text=True, encoding="utf-8", timeout=2
                     ).stdout
-                    print("[unicode] clipboard_roundtrip=", repr(readback))
+                    _dlog("[unicode] clipboard_roundtrip=", repr(readback))
                     # pbpaste may append a trailing newline — strip it for comparison
                     if readback == paste_content or readback.rstrip("\n") == paste_content:
                         verified = True
@@ -2278,10 +2284,10 @@ def _open_email_draft(to: str, subject: str, body: str) -> None:
     subject_enc = quote((subject or "Following up").strip(), safe="")
     body_enc    = quote((body or "").strip(), safe="")
     url = f"mailto:{recipient}?subject={subject_enc}&body={body_enc}"
-    print("[email draft] to=",      repr(to))
-    print("[email draft] subject=", repr(subject))
-    print("[email draft] body=",    repr(body))
-    print("[email draft] url=",     url)
+    _dlog("[email draft] to=",      repr(to))
+    _dlog("[email draft] subject=", repr(subject))
+    _dlog("[email draft] body=",    repr(body))
+    _dlog("[email draft] url=",     url)
     subprocess.Popen(["open", url])
 
 def _resolve_contact_email(name: str):
@@ -2640,13 +2646,13 @@ def _create_apple_reminder(task: str, due_dt=None, has_time: bool = False) -> bo
             f'    end tell\n'
             f'end tell'
         )
-    print("[reminder execute] script=", script)
+    _dlog("[reminder execute] script=", script)
     try:
         r = subprocess.run(["osascript", "-e", script],
                            capture_output=True, text=True, timeout=10)
-        print("[reminder execute] returncode=", r.returncode)
-        print("[reminder execute] stdout=", r.stdout.strip())
-        print("[reminder execute] stderr=", r.stderr.strip())
+        _dlog("[reminder execute] returncode=", r.returncode)
+        _dlog("[reminder execute] stdout=", r.stdout.strip())
+        _dlog("[reminder execute] stderr=", r.stderr.strip())
         if r.returncode != 0:
             _safe_print(f"[reminder] osascript error: {r.stderr.strip()}")
         return r.returncode == 0
@@ -2658,15 +2664,15 @@ def _create_apple_reminder(task: str, due_dt=None, has_time: bool = False) -> bo
 def _execute_add_reminder(params: dict) -> None:
     """Parse reminder text, resolve due date, create Apple Reminder, confirm."""
     raw_text = params.get("text", "").strip()
-    print("[reminder command] raw_text=", repr(raw_text))
+    _dlog("[reminder command] raw_text=", repr(raw_text))
     if not raw_text:
         if app:
             app.show_message("Couldn't parse reminder. Try: Remind me to call Val tomorrow.", "#ff9f0a")
         return
 
     task, due_dt, has_time = _parse_reminder_datetime(raw_text)
-    print("[reminder parse] title=", repr(task))
-    print("[reminder parse] due=", due_dt)
+    _dlog("[reminder parse] title=", repr(task))
+    _dlog("[reminder parse] due=", due_dt)
 
     if app:
         app.show_message("Adding reminder…", "#0a84ff")
@@ -2709,8 +2715,8 @@ def _execute_draft_email(params: dict) -> None:
     recipient_name = params.get("recipient", "").strip()
     body_raw       = params.get("body",      "").strip()
 
-    print("[email parse] recipient_name=", repr(recipient_name))
-    print("[email parse] body_raw=",       repr(body_raw))
+    _dlog("[email parse] recipient_name=", repr(recipient_name))
+    _dlog("[email parse] body_raw=",       repr(body_raw))
 
     if not recipient_name:
         if app:
@@ -2905,11 +2911,11 @@ def _fast_jarvis_match(lower, raw_text=""):
             recipient = working_text.strip().rstrip(".,!?")
             body      = ""
 
-        print("[email parse] raw_text=",  repr(raw_text))
-        print("[email parse] remaining=", repr(working_text))
-        print("[email parse] marker=",    repr(marker_m.group(0) if marker_m else None))
-        print("[email parse] recipient=", repr(recipient))
-        print("[email parse] body=",      repr(body))
+        _dlog("[email parse] raw_text=",  repr(raw_text))
+        _dlog("[email parse] remaining=", repr(working_text))
+        _dlog("[email parse] marker=",    repr(marker_m.group(0) if marker_m else None))
+        _dlog("[email parse] recipient=", repr(recipient))
+        _dlog("[email parse] body=",      repr(body))
         return ("draft_email", {"recipient": recipient, "body": body})
 
     for prefix in ("search for ", "search ", "google ", "look up "):
@@ -3000,12 +3006,12 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     globals()["_recording_had_audio"] = True
     app.set_state("transcribing")
     if rms < SILENCE_TOO_QUIET:
-        print("[transcribe] skipping — audio too quiet")
+        _dlog("[transcribe] skipping — audio too quiet")
         app.set_state("idle")
         return
 
     personal_prompt = get_personal_prompt()
-    print(f"[whisper-hint] {personal_prompt}")
+    _dlog(f"[whisper-hint] {personal_prompt}")
 
     # ── Transcription language ────────────────────────────────────────────────
     # Reads the setting saved by the Transcription Language dropdown.
@@ -3024,12 +3030,12 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     _loaded_is_en_only = active_model_name.endswith(".en")
     model_path         = active_model_name   # HF Hub resolves the exact path at load time
 
-    print("[LANG DEBUG] selected_transcription_language=", selected_transcription_language)
-    print("[LANG DEBUG] translation_target=",              translation_target)
-    print("[LANG DEBUG] language_to_use=",                 language_to_use)
-    print("[LANG DEBUG] whisper_task=",                    whisper_task)
-    print("[LANG DEBUG] model_path=",                      model_path)
-    print("[LANG DEBUG] using_model=",                     active_model_name)
+    _dlog("[LANG DEBUG] selected_transcription_language=", selected_transcription_language)
+    _dlog("[LANG DEBUG] translation_target=",              translation_target)
+    _dlog("[LANG DEBUG] language_to_use=",                 language_to_use)
+    _dlog("[LANG DEBUG] whisper_task=",                    whisper_task)
+    _dlog("[LANG DEBUG] model_path=",                      model_path)
+    _dlog("[LANG DEBUG] using_model=",                     active_model_name)
 
     # Warn if the LOADED model is English-only but a non-English language is selected.
     if _is_non_english and _loaded_is_en_only:
@@ -3065,8 +3071,8 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
         segments, _info = whisper.transcribe(wav_path, beam_size=_BEAM, task=whisper_task, language=language_to_use, condition_on_previous_text=False, initial_prompt=_whisper_prompt, vad_filter=True, no_speech_threshold=0.6, compression_ratio_threshold=2.4)
         raw_text = " ".join(seg.text for seg in segments).strip()
     _timing("whisper transcription", _t_whisper)
-    print("[WHISPER RAW]=", repr(raw_text))
-    print("[unicode] whisper_raw=", repr(raw_text))
+    _dlog("[WHISPER RAW]=", repr(raw_text))
+    _dlog("[unicode] whisper_raw=", repr(raw_text))
 
     # ── Refine language detection for Auto-detect ─────────────────────────────
     # When language_to_use is None (Auto-detect), _is_non_english was set to
@@ -3078,7 +3084,7 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     if language_to_use is None and _info is not None:
         _detected_language = getattr(_info, "language", None) or "en"
         _is_non_english = (_detected_language != "en")
-        print(f"[LANG DEBUG] auto-detect → whisper detected='{_detected_language}', is_non_english={_is_non_english}")
+        _dlog(f"[LANG DEBUG] auto-detect → whisper detected='{_detected_language}', is_non_english={_is_non_english}")
     else:
         _detected_language = language_to_use or "en"
 
@@ -3105,14 +3111,14 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
         translation_mode=_translation_mode,
     )
     _will_run_ollama = not skip_ollama and bool(raw_text)
-    print("[ollama decision] spoken_language=",  _spoken_lang_log)
-    print("[ollama decision] language_to_use=",  language_to_use)
-    print("[ollama decision] detected_language=", _detected_language)
-    print("[ollama decision] is_non_english=",    _is_non_english)
-    print("[ollama decision] cleanup_mode=",      _cleanup_mode)
-    print("[ollama decision] translation_mode=",  _translation_mode)
-    print("[ollama decision] will_run_ollama=",   _will_run_ollama)
-    print("[ollama decision] reason=",            skip_reason if skip_ollama else "eligible")
+    _dlog("[ollama decision] spoken_language=",  _spoken_lang_log)
+    _dlog("[ollama decision] language_to_use=",  language_to_use)
+    _dlog("[ollama decision] detected_language=", _detected_language)
+    _dlog("[ollama decision] is_non_english=",    _is_non_english)
+    _dlog("[ollama decision] cleanup_mode=",      _cleanup_mode)
+    _dlog("[ollama decision] translation_mode=",  _translation_mode)
+    _dlog("[ollama decision] will_run_ollama=",   _will_run_ollama)
+    _dlog("[ollama decision] reason=",            skip_reason if skip_ollama else "eligible")
     _t_ollama = time.time()
     if _will_run_ollama:
         refined = ollama_query(raw_text, active_profile)
@@ -3131,7 +3137,7 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     else:
         ollama_status = f"skipped: {skip_reason}"
         log_event("ollama", ollama_status)
-        print(f"[timing] ollama cleanup               skipped: {skip_reason}")
+        _dlog(f"[timing] ollama cleanup               skipped: {skip_reason}")
         if app and settings.get("show_startup_tips", True) and skip_reason == "short phrase":
             app.show_message("Short phrase — skipped AI cleanup", "#0a84ff")
 
@@ -3151,31 +3157,31 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     _timing("symspell + snippets + punctuate", _t_symspell)
     last_text = text
     final_text = text
-    print("[unicode] after_cleanup=", repr(final_text))
-    print("[unicode] before_paste=", repr(final_text))
-    print("[FINAL TEXT]=", repr(final_text))
+    _dlog("[unicode] after_cleanup=", repr(final_text))
+    _dlog("[unicode] before_paste=", repr(final_text))
+    _dlog("[FINAL TEXT]=", repr(final_text))
     log_event("final", repr(text))
 
     # 2. Use a separate variable 'lower' ONLY for background command checks
     lower = re.sub(r"[^a-z0-9 ]", "", raw_text.lower()).strip()
-    print(f"[cmd] {lower!r}")
+    _dlog(f"[cmd] {lower!r}")
 
     _t_cmd = time.time()
     if JARVIS_ENABLED and not settings.get("safe_mode", False):
         cmd_text = lower[7:].strip() if lower.startswith("jarvis ") else (lower[11:].strip() if lower.startswith("hey jarvis ") else lower)
-        print("[command route] whisper_text=", repr(whisper_text))
-        print("[command route] cmd_text=",    repr(cmd_text))
+        _dlog("[command route] whisper_text=", repr(whisper_text))
+        _dlog("[command route] cmd_text=",    repr(cmd_text))
         # Use whisper_text (pre-Ollama) for recipient/body extraction so
         # Ollama reformulations can't scramble the email regex.
         jarvis_intent = _fast_jarvis_match(cmd_text, raw_text=whisper_text)
         if jarvis_intent:
-            print("[command route] matched_action=", jarvis_intent[0], "params=", jarvis_intent[1])
+            _dlog("[command route] matched_action=", jarvis_intent[0], "params=", jarvis_intent[1])
             _timing("command detection", _t_cmd)
             threading.Thread(target=execute_jarvis_command, args=(jarvis_intent[0], jarvis_intent[1]), daemon=True).start()
             app.set_state("idle")
             return
         else:
-            print("[command route] matched_action= None (no Jarvis command matched)")
+            _dlog("[command route] matched_action= None (no Jarvis command matched)")
 
     if snippet_state == "waiting_trigger":
         if any(p in lower for p in ("create snippet","new snippet","add snippet","make snippet")):
@@ -3375,7 +3381,7 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     # dictated text that made it past every command gate.
     _dictation_target = _early_translate
     if _dictation_target and _dictation_target != "Off":
-        print(f"[dictation-translate] translating to '{_dictation_target}'")
+        _dlog(f"[dictation-translate] translating to '{_dictation_target}'")
         app.show_message(f"Translating to {_dictation_target}…", "#0a84ff")
         _t_translate = time.time()
         _dt_result = _ollama_translate(text, _dictation_target)
@@ -3383,9 +3389,9 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
         if _dt_result:
             text = _dt_result
             last_text = text   # keep last_text in sync so "scratch that" removes the right length
-            print(f"[dictation-translate] result: {text!r}")
+            _dlog(f"[dictation-translate] result: {text!r}")
         else:
-            print("[dictation-translate] translation failed or Ollama unavailable — using original text")
+            _dlog("[dictation-translate] translation failed or Ollama unavailable — using original text")
     # ─────────────────────────────────────────────────────────────────────────
 
     app.set_transcript(text)
@@ -3971,7 +3977,7 @@ def on_press(key):
     is_comma = hasattr(key, "char") and key.char in (",", "d")
 
     if key == record_key and not recording:
-        print(f"[debug] record key pressed — starting recording")
+        _dlog(f"[debug] record key pressed — starting recording")
         recording = True
         _wake_active.set()
         globals()["_wake_cooldown_until"] = time.time() + 2.0
@@ -5111,6 +5117,7 @@ class DictationApp:
         ai_cleanup_mode_var = tk.StringVar(value=settings.get("ai_cleanup_mode", "auto"))
         sounds_var = tk.BooleanVar(value=settings.get("play_sounds", True))
         startup_tips_var = tk.BooleanVar(value=settings.get("show_startup_tips", True))
+        debug_logging_var = tk.BooleanVar(value=settings.get("debug_logging", False))
         safe_mode_var = tk.BooleanVar(value=settings.get("safe_mode", False))
         correction_strength_var = tk.StringVar(value=settings.get("correction_strength", "Standard"))
         writing_profile_var = tk.StringVar(value=settings.get("writing_profile", "General"))
@@ -6757,6 +6764,13 @@ class DictationApp:
                   "Clear the startup diagnostic log?",
                   "Startup log cleared.")
         tk.Frame(_stor_card, bg=CARD, height=10).pack()   # bottom padding
+
+        # ── Debug Logging toggle ──────────────────────────────────────────────
+        tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(16, 4))
+        lbl(p, "DEVELOPER")
+        toggle_row(p, debug_logging_var, "Debug Logging",
+                   "Prints verbose pipeline and timing logs to the terminal. Off by default.")
+
         tk.Frame(p, bg=BG, height=24).pack()             # Help page bottom breathing room
 
         # ── Save logic ────────────────────────────────────────────────────────
@@ -6794,6 +6808,7 @@ class DictationApp:
                 "use_ollama":     ollama_var.get(),
                 "play_sounds":    sounds_var.get(),
                 "show_startup_tips": startup_tips_var.get(),
+                "debug_logging":    debug_logging_var.get(),
                 "safe_mode":        safe_mode_var.get(),
                 "ai_cleanup_mode":  ai_cleanup_mode_var.get(),
                 "correction_strength": correction_strength_var.get(),
@@ -6807,12 +6822,12 @@ class DictationApp:
             })
 
             # ── Debug: log what we're about to save ───────────────────────────
-            print(f"[save] model_var  = '{model_var.get()}'")
-            print(f"[save] lang_var   = '{lang_var.get()}'")
-            print(f"[save] settings['model']      = '{settings.get('model')}'")
-            print(f"[save] settings['language']   = '{settings.get('language')}'")
-            print(f"[save] settings['auto_detect']= {settings.get('auto_detect')}")
-            print(f"[save] writing to {SETTINGS_FILE}")
+            _dlog(f"[save] model_var  = '{model_var.get()}'")
+            _dlog(f"[save] lang_var   = '{lang_var.get()}'")
+            _dlog(f"[save] settings['model']      = '{settings.get('model')}'")
+            _dlog(f"[save] settings['language']   = '{settings.get('language')}'")
+            _dlog(f"[save] settings['auto_detect']= {settings.get('auto_detect')}")
+            _dlog(f"[save] writing to {SETTINGS_FILE}")
             # ──────────────────────────────────────────────────────────────────
 
             # Sync the global flags
@@ -6828,10 +6843,10 @@ class DictationApp:
             try:
                 with open(SETTINGS_FILE) as _rbf:
                     _rb = json.load(_rbf)
-                print(f"[save] JSON readback: model='{_rb.get('model')}' "
+                _dlog(f"[save] JSON readback: model='{_rb.get('model')}' "
                       f"language='{_rb.get('language')}' auto_detect={_rb.get('auto_detect')}")
             except Exception as _rbe:
-                print(f"[save] JSON readback FAILED: {_rbe}")
+                _dlog(f"[save] JSON readback FAILED: {_rbe}")
             # ──────────────────────────────────────────────────────────────────
 
             _refresh_record_hotkey(log=True)
@@ -6892,11 +6907,11 @@ class DictationApp:
 # --- ST# --- IRONCLAD STABILITY: Hardware Cleanup ---
         def on_settings_destroy(event):
             if event.widget == _win:
-                print("[system] Settings closed.")
+                _dlog("[system] Settings closed.")
                 # Restore WAKE_ENABLED from persisted settings so Jarvis resumes
                 # whether the user saved or just closed the window.
                 globals()["WAKE_ENABLED"] = settings.get("wake_enabled", True)
-                print(f"[system] WAKE_ENABLED restored to {globals()['WAKE_ENABLED']}")
+                _dlog(f"[system] WAKE_ENABLED restored to {globals()['WAKE_ENABLED']}")
                 _toplevel_closed()
 
         _win.bind("<Destroy>", on_settings_destroy)        
@@ -7017,12 +7032,12 @@ def start_backend(stream):
     # GIL-releasing function.  Starting the stream after the wake-word thread
     # caused PortAudio's C-level thread init to corrupt the wake-word thread's
     # PyThreadState, producing the fatal GIL abort on time.sleep().
-    print("[record] microphone init starting")
+    _dlog("[record] microphone init starting")
     try:
         stream.start()
-        print("[record] audio stream started")
+        _dlog("[record] audio stream started")
     except Exception as _stream_err:
-        print("[record] microphone init error=", _stream_err)
+        _dlog("[record] microphone init error=", _stream_err)
         raise
     # Key detection is now handled entirely by the Quartz HID tap installed via
     # root.after(1000, _install_suppression_tap).  No pynput keyboard.Listener
@@ -7040,7 +7055,7 @@ def start_backend(stream):
 
 def _tap_record_start():
     global recording, cancelled, _record_started_at, _last_record_press_at, _recording_started_by_wake
-    print("[record] start_recording called")
+    _dlog("[record] start_recording called")
     now = time.time()
     debounce = _setting_float("hotkey_debounce_seconds", HOTKEY_DEBOUNCE_SECONDS)
 
@@ -7049,7 +7064,7 @@ def _tap_record_start():
         return
     _last_record_press_at = now
 
-    print("[record] is_recording before=", recording)
+    _dlog("[record] is_recording before=", recording)
     if recording:
         log_event("record", "start ignored — already recording")
         return
@@ -7060,7 +7075,7 @@ def _tap_record_start():
         return
 
     recording = True
-    print("[record] microphone init success")
+    _dlog("[record] microphone init success")
     _recording_started_by_wake = False
     _record_started_at = now
     _wake_active.set()
@@ -7104,7 +7119,7 @@ def _finish_short_recording(duration: float):
 
 def _tap_record_stop():
     global recording, _wake_cooldown_until, _last_record_release_at, _recording_started_by_wake
-    print("[record] stop_recording called")
+    _dlog("[record] stop_recording called")
     now = time.time()
     debounce = _setting_float("hotkey_debounce_seconds", HOTKEY_DEBOUNCE_SECONDS)
 
@@ -7219,7 +7234,7 @@ def _drain_input_events():
                 continue
 
             if action == "record_press":
-                print("[record button] clicked — recording=", recording)
+                _dlog("[record button] clicked — recording=", recording)
                 if not recording:
                     _tap_record_start()
                 elif settings.get("toggle_mode", False):
@@ -7237,7 +7252,7 @@ def _drain_input_events():
             elif action == "open_settings":
                 app.open_settings()
             elif action == "menu_start_stop":
-                print("[record button] clicked — recording=", recording)
+                _dlog("[record button] clicked — recording=", recording)
                 if recording:
                     _tap_record_stop() if settings.get("toggle_mode", False) else _tap_record_stop()
                 else:
