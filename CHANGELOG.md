@@ -1,5 +1,44 @@
 # Changelog
 
+## v6.2.2 — Language & Translation Controls
+
+### New: Translate My Dictation To
+- New dropdown in Settings → Audio & Language: **Off / English / French / Spanish / German / Italian / Portuguese**.
+- When set, every dictated sentence is translated to the chosen language after transcription using your local Ollama model.
+- Default is **Off** — normal same-language dictation is unchanged.
+- Translation is entirely post-transcription; it does not affect Jarvis commands, snippets, or formatting.
+- Example: I'm Speaking = English + Translate My Dictation To = French → typed output is in French.
+
+### Fixes: Audio & Language settings reliability
+- **Dropdowns now stick** — model and language changes no longer snap back to the previous value after selection. A reentrancy guard prevents the Tkinter trace from double-firing and undoing the selection.
+- **Restart Now saves first** — clicking "Restart Now" in the Audio & Language panel now flushes the current dropdown values to disk before relaunching, so the newly chosen model and language are actually applied after restart.
+- **Auto-correct incompatible model + language** — selecting a non-English language while an English-only (`.en`) model is chosen automatically switches to the nearest multilingual equivalent (e.g. `small.en → small`) and shows a visible warning label.
+- **Menu bar Whisper Model checkmark** — multilingual models (`tiny`, `base`, `small`, `medium`) were missing from the menu bar model list; the checkmark now shows correctly for all models including multilingual ones.
+- **Menu bar checkmarks refresh on save** — previously the model/hotkey/strength/profile checkmarks in the menu bar only updated the next time you opened the menu. They now update the instant you click Save Changes.
+
+### UI: Audio & Language page reordered
+- **I'm Speaking** now appears above **Speech Model** — the speaking language should be chosen before selecting a model, since the model must match the language.
+- Updated **Speech Model** helper text: "English-only models end in .en. Use multilingual models for French, Spanish, and other languages."
+- **How language settings work** info card added at the bottom of the page, explaining the role of each setting clearly.
+
+### Previous: Workflows & Offline Clarity (v6.1.19)
+
+#### Workflows page
+- Added a new **Workflows** sidebar page in Settings (between Cloud and Help).
+- Six instruction cards explain every voice pattern: Basic Dictation, Email Drafts, Reminders, Translation, System Controls, and Contacts.
+- Each card shows command examples styled as a distinct block with a **Copy examples** button.
+
+#### Offline-first messaging
+- Added **Offline-first** card to the Setup page listing what works without internet and what requires it.
+- Added **Works offline** card to the Help page with a full itemised breakdown (available offline vs. may need internet).
+- Support summary (Copy setup summary) now opens with the offline-first privacy statement.
+
+#### Storage & Cleanup polish
+- Confirmation dialog added before any clear action (History, Vocabulary, Log).
+- Clear buttons renamed to **Clear History**, **Clear Vocabulary**, and **Clear Log**.
+- HUD status confirmation shown after each successful clear ("History cleared.", etc.).
+- Added description line under the Storage & Cleanup section heading.
+
 ## v6.1.10 — Hotkey UI Cleanup
 - Simplified supported record keys to Right Option, F13, F14, F15.
 - Kept Right Option as the recommended default.

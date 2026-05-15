@@ -183,8 +183,8 @@ app = BUNDLE(
         'CFBundleDisplayName':      'Jarvis Dictation',
         'CFBundleExecutable':       'JarvisDictation',
         'CFBundleIdentifier':       'com.jhcrypt.jarvis-dictation',
-        'CFBundleShortVersionString': '6.1.15',
-        'CFBundleVersion':          '6.1.15',
+        'CFBundleShortVersionString': '6.1.19',
+        'CFBundleVersion':          '6.1.19',
         'CFBundlePackageType':      'APPL',
         'LSMinimumSystemVersion':   '10.15',
         # ── Menu-bar agent (no Dock icon) ─────────────────────────────────────

@@ -1,4 +1,41 @@
 #!/usr/bin/env python
+# ── STARTUP CRASH LOG — runs before any other import ─────────────────────────
+import sys, os, datetime, traceback
+
+def _write_startup_log(msg: str):
+    try:
+        log_path = os.path.expanduser("~/jarvis_startup_debug.log")
+        # Keep the log under ~100 KB — if it exceeds that, discard the oldest half.
+        if os.path.exists(log_path) and os.path.getsize(log_path) > 100_000:
+            with open(log_path, "r", errors="replace") as _rf:
+                _content = _rf.read()
+            with open(log_path, "w") as _wf:
+                _wf.write(_content[len(_content) // 2:])
+        with open(log_path, "a") as _f:
+            _f.write(msg + "\n")
+            _f.flush()
+    except Exception:
+        pass
+
+_startup_time = datetime.datetime.now().isoformat()
+_write_startup_log("=" * 60)
+_write_startup_log(f"START: {_startup_time}")
+_write_startup_log(f"sys.argv:      {sys.argv}")
+_write_startup_log(f"sys.executable:{sys.executable}")
+_write_startup_log(f"frozen:        {getattr(sys, 'frozen', False)}")
+_write_startup_log(f"_MEIPASS:      {getattr(sys, '_MEIPASS', None)}")
+_write_startup_log(f"cwd:           {os.getcwd()}")
+_write_startup_log(f"sys.path[:4]:  {sys.path[:4]}")
+
+def _excepthook(exc_type, exc_value, exc_tb):
+    msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    _write_startup_log(f"UNCAUGHT EXCEPTION:\n{msg}")
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+sys.excepthook = _excepthook
+_write_startup_log("excepthook installed — beginning imports")
+# ─────────────────────────────────────────────────────────────────────────────
+
 """
 Jarvis Dictation v6.1.18 — Intel Mac
 Hold Right Option to record, release to transcribe and type.
@@ -267,7 +304,8 @@ _record_key_is_modifier: bool = True
 # into this queue; Tk drains it from its own event loop.
 _input_event_q: _queue.SimpleQueue = _queue.SimpleQueue()
 
-APP_VERSION = "6.1.18 Spark Desktop Email Fix"
+APP_VERSION = "6.2.2 Language & Translation Controls"
+BUILD_ID    = "v6.2.2-m1-stable"
 HOTKEY_DEBOUNCE_SECONDS = 0.18
 MIN_RECORD_SECONDS = 0.30
 
@@ -476,7 +514,7 @@ def get_active_writing_profile(app_name: str | None = None) -> str:
 
 JARVIS_COMMANDS = {
     "open": "open_app", "search": "web_search", "email": "send_email",
-    "volume": "set_volume", "screenshot": "take_screenshot", "remind": "set_reminder",
+    "volume": "set_volume", "screenshot": "take_screenshot",
     "calendar": "check_calendar", "close": "close_app", "play": "play_media", "weather": "check_weather",
 }
 
@@ -971,10 +1009,53 @@ def execute_jarvis_command(action, params):
         elif action == "set_volume":
             direction = params.get("direction", "")
             level = params.get("level", None)
-            if direction == "up": subprocess.run(["osascript", "-e", "set volume output volume (output volume of (get volume settings) + 25)"]); app and app.show_message("Volume up", "#30d158")
-            elif direction == "down": subprocess.run(["osascript", "-e", "set volume output volume (output volume of (get volume settings) - 25)"]); app and app.show_message("Volume down", "#30d158")
-            elif direction == "mute": subprocess.run(["osascript", "-e", "set volume with output muted"]); app and app.show_message("Muted", "#30d158")
-            elif level is not None: subprocess.run(["osascript", "-e", f"set volume output volume {level}"]); app and app.show_message(f"Volume: {level}%", "#30d158")
+            print("[system control] action=set_volume", "direction=", direction, "level=", level)
+            if direction == "up":
+                r = subprocess.run(["osascript", "-e", "set volume output volume (output volume of (get volume settings) + 10)"], capture_output=True, text=True)
+                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                if app: app.show_message("Volume up", "#30d158")
+            elif direction == "down":
+                r = subprocess.run(["osascript", "-e", "set volume output volume (output volume of (get volume settings) - 10)"], capture_output=True, text=True)
+                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                if app: app.show_message("Volume down", "#30d158")
+            elif direction == "mute":
+                r = subprocess.run(["osascript", "-e", "set volume with output muted"], capture_output=True, text=True)
+                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                if app: app.show_message("Muted", "#30d158")
+            elif level is not None:
+                r = subprocess.run(["osascript", "-e", f"set volume output volume {level}"], capture_output=True, text=True)
+                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                if app: app.show_message(f"Volume: {level}%", "#30d158")
+
+        elif action == "set_brightness":
+            direction = params.get("direction", "")
+            level = params.get("level", None)
+            print("[system control] action=set_brightness", "direction=", direction, "level=", level)
+            if direction == "up":
+                r = subprocess.run(["osascript", "-e", 'tell application "System Events" to key code 144'], capture_output=True, text=True)
+                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                if app: app.show_message("Brightness up", "#30d158")
+            elif direction == "down":
+                r = subprocess.run(["osascript", "-e", 'tell application "System Events" to key code 145'], capture_output=True, text=True)
+                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                if app: app.show_message("Brightness down", "#30d158")
+            elif level is not None:
+                # Repeat key presses proportionally — 16 steps span full range
+                steps = max(0, min(16, round(level / 100 * 16)))
+                # First go to minimum (16 × down), then press up steps times
+                script = (
+                    f'tell application "System Events"\n'
+                    f'    repeat 16 times\n'
+                    f'        key code 145\n'
+                    f'    end repeat\n'
+                    f'    repeat {steps} times\n'
+                    f'        key code 144\n'
+                    f'    end repeat\n'
+                    f'end tell'
+                )
+                r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+                print("[system control] returncode=", r.returncode, "stderr=", r.stderr.strip())
+                if app: app.show_message(f"Brightness: {level}%", "#30d158")
 
         elif action == "take_screenshot":
             shot_type = params.get("type", "screen").lower()
@@ -1005,6 +1086,34 @@ def execute_jarvis_command(action, params):
             app_name = params.get("app", "")
             subprocess.run(["pkill", "-9", "-f", app_name])
             if app: app.show_message(f"Killed {app_name}", "#30d158")
+
+        elif action == "add_reminder":
+            _execute_add_reminder(params)
+
+        elif action == "translate_text":
+            target = params.get("target", settings.get("translate_target_language", "English"))
+            if app: app.show_message(f"Translating to {target}…", "#0a84ff")
+            # Get clipboard / selected text via pbpaste
+            try:
+                import subprocess as _sp
+                src_text = _sp.run(
+                    ["pbpaste"], capture_output=True, encoding="utf-8", errors="replace", timeout=3
+                ).stdout.strip()
+            except Exception:
+                src_text = ""
+            if not src_text:
+                if app: app.show_message("No text to translate. Copy text first.", "#ff9f0a")
+            else:
+                translated = _ollama_translate(src_text, target)
+                if translated:
+                    translated = _repair_mojibake(translated)
+                    paste_text(translated)
+                    if app: app.show_message(f"Translated to {target}", "#30d158")
+                else:
+                    if app: app.show_message("Translation failed. Is Ollama running?", "#ff3b30")
+
+        elif action == "draft_email":
+            _execute_draft_email(params)
 
         elif action == "send_email":
             to, subject, body = params.get("to", ""), params.get("subject", ""), params.get("body", "")
@@ -1176,6 +1285,9 @@ DEFAULT_SETTINGS = {
     "wake_dictation_silence_seconds": WAKE_DICTATION_SILENCE_SECONDS,
     "wake_dictation_max_seconds": WAKE_DICTATION_MAX_SECONDS,
     "wake_dictation_silence_rms": WAKE_DICTATION_SILENCE_RMS,
+    # "Off" = no dictation translation; any other value = translate dictated text to that language.
+    # Completely separate from translate_target_language (selected-text commands only).
+    "translate_my_dictation": "Off",
 }
 
 def load_settings():
@@ -1193,6 +1305,34 @@ def save_settings(s):
 
 settings = load_settings()
 
+# ── Startup identity + settings log ───────────────────────────────────────────
+def _detect_app_bundle_path():
+    """Walk up from sys.executable to find the enclosing .app bundle, or return ''."""
+    try:
+        import pathlib as _pl
+        _exe = _pl.Path(sys.executable).resolve()
+        for _p in _exe.parents:
+            if _p.suffix == ".app":
+                return str(_p)
+    except Exception:
+        pass
+    return ""
+
+_startup_bundle = _detect_app_bundle_path()
+for _msg in [
+    f"[startup] BUILD_ID            = {BUILD_ID}",
+    f"[startup] __file__            = {__file__}",
+    f"[startup] sys.executable      = {sys.executable}",
+    f"[startup] cwd                 = {os.getcwd()}",
+    f"[startup] app bundle detected = {_startup_bundle or '(none — running as script)'}",
+    f"[startup] SETTINGS_FILE       = {SETTINGS_FILE}",
+    f"[startup] loaded model        = '{settings.get('model')}'",
+    f"[startup] loaded language     = '{settings.get('language')}'",
+    f"[startup] auto_detect         = {settings.get('auto_detect')}",
+]:
+    _write_startup_log(_msg)
+    print(_msg)
+# ──────────────────────────────────────────────────────────────────────────────
 
 HOTKEY_OPTIONS = {
     "Right Option": Key.alt_r,
@@ -1213,8 +1353,50 @@ if settings.get("hotkey_label", "Right Option") not in HOTKEY_OPTIONS:
         pass
 
 LANGUAGES = {"English":"en","Spanish":"es","French":"fr","German":"de","Italian":"it","Portuguese":"pt","Dutch":"nl","Russian":"ru","Japanese":"ja","Chinese":"zh","Korean":"ko","Arabic":"ar","Hindi":"hi","Auto-detect":None}
+
+# Transcription language — what language is SPOKEN into the mic.
+# These map to faster-whisper's language= param with task="transcribe".
+# "Auto-detect" passes language=None (Whisper auto-detects).
+TRANSCRIPTION_LANGUAGES = {
+    "Auto-detect": None,
+    "English":     "en",
+    "French":      "fr",
+    "Spanish":     "es",
+    "German":      "de",
+    "Italian":     "it",
+    "Portuguese":  "pt",
+}
+
+# Translation target language — used only by explicit translate commands
+# ("Translate selected text", "Translate clipboard", etc.).
+# Has no effect on transcription or normal dictation.
+TRANSLATION_LANGUAGES = {
+    "English":    "English",
+    "French":     "French",
+    "Spanish":    "Spanish",
+    "German":     "German",
+    "Italian":    "Italian",
+    "Portuguese": "Portuguese",
+}
+
+# Dictation translation — "Translate My Dictation To" setting.
+# "Off" = dictated text is not translated.  Any other value = translate the
+# transcribed text to that language before pasting.  Completely separate from
+# TRANSLATION_LANGUAGES (selected-text commands) and from I'm Speaking (mic language).
+DICTATION_TRANSLATION_LANGUAGES = {
+    "Off":        None,
+    "English":    "English",
+    "French":     "French",
+    "Spanish":    "Spanish",
+    "German":     "German",
+    "Italian":    "Italian",
+    "Portuguese": "Portuguese",
+}
+
 current_language = None if settings.get("auto_detect", True) else settings.get("language", "en")
 MODEL, SAMPLE_RATE, CHANNELS, MIC_DEVICE = settings["model"], 48000, 1, settings.get("mic_device", 2)
+_write_startup_log(f"[startup] MODEL global        = '{MODEL}'")
+print(f"[startup] MODEL global        = '{MODEL}'")
 
 import platform as _platform
 _is_arm = _platform.machine() == "arm64"
@@ -1319,8 +1501,57 @@ def _quit_clean():
     import sys as _sys
     _sys.exit(0)
 
+def _restart_app():
+    """Save settings, relaunch the app bundle via a detached shell, then quit."""
+    import pathlib as _pl, shlex as _shlex
+    # Walk up from sys.executable to find the enclosing .app bundle.
+    # In a frozen PyInstaller build sys.executable is something like:
+    #   /Applications/Jarvis Dictation.app/Contents/MacOS/JarvisDictation
+    try:
+        _exe = _pl.Path(sys.executable).resolve()
+        _app_path = str(_exe)           # fallback: the bare executable
+        for _parent in _exe.parents:
+            if _parent.suffix == ".app":
+                _app_path = str(_parent)
+                break
+    except Exception:
+        _app_path = "/Applications/Jarvis Dictation.app"
+    _cmd = f"sleep 0.7; open {_shlex.quote(_app_path)}"
+    try:
+        save_settings(settings)
+    except Exception:
+        pass
+    # ── Read back what is actually on disk before quitting ─────────────────────
+    _disk_model = _disk_lang = _disk_auto = "?"
+    try:
+        with open(SETTINGS_FILE) as _rbf:
+            _rb = json.load(_rbf)
+        _disk_model = _rb.get("model", "?")
+        _disk_lang  = _rb.get("language", "?")
+        _disk_auto  = _rb.get("auto_detect", "?")
+    except Exception as _rbe:
+        _disk_model = f"READ_ERROR({_rbe})"
+    # ──────────────────────────────────────────────────────────────────────────
+    import subprocess as _sp
+    _proc = _sp.Popen(["/bin/sh", "-c", _cmd], start_new_session=True)
+    for _msg in [
+        f"[restart] BUILD_ID            = {BUILD_ID}",
+        f"[restart] app_path            = {_app_path}",
+        f"[restart] command             = {_cmd}",
+        f"[restart] subprocess pid      = {_proc.pid}",
+        f"[restart] SETTINGS_FILE       = {SETTINGS_FILE}",
+        f"[restart] disk model          = '{_disk_model}'",
+        f"[restart] disk language       = '{_disk_lang}'",
+        f"[restart] disk auto_detect    = {_disk_auto}",
+    ]:
+        print(_msg)
+        _write_startup_log(_msg)
+    print("[restart] quitting now")
+    _quit_clean()
+
 SNIPPETS_FILE         = os.path.expanduser("~/.dictation_snippets.json")
 CUSTOM_COMMANDS_FILE  = os.path.expanduser("~/.dictation_custom_commands.json")
+CONTACTS_FILE         = os.path.expanduser("~/.dictation_contacts.json")
 
 def load_custom_commands() -> list:
     try:
@@ -1346,6 +1577,31 @@ def save_custom_commands(commands: list):
             json.dump(commands, f, indent=2)
     except Exception as e:
         print(f"[custom_commands] save error: {e}")
+
+def load_contacts() -> list:
+    """Load Jarvis contacts from disk.
+
+    Each contact is a dict with keys:
+      name    – display name (e.g. "Val")
+      email   – email address (e.g. "val@example.com")
+      aliases – optional comma-separated alternate names (e.g. "Valerie, Val S")
+    """
+    try:
+        if os.path.exists(CONTACTS_FILE):
+            with open(CONTACTS_FILE) as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+    except Exception as e:
+        print(f"[contacts] load error: {e}")
+    return []
+
+def save_contacts(contacts: list):
+    try:
+        with open(CONTACTS_FILE, "w") as f:
+            json.dump(contacts, f, indent=2)
+    except Exception as e:
+        print(f"[contacts] save error: {e}")
 
 def load_snippets() -> dict:
     """Load snippets from disk and cache in memory."""
@@ -1414,10 +1670,11 @@ def load_vocab() -> dict:
         try:
             with open(VOCAB_FILE) as f:
                 _vocab_cache = json.load(f)
+                _vocab_cache.setdefault("corrections", {})
                 return _vocab_cache
         except Exception:
             pass
-    _vocab_cache = {"word_counts": {}, "total_dictations": 0, "phrases": {}}
+    _vocab_cache = {"word_counts": {}, "total_dictations": 0, "phrases": {}, "corrections": {}}
     return _vocab_cache
 
 def save_vocab(vocab):
@@ -1442,6 +1699,33 @@ def learn_from_text(text):
                 vocab["phrases"][phrase] = vocab["phrases"].get(phrase, 0) + 1
         save_vocab(vocab)
     except Exception as e: print(f"[vocab] error: {e}")
+
+def apply_corrections(text: str) -> str:
+    """Apply personal corrections (wrong → right) to normal dictation output.
+
+    Called AFTER the full cleanup pipeline (SymSpell → snippets → mojibake repair)
+    and BEFORE paste — never on raw_text, so command detection is unaffected.
+
+    Rules:
+    - Case-insensitive matching, word-boundary-anchored.
+    - Longest phrase wins when multiple keys could match.
+    - Replacement is preserved exactly as the user entered it.
+    """
+    try:
+        vocab = load_vocab()
+        corrections = vocab.get("corrections", {})
+        if not corrections:
+            return text
+        # Longest-key-first prevents short keys from shadowing long ones.
+        for wrong in sorted(corrections, key=len, reverse=True):
+            right = corrections[wrong]
+            pattern = re.compile(r'\b' + re.escape(wrong) + r'\b', re.IGNORECASE)
+            # Use a lambda so 'right' is never mis-parsed as a regex replacement string.
+            text = pattern.sub(lambda _m, r=right: r, text)
+        return text
+    except Exception as e:
+        print(f"[corrections] error: {e}")
+        return text
 
 def get_personal_prompt():
     """Combines manual vocabulary from settings with learned history."""
@@ -1637,40 +1921,69 @@ def paste_text(text):
 
     Clipboard flow: save → write → verify → send Cmd+V → restore (always).
 
+    Write order (tries each until clipboard verifies):
+      1. AppKit NSPasteboard.setString_forType_ — pure Unicode, no encoding step.
+         This is the only correct approach for non-ASCII (French, etc.) text.
+      2. pbcopy with text=True, encoding="utf-8" — explicit UTF-8 text mode fallback.
+
     Cmd+V transport order:
       1. pynput Controller (works in .app without Automation/System Events)
       2. Quartz CGEventPost (fallback if pynput unavailable)
-      3. typer.type() character-by-character (last resort)
+      3. typer.type() character-by-character (last resort — may corrupt non-ASCII)
 
     osascript / System Events is intentionally not used — it requires a separate
     Automation TCC grant that the packaged .app does not have by default.
     """
     with _paste_lock:
-        paste_payload = (text + " ").encode()
         import subprocess as _sp
         import time as _t
 
+        paste_content = text + " "
         log_event("paste", f"preparing {len(text)} chars")
-        prev = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
+
+        # ── Save previous clipboard as bytes (encoding-agnostic preserve) ────
+        prev_bytes = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
 
         try:
-            # ── 1. Write + verify clipboard ───────────────────────────────────
+            # ── 1. Write + verify via AppKit NSPasteboard (no encoding step) ─
             verified = False
-            for attempt in range(8):
-                _sp.run(["pbcopy"], input=paste_payload, timeout=2)
-                _t.sleep(0.08 + attempt * 0.03)
-                if _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout == paste_payload:
+            try:
+                from AppKit import NSPasteboard, NSStringPboardType
+                pb = NSPasteboard.generalPasteboard()
+                pb.clearContents()
+                pb.setString_forType_(paste_content, NSStringPboardType)
+                readback = pb.stringForType_(NSStringPboardType) or ""
+                print("[unicode] clipboard_roundtrip=", repr(readback))
+                if readback == paste_content:
                     verified = True
-                    log_event("paste", "clipboard verified")
-                    break
-                log_event("paste", f"retry {attempt + 1}")
+                    log_event("paste", "clipboard verified via AppKit")
+                else:
+                    log_event("paste", f"AppKit verify mismatch: wrote {paste_content!r} read {readback!r}")
+            except Exception as _ak_err:
+                log_event("paste", f"AppKit clipboard unavailable ({_ak_err})")
+
+            # ── 2. Fallback: pbcopy with explicit UTF-8 text mode ─────────────
+            if not verified:
+                for attempt in range(8):
+                    _sp.run(["pbcopy"], input=paste_content, text=True, encoding="utf-8", timeout=2)
+                    _t.sleep(0.08 + attempt * 0.03)
+                    readback = _sp.run(
+                        ["pbpaste"], capture_output=True, text=True, encoding="utf-8", timeout=2
+                    ).stdout
+                    print("[unicode] clipboard_roundtrip=", repr(readback))
+                    # pbpaste may append a trailing newline — strip it for comparison
+                    if readback == paste_content or readback.rstrip("\n") == paste_content:
+                        verified = True
+                        log_event("paste", f"clipboard verified via pbcopy attempt {attempt + 1}")
+                        break
+                    log_event("paste", f"pbcopy retry {attempt + 1}")
 
             if not verified:
                 log_event("paste", "clipboard verification failed — typing directly")
                 _run_on_main(lambda: typer.type(text + " "))
                 return
 
-            # ── 2. Send Cmd+V ─────────────────────────────────────────────────
+            # ── 3. Send Cmd+V ─────────────────────────────────────────────────
             sent = False
 
             # Primary: pynput Controller — no osascript/System Events needed.
@@ -1715,9 +2028,14 @@ def paste_text(text):
             _t.sleep(0.35)
 
         finally:
-            # Always restore the previous clipboard.
+            # Always restore the previous clipboard content.
             try:
-                _sp.run(["pbcopy"], input=prev, timeout=2)
+                if prev_bytes:
+                    _sp.run(["pbcopy"], input=prev_bytes, timeout=2)
+                else:
+                    # Previous clipboard was empty — clear it
+                    from AppKit import NSPasteboard
+                    NSPasteboard.generalPasteboard().clearContents()
                 log_event("paste", "restored previous clipboard")
             except Exception:
                 pass
@@ -1737,6 +2055,17 @@ _MOJIBAKE_MAP = [
     ("‚Äì",    "-"),   # en dash
     ("‚Äî",    "-"),   # em dash
     ("‚Ä¶",    "..."), # horizontal ellipsis
+    # ── MacRoman mojibake: UTF-8 bytes misread as Mac OS Roman ───────────────
+    # Symptom: é appears as √© (SQUARE ROOT + COPYRIGHT), etc.
+    ("√©", "é"),  ("√®", "è"),  ("√™", "ê"),  ("√´", "ë"),
+    ("√†", "à"),  ("√¢", "â"),  ("√ß", "ç"),  ("√Æ", "î"),
+    ("√Ø", "ï"),  ("√¥", "ô"),  ("√π", "ù"),  ("√ª", "û"),
+    ("√º", "ü"),  ("≈ì", "œ"),  ("√¶", "æ"),
+    ("√â", "É"),  ("√à", "È"),  ("√ä", "Ê"),  ("√ã", "Ë"),
+    ("√Ä", "À"),  ("√Ç", "Â"),  ("√á", "Ç"),  ("√é", "Î"),
+    ("√è", "Ï"),  ("√î", "Ô"),  ("√ô", "Ù"),  ("√õ", "Û"),
+    ("√ú", "Ü"),  ("≈í", "Œ"),  ("√Ü", "Æ"),  ("√±", "ñ"),
+    ("√ë", "Ñ"),
 ]
 
 def _repair_mojibake(text: str, label: str = "text") -> str:
@@ -1845,7 +2174,479 @@ def smart_punctuate(text):
     if any(text.lower().strip().startswith(q) for q in question_starters): return text.rstrip() + "?"
     return text.rstrip() + "."
 
-def _fast_jarvis_match(lower):
+def _open_email_draft(to: str, subject: str, body: str) -> None:
+    """Open the system default email client via a mailto: URL."""
+    from urllib.parse import quote
+    # mailto: requires %20 for spaces, NOT '+' (which is HTML form encoding).
+    # Use quote() directly — urlencode() defaults to quote_plus() which produces '+'.
+    recipient   = quote((to or "").strip(), safe="@.+-_")
+    subject_enc = quote((subject or "Following up").strip(), safe="")
+    body_enc    = quote((body or "").strip(), safe="")
+    url = f"mailto:{recipient}?subject={subject_enc}&body={body_enc}"
+    print("[email draft] to=",      repr(to))
+    print("[email draft] subject=", repr(subject))
+    print("[email draft] body=",    repr(body))
+    print("[email draft] url=",     url)
+    subprocess.Popen(["open", url])
+
+def _resolve_contact_email(name: str):
+    """Resolve a spoken recipient name to an email address using Jarvis Contacts.
+
+    Resolution order:
+      1. If name already contains '@', return it unchanged (direct email address).
+      2. Search the local Jarvis contacts list (~/.dictation_contacts.json).
+         Match case-insensitively against display name AND aliases.
+         Exact match wins.  One match → email.  Multiple → warn.  None → warn.
+
+    Returns the email string, or None if unresolvable (error already shown).
+    """
+    name = name.strip()
+
+    # Step 1 — already looks like an email address.
+    if "@" in name:
+        _safe_print(f"[email] {name!r} is an address — no contact lookup needed")
+        return name
+
+    # Step 2 — search local Jarvis contacts.
+    contacts = load_contacts()
+    name_lower = name.lower()
+
+    exact_email  = None   # first exact-name match
+    partial_hits = []     # (display_name, email) for partial matches
+
+    for contact in contacts:
+        cname  = contact.get("name",    "").strip()
+        cemail = contact.get("email",   "").strip()
+        raw_aliases = contact.get("aliases", "")
+        aliases = [a.strip() for a in raw_aliases.split(",") if a.strip()]
+
+        all_names = [cname] + aliases
+
+        # Exact match (case-insensitive) — return immediately.
+        if any(n.lower() == name_lower for n in all_names):
+            _safe_print(f"[email] Jarvis contact exact: {name!r} → {cemail!r}")
+            return cemail
+
+        # Partial match — collect for later.
+        if any(name_lower in n.lower() or n.lower() in name_lower for n in all_names):
+            partial_hits.append((cname, cemail))
+
+    if len(partial_hits) == 1:
+        cname, cemail = partial_hits[0]
+        _safe_print(f"[email] Jarvis contact partial: {name!r} → {cemail!r} (via {cname!r})")
+        return cemail
+
+    if len(partial_hits) > 1:
+        found = ", ".join(h[0] for h in partial_hits[:3])
+        _safe_print(f"[email] Multiple Jarvis contacts matched {name!r}: {found}")
+        if app:
+            app.show_message(
+                f"Multiple contacts matched \"{name[:18]}\". Use a fuller name or email.",
+                "#ff9f0a"
+            )
+        return None
+
+    # No match at all.
+    _safe_print(f"[email] No Jarvis contact found for {name!r}")
+    if app:
+        app.show_message(
+            f"No contact for \"{name[:22]}\". Add them in Settings → Contacts, or say the email address.",
+            "#ff9f0a"
+        )
+    return None
+
+def _ollama_email_call(prompt: str, timeout: int = 8) -> str | None:
+    """Make a synchronous Ollama API call. Returns the response text or None."""
+    try:
+        import requests as _req
+        model = settings.get("ollama_model", "qwen2.5:3b") or "qwen2.5:3b"
+        r = _req.post(
+            "http://localhost:11434/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=timeout,
+        )
+        if r.status_code == 200:
+            return r.json().get("response", "").strip()
+    except Exception:
+        pass
+    return None
+
+
+def _ollama_translate(text: str, target_language: str, timeout: int = 20) -> str | None:
+    """Translate text to target_language using Ollama. Returns translated string or None."""
+    prompt = (
+        f"Translate the following text to {target_language}. "
+        "Output ONLY the translation — no explanations, no labels, no quotes, no preamble.\n\n"
+        f"{text}"
+    )
+    result = _ollama_email_call(prompt, timeout=timeout)
+    if not result:
+        return None
+    # Sanity check — reject if response is way longer than input (hallucination)
+    if len(result) > len(text) * 4:
+        _safe_print("[translate] rejected: response too long vs input")
+        return None
+    return result
+
+
+def _polish_email_body(body_text: str) -> str:
+    """Lightly format the dictated email body using the Email writing profile.
+
+    Fixes grammar, punctuation, capitalisation, and flow.
+    Preserves the user's exact wording and meaning — including pronouns.
+
+    Do NOT rewrite third-person references (her/him/them → you/your).
+    Do NOT infer who pronouns refer to.
+    The user dictates the body exactly as it should appear in the email.
+
+    Falls back to basic capitalisation/punctuation if Ollama is unavailable.
+    """
+    body = body_text.strip()
+    if not body:
+        return ""
+
+    # Strip leading spoken conjunctions that leak from the command structure
+    # e.g. "tell her THAT the meeting..." → body starts with "that ..."
+    body = re.sub(r"(?i)^(that|which|how|just|so)\s+", "", body).strip()
+    if not body:
+        return ""
+
+    # ── Try Ollama with the Email writing profile ─────────────────────────────
+    prompt = (
+        "You are an email dictation cleanup engine. "
+        "The user dictated the following message body via speech-to-text. "
+        "Your job is to fix grammar, punctuation, capitalisation, and flow "
+        "so it reads as a clean, professional email body. "
+        "CRITICAL RULES — you MUST follow these exactly:\n"
+        "1. Do NOT add ANY content that is not in the original dictation. "
+        "No extra sentences, no elaboration, no filler.\n"
+        "2. Do NOT remove any meaning or information from the original.\n"
+        "3. Do NOT add a greeting, sign-off, subject line, or recipient name.\n"
+        "4. Fix only: grammar, punctuation, capitalisation, sentence structure, "
+        "and obvious speech recognition errors.\n"
+        "5. Return ONLY the corrected body text — nothing else.\n\n"
+        f"Dictated message:\n{body}"
+    )
+    result = _ollama_email_call(prompt)
+    if result:
+        # Sanity check: reject if Ollama ballooned the length (hallucination signal)
+        if len(result) < len(body) * 2.5:
+            _safe_print(f"[email] body polished via Ollama ({len(body)}→{len(result)} chars)")
+            return result
+        _safe_print(f"[email] Ollama response too long ({len(result)} chars) — using fallback")
+
+    # ── Fallback: basic cleanup ───────────────────────────────────────────────
+    body = body[0].upper() + body[1:]
+    if body[-1] not in ".!?":
+        body += "."
+    return body
+
+
+def _generate_email_subject(body_text: str, recipient: str = "") -> str:
+    """Generate a concise subject line from the email body.
+    Tries Ollama first; falls back to extracting the first sentence.
+    """
+    if not body_text:
+        return "Following up"
+
+    # ── Try Ollama for a clean subject ───────────────────────────────────────
+    prompt = (
+        f"Write a short email subject line (4-7 words, title case, no quotes, "
+        f"no period at the end) that summarises this message. "
+        f"Return only the subject line, nothing else.\n\n{body_text[:500]}"
+    )
+    result = _ollama_email_call(prompt)
+    if result:
+        # Keep only first line in case model returned extra explanation
+        subj = result.splitlines()[0].strip().strip('"').strip("'").rstrip(".")
+        if 3 < len(subj) < 80:
+            _safe_print(f"[email] subject via Ollama: {subj!r}")
+            return subj
+
+    # ── Fallback: clean first sentence ───────────────────────────────────────
+    first = re.split(r"[.!?]", body_text)[0].strip()
+    # Strip leading spoken conjunctions that read poorly as a subject
+    first = re.sub(r"(?i)^(that|which|how|just|so|and|but|or)\s+", "", first).strip()
+    first = first[0].upper() + first[1:] if first else "Following up"
+    if len(first) > 60:
+        first = first[:57].rsplit(" ", 1)[0] + "..."
+    return first or "Following up"
+
+# ── Task Reminder workflow ────────────────────────────────────────────────────
+
+def _next_weekday_date(weekday_num: int, after_today: bool = True):
+    """Return the date for a given weekday number (0=Mon … 6=Sun).
+
+    after_today=True  → "next <weekday>": always the weekday in the NEXT
+                        calendar week (start_of_this_week + 7 + weekday_num).
+                        "next Friday" when today is Thursday → 8 days away,
+                        not tomorrow.
+    after_today=False → plain "<weekday>": next upcoming occurrence of that
+                        weekday; if today IS that weekday, returns today.
+    """
+    import datetime
+    today = datetime.date.today()
+    if after_today:
+        # Always land in next calendar week regardless of which day today is
+        start_of_this_week = today - datetime.timedelta(days=today.weekday())
+        start_of_next_week = start_of_this_week + datetime.timedelta(days=7)
+        return start_of_next_week + datetime.timedelta(days=weekday_num)
+    else:
+        # Next upcoming occurrence (today counts if today matches)
+        days = (weekday_num - today.weekday()) % 7
+        return today + datetime.timedelta(days=days)
+
+
+def _parse_reminder_datetime(text: str):
+    """Extract due date/time from reminder text.
+
+    Returns (clean_task_text, due_dt_or_None, has_explicit_time).
+
+    Parsing order — most specific first so "next Friday" never falls through
+    to the plain-weekday or tomorrow branch:
+      1. "next <weekday>"
+      2. "tomorrow"
+      3. "today"
+      4. "next week"
+      5. "this <weekday>" / plain "<weekday>"
+      6. time-only → infer today-or-tomorrow
+      7. nothing found → due_dt = None (no silent default to tomorrow)
+    """
+    import datetime
+    now   = datetime.datetime.now()
+    today = now.date()
+
+    WEEKDAYS = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6,
+    }
+    TIME_OF_DAY_HOURS = {
+        "morning": 9, "afternoon": 14, "evening": 18, "tonight": 20, "night": 20,
+    }
+
+    t = text.strip()
+
+    # ── Clock time ("at 9", "at 3 PM", "at 9:30 AM") ─────────────────────────
+    time_m = re.search(r"(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", t)
+    hour, minute, has_time = None, 0, False
+    if time_m:
+        hour     = int(time_m.group(1))
+        minute   = int(time_m.group(2) or 0)
+        meridiem = (time_m.group(3) or "").lower()
+        if meridiem == "pm" and hour < 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+        elif not meridiem and hour <= 7:
+            hour += 12  # "at 3" → 3 PM
+        has_time = True
+
+    # ── Time-of-day phrases ───────────────────────────────────────────────────
+    tod_m = re.search(r"(?i)\b(morning|afternoon|evening|tonight|night)\b", t)
+    if tod_m and not has_time:
+        hour, minute, has_time = TIME_OF_DAY_HOURS[tod_m.group(1).lower()], 0, True
+
+    # ── Date (most-specific first) ────────────────────────────────────────────
+    due_date = None
+
+    nw_m = re.search(
+        r"(?i)\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", t
+    )
+    if nw_m:
+        due_date = _next_weekday_date(WEEKDAYS[nw_m.group(1).lower()], after_today=True)
+
+    elif re.search(r"(?i)\btomorrow\b", t):
+        due_date = today + datetime.timedelta(days=1)
+
+    elif re.search(r"(?i)\btoday\b", t):
+        due_date = today
+
+    elif re.search(r"(?i)\bnext\s+week\b", t):
+        due_date = today + datetime.timedelta(weeks=1)
+
+    else:
+        wd_m = re.search(
+            r"(?i)\b(?:this\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", t
+        )
+        if wd_m:
+            due_date = _next_weekday_date(WEEKDAYS[wd_m.group(1).lower()], after_today=False)
+
+    # ── Time given but no date → infer today-or-tomorrow ─────────────────────
+    if has_time and due_date is None:
+        candidate = datetime.datetime.combine(today, datetime.time(hour, minute))
+        due_date  = today if candidate > now else today + datetime.timedelta(days=1)
+
+    # ── Build due datetime (None if no date found) ────────────────────────────
+    due_dt = None
+    if due_date is not None:
+        h      = hour if has_time else 9
+        due_dt = datetime.datetime.combine(due_date, datetime.time(h, minute))
+
+    # ── Strip date/time phrases from task text ────────────────────────────────
+    clean = t
+    if time_m:
+        clean = clean[:time_m.start()] + clean[time_m.end():]
+    if tod_m:
+        clean = re.sub(r"(?i)\b(?:this\s+)?(morning|afternoon|evening|tonight|night)\b", "", clean)
+    clean = re.sub(r"(?i)\bnext\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", "", clean)
+    clean = re.sub(r"(?i)\btomorrow\b", "", clean)
+    clean = re.sub(r"(?i)\btoday\b", "", clean)
+    clean = re.sub(r"(?i)\bnext\s+week\b", "", clean)
+    clean = re.sub(r"(?i)\b(?:this\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", "", clean)
+    clean = re.sub(r"(?i)^\s*to\s+", "", clean.strip())
+    clean = re.sub(r"\s{2,}", " ", clean).strip().rstrip(".,!?").strip()
+    if clean:
+        clean = clean[0].upper() + clean[1:]
+
+    return clean or "Reminder", due_dt, has_time
+
+
+def _format_due_label(due_dt, has_time: bool) -> str:
+    """Return a human-readable due date string for confirmation messages."""
+    import datetime
+    if due_dt is None:
+        return ""
+    today    = datetime.date.today()
+    tomorrow = today + datetime.timedelta(days=1)
+    d = due_dt.date()
+    if d == today:
+        prefix = "today"
+    elif d == tomorrow:
+        prefix = "tomorrow"
+    else:
+        prefix = due_dt.strftime("%A, %b %d")   # e.g. "Friday, May 17"
+    if has_time:
+        return f"{prefix} at {due_dt.strftime('%I:%M %p').lstrip('0')}"
+    return prefix
+
+
+def _create_apple_reminder(task: str, due_dt=None, has_time: bool = False) -> bool:
+    """Create a reminder in Apple Reminders via osascript. Returns True on success."""
+    safe_task = _osa_escape(task)
+    if due_dt is not None:
+        # AppleScript date literal: "May 15, 2026 9:00 AM"
+        fmt = "%B %d, %Y %I:%M %p" if has_time else "%B %d, %Y 9:00 AM"
+        date_str = due_dt.strftime(fmt).replace(" 0", " ")   # strip leading zero in day
+        script = (
+            f'tell application "Reminders"\n'
+            f'    activate\n'
+            f'    tell default list\n'
+            f'        make new reminder with properties'
+            f' {{name:"{safe_task}", due date:date "{date_str}"}}\n'
+            f'    end tell\n'
+            f'end tell'
+        )
+    else:
+        script = (
+            f'tell application "Reminders"\n'
+            f'    activate\n'
+            f'    tell default list\n'
+            f'        make new reminder with properties {{name:"{safe_task}"}}\n'
+            f'    end tell\n'
+            f'end tell'
+        )
+    print("[reminder execute] script=", script)
+    try:
+        r = subprocess.run(["osascript", "-e", script],
+                           capture_output=True, text=True, timeout=10)
+        print("[reminder execute] returncode=", r.returncode)
+        print("[reminder execute] stdout=", r.stdout.strip())
+        print("[reminder execute] stderr=", r.stderr.strip())
+        if r.returncode != 0:
+            _safe_print(f"[reminder] osascript error: {r.stderr.strip()}")
+        return r.returncode == 0
+    except Exception as e:
+        _safe_print(f"[reminder] osascript exception: {e}")
+        return False
+
+
+def _execute_add_reminder(params: dict) -> None:
+    """Parse reminder text, resolve due date, create Apple Reminder, confirm."""
+    raw_text = params.get("text", "").strip()
+    print("[reminder command] raw_text=", repr(raw_text))
+    if not raw_text:
+        if app:
+            app.show_message("Couldn't parse reminder. Try: Remind me to call Val tomorrow.", "#ff9f0a")
+        return
+
+    task, due_dt, has_time = _parse_reminder_datetime(raw_text)
+    print("[reminder parse] title=", repr(task))
+    print("[reminder parse] due=", due_dt)
+
+    if app:
+        app.show_message("Adding reminder…", "#0a84ff")
+
+    ok = _create_apple_reminder(task, due_dt, has_time)
+
+    if ok:
+        due_label = _format_due_label(due_dt, has_time)
+        if due_label:
+            msg = f"Reminder added: {task[:30]} — {due_label}"
+        else:
+            msg = f"Task added: {task[:40]}"
+        _safe_print(f"[reminder] {msg}")
+        if app:
+            app.show_message(msg, "#30d158")
+    else:
+        if app:
+            app.show_message("Couldn't create reminder. Check Reminders permissions.", "#ff3b30")
+
+
+def _execute_draft_email(params: dict) -> None:
+    """Resolve recipient name → email address, then open a mailto draft.
+
+    Workflow:
+      1. Detect email trigger (handled by _fast_jarvis_match)
+      2. Extract recipient name/address
+      3. Remove only the command marker phrase ("tell him", "let her know", etc.)
+      4. Resolve recipient → email via Jarvis Contacts
+      5. Lightly clean body (capitalisation, punctuation, optional Ollama formatting)
+      6. Generate subject from body
+      7. Open mailto: draft
+
+    Wording policy: preserve the user's exact wording and meaning.
+    Do NOT rewrite pronouns (her/him/them → you/your).
+    Do NOT infer who pronouns refer to.
+    The user speaks the body exactly as it should appear in the email.
+
+    No auto-send. No preview window. No Apple Mail targeting.
+    """
+    recipient_name = params.get("recipient", "").strip()
+    body_raw       = params.get("body",      "").strip()
+
+    print("[email parse] recipient_name=", repr(recipient_name))
+    print("[email parse] body_raw=",       repr(body_raw))
+
+    if not recipient_name:
+        if app:
+            app.show_message(
+                "Couldn't identify recipient. Try: Send email to Mike. Tell him…",
+                "#ff9f0a"
+            )
+        _safe_print("[email] draft aborted — no recipient parsed")
+        return
+
+    if app:
+        app.show_message(f"Looking up {recipient_name[:20]}…", "#0a84ff")
+
+    to = _resolve_contact_email(recipient_name)
+    if not to:
+        # _resolve_contact_email already showed the user a message.
+        if app:
+            app.root.after(100, lambda: app.set_state("idle"))
+        return
+
+    body    = _polish_email_body(body_raw) if body_raw else ""
+    subject = _generate_email_subject(body or body_raw, recipient_name)
+
+    _open_email_draft(to, subject, body or body_raw)
+    _safe_print(f"[email] draft opened — to={to!r}  subject={subject!r}")
+    if app:
+        app.root.after(800, lambda: app.show_message(
+            f"Email draft ready → {recipient_name[:24]}", "#30d158"
+        ))
+
+def _fast_jarvis_match(lower, raw_text=""):
     import re
     # ── Custom user commands — checked before all built-ins ───────────────
     for _cmd in load_custom_commands():
@@ -1927,10 +2728,94 @@ def _fast_jarvis_match(lower):
         if lower.strip() == kw:
             return ("open_app", {"app": app_name, "url": ""})
 
-    email_match = re.match(r"(?:send|compose|write|draft)\s+(?:an\s+)?email\s+(?:to\s+)?(.+?)\s+(?:saying|that|about|with)\s+(.+)", lower)
-    if email_match: return ("send_email", {"to": email_match.group(1).strip(), "subject": "", "body": email_match.group(2).strip()})
-    simple_email = re.match(r"^(?:send|compose|write)\s+(?:an\s+)?email\s+to\s+(.+)", lower)
-    if simple_email: return ("send_email", {"to": simple_email.group(1).strip(), "subject": "", "body": ""})
+    # ── Task Reminder ────────────────────────────────────────────────────────
+    _reminder_trigger = re.match(
+        r"(?i)^(?:"
+        r"remind\s+me\s+(?:to\s+)?"
+        r"|set\s+(?:a\s+)?reminder\s+(?:to\s+)?"
+        r"|create\s+(?:a\s+)?(?:task|reminder)\s+(?:to\s+)?"
+        r"|add\s+(?:a\s+)?(?:task|reminder)\s+(?:to\s+)?"
+        r")",
+        lower,
+    )
+    if _reminder_trigger:
+        # Use raw Whisper text (pre-Ollama) for parsing — same pattern as email
+        working = ""
+        if raw_text:
+            _rt = re.match(
+                r"(?i)^(?:hey\s+jarvis[,.]?\s+|jarvis[,.]?\s+)?"
+                r"(?:remind\s+me\s+(?:to\s+)?"
+                r"|set\s+(?:a\s+)?reminder\s+(?:to\s+)?"
+                r"|create\s+(?:a\s+)?(?:task|reminder)\s+(?:to\s+)?"
+                r"|add\s+(?:a\s+)?(?:task|reminder)\s+(?:to\s+)?)",
+                raw_text.strip(),
+            )
+            if _rt:
+                working = raw_text.strip()[_rt.end():]
+        if not working:
+            working = lower[_reminder_trigger.end():]
+        return ("add_reminder", {"text": working.strip().rstrip(".")})
+
+    # ── Translation ──────────────────────────────────────────────────────────
+    _lang_names = "|".join(TRANSLATION_LANGUAGES.keys()).lower()
+    _translate_m = re.match(
+        rf"(?i)^translate\s+(?:selected\s+text|this|clipboard|the\s+text)?\s*to\s+({_lang_names})\b",
+        lower,
+    )
+    if _translate_m:
+        return ("translate_text", {"target": _translate_m.group(1).title()})
+
+    # ── Email draft ──────────────────────────────────────────────────────────
+    # Step 1: detect the email trigger on the lowercased/stripped cmd text.
+    _email_trigger = re.match(
+        r"(?i)^(?:(?:send|compose|draft|write)\s+(?:an?\s+)?email\s+to\s+"
+        r"|email\s+to\s+|email\s+)",
+        lower
+    )
+    if _email_trigger:
+        # Step 2: build working_text from raw_text (Whisper, pre-Ollama) so we
+        # preserve proper capitalisation, punctuation, and email address chars.
+        working_text = ""
+        if raw_text:
+            _raw_trigger = re.match(
+                r"(?i)^(?:hey\s+jarvis[,.]?\s+|jarvis[,.]?\s+)?"
+                r"(?:(?:send|compose|draft|write)\s+(?:an?\s+)?email\s+to\s+"
+                r"|email\s+to\s+|email\s+)",
+                raw_text.strip()
+            )
+            if _raw_trigger:
+                working_text = raw_text.strip()[_raw_trigger.end():]
+        if not working_text:
+            # Fallback: use the lowercased version (no proper-case, but functional)
+            working_text = lower[_email_trigger.end():]
+
+        # Step 3: find the first body marker and split.
+        # Markers work with or without punctuation before OR after them:
+        #   "King. Let him know. body"  — punct before AND after marker
+        #   "King let him know body"    — no punct at all
+        #   "King, let him know, body"  — commas
+        _MARKER = re.compile(
+            r"(?i)\s*(?:[.,:;-]\s*)?"           # optional punct/space BEFORE marker
+            r"(?:tell\s+(?:him|her|them|me|it)"
+            r"|let\s+(?:him|her|them)\s+know"
+            r"|say(?:ing)?"
+            r"|ask(?:ing)?(?:\s+(?:him|her|them))?)"
+            r"[.,:;-]?\s*"                       # optional punct/space AFTER marker
+        )
+        marker_m = _MARKER.search(working_text)
+        if marker_m:
+            recipient = working_text[:marker_m.start()].strip().rstrip(".,!?")
+            body      = working_text[marker_m.end():].strip()
+        else:
+            recipient = working_text.strip().rstrip(".,!?")
+            body      = ""
+
+        print("[email parse] raw_text=",  repr(raw_text))
+        print("[email parse] remaining=", repr(working_text))
+        print("[email parse] marker=",    repr(marker_m.group(0) if marker_m else None))
+        print("[email parse] recipient=", repr(recipient))
+        print("[email parse] body=",      repr(body))
+        return ("draft_email", {"recipient": recipient, "body": body})
 
     for prefix in ("search for ", "search ", "google ", "look up "):
         if lower.startswith(prefix): return ("web_search", {"query": lower[len(prefix):]})
@@ -1950,9 +2835,18 @@ def _fast_jarvis_match(lower):
     if lower in ("volume up", "turn volume up", "increase volume", "raise volume", "louder"): return ("set_volume", {"direction": "up"})
     if lower in ("volume down", "turn volume down", "decrease volume", "reduce volume", "lower volume", "quieter"): return ("set_volume", {"direction": "down"})
     if lower in ("mute", "mute volume", "turn off sound", "unmute"): return ("set_volume", {"direction": "mute"})
-    if lower.startswith("set volume to "):
-        try: return ("set_volume", {"direction": "", "level": min(100, max(0, int(lower.replace("set volume to ", "").strip())))})
-        except Exception: pass
+    if lower.startswith("set volume to ") or lower.startswith("volume to "):
+        _vol_tail = lower[len("set volume to "):] if lower.startswith("set volume to ") else lower[len("volume to "):]
+        _vol_m = re.search(r"\d+", _vol_tail)
+        if _vol_m:
+            return ("set_volume", {"direction": "", "level": min(100, max(0, int(_vol_m.group())))})
+
+    if lower in ("brightness up", "increase brightness", "brighter"): return ("set_brightness", {"direction": "up"})
+    if lower in ("brightness down", "decrease brightness", "dimmer", "dim screen"): return ("set_brightness", {"direction": "down"})
+    if lower.startswith("set brightness to "):
+        _br_m = re.search(r"\d+", lower[len("set brightness to "):])
+        if _br_m:
+            return ("set_brightness", {"level": min(100, max(0, int(_br_m.group())))})
 
     if any(p in lower for p in ("capture area", "area capture", "area screenshot")): return ("take_screenshot", {"type": "area"})
     if any(p in lower for p in ("scrolling capture", "scrolling screenshot", "capture scrolling", "capture scroll")): return ("take_screenshot", {"type": "scrolling"})
@@ -2013,25 +2907,78 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
-    # --- THIS IS THE AREA TO REPLACE ---
     personal_prompt = get_personal_prompt()
-    
-    # ADD THIS: This lets you see the Vocabulary list in your terminal
     print(f"[whisper-hint] {personal_prompt}")
 
-    language_to_use = "en" if not settings.get("auto_detect", True) else None
+    # ── Transcription language ────────────────────────────────────────────────
+    # Reads the setting saved by the Transcription Language dropdown.
+    # "auto_detect"=True → language_to_use=None (Whisper auto-detects).
+    # Never passes task="translate" — all dictation is task="transcribe".
+    selected_transcription_language = settings.get("language", "en") if not settings.get("auto_detect", True) else None
+    translation_target  = settings.get("translate_target_language", "English")
+    language_to_use     = selected_transcription_language   # None = auto-detect; "fr" / "en" / etc. = forced
+    _is_non_english     = bool(language_to_use and language_to_use != "en")
+    whisper_task        = "transcribe"   # always — never "translate" during dictation
+
+    # MODEL global tracks the ACTUALLY LOADED model (updated only on successful load).
+    # settings["model"] is what the user requested — may differ if reload failed.
+    active_model_name  = MODEL   # the model actually in the `whisper` object
+    _requested_model   = settings.get("model", "small.en")
+    _loaded_is_en_only = active_model_name.endswith(".en")
+    model_path         = active_model_name   # HF Hub resolves the exact path at load time
+
+    print("[LANG DEBUG] selected_transcription_language=", selected_transcription_language)
+    print("[LANG DEBUG] translation_target=",              translation_target)
+    print("[LANG DEBUG] language_to_use=",                 language_to_use)
+    print("[LANG DEBUG] whisper_task=",                    whisper_task)
+    print("[LANG DEBUG] model_path=",                      model_path)
+    print("[LANG DEBUG] using_model=",                     active_model_name)
+
+    # Warn if the LOADED model is English-only but a non-English language is selected.
+    if _is_non_english and _loaded_is_en_only:
+        _safe_print(
+            f"[language] WARNING: loaded model '{active_model_name}' is English-only — "
+            f"cannot transcribe '{language_to_use}'. "
+            "Go to Settings → Audio and accept the multilingual model download."
+        )
+        if app:
+            app.show_message(
+                f"English-only model loaded. Re-open Settings to download multilingual model.",
+                "#ff9f0a",
+            )
+
+    # Suppress the English vocabulary prompt when transcribing a non-English language —
+    # an English initial_prompt biases multilingual models toward English output.
+    _whisper_prompt = personal_prompt if not _is_non_english else None
 
     # beam_size=1 (greedy) is 3-5x faster than beam_size=5 on Intel CPU
     _BEAM = 1
 
+    _info = None   # TranscriptionInfo — populated by local Whisper paths below
     if settings.get("cloud_mode") and not settings.get("safe_mode", False) and get_openai_key():
         raw_text = transcribe_cloud(wav_path)
         if not raw_text:
-            segments, _ = whisper.transcribe(wav_path, beam_size=_BEAM, language=language_to_use, condition_on_previous_text=False, initial_prompt=personal_prompt, vad_filter=True, no_speech_threshold=0.6, compression_ratio_threshold=2.4)
+            segments, _info = whisper.transcribe(wav_path, beam_size=_BEAM, task=whisper_task, language=language_to_use, condition_on_previous_text=False, initial_prompt=_whisper_prompt, vad_filter=True, no_speech_threshold=0.6, compression_ratio_threshold=2.4)
             raw_text = " ".join(seg.text for seg in segments).strip()
     else:
-        segments, _ = whisper.transcribe(wav_path, beam_size=_BEAM, language=language_to_use, condition_on_previous_text=False, initial_prompt=personal_prompt, vad_filter=True, no_speech_threshold=0.6, compression_ratio_threshold=2.4)
+        segments, _info = whisper.transcribe(wav_path, beam_size=_BEAM, task=whisper_task, language=language_to_use, condition_on_previous_text=False, initial_prompt=_whisper_prompt, vad_filter=True, no_speech_threshold=0.6, compression_ratio_threshold=2.4)
         raw_text = " ".join(seg.text for seg in segments).strip()
+    print("[WHISPER RAW]=", repr(raw_text))
+    print("[unicode] whisper_raw=", repr(raw_text))
+
+    # ── Refine language detection for Auto-detect ─────────────────────────────
+    # When language_to_use is None (Auto-detect), _is_non_english was set to
+    # False because we had no language code yet.  Now that Whisper has run, read
+    # the detected language from TranscriptionInfo and recompute _is_non_english.
+    # This is the primary fix for Ollama mangling French/Spanish when Auto-detect
+    # is active: the old code treated every Auto-detect result as English.
+    _detected_language = language_to_use   # default: the forced language (or None)
+    if language_to_use is None and _info is not None:
+        _detected_language = getattr(_info, "language", None) or "en"
+        _is_non_english = (_detected_language != "en")
+        print(f"[LANG DEBUG] auto-detect → whisper detected='{_detected_language}', is_non_english={_is_non_english}")
+    else:
+        _detected_language = language_to_use or "en"
 
     # Ollama refinement — protected by short-phrase bypass and a safety filter.
     # This keeps Ollama as a cleanup layer instead of letting it answer the user.
@@ -2048,7 +2995,24 @@ def transcribe_and_type(wav_path, raw_frames):
     log_event("whisper", repr(whisper_text))
     log_event("profile", f"{active_profile}" + (f" via {active_app}" if active_app else ""))
 
-    skip_ollama, skip_reason = _should_skip_ollama(raw_text)
+    # ── Ollama decision ───────────────────────────────────────────────────────
+    # Always skip Ollama for non-English — an English LLM mangles other languages.
+    _cleanup_mode    = settings.get("ai_cleanup_mode", "auto")
+    _spoken_lang_log = (settings.get("language", "en")
+                        if not settings.get("auto_detect", True) else "auto")
+    if _is_non_english:
+        skip_ollama, skip_reason = True, "non-English transcription"
+        _will_run_ollama = False
+    else:
+        skip_ollama, skip_reason = _should_skip_ollama(raw_text)
+        _will_run_ollama = not skip_ollama and bool(raw_text) and not _is_repetitive(raw_text)
+    print("[ollama decision] spoken_language=",  _spoken_lang_log)
+    print("[ollama decision] language_to_use=",  language_to_use)
+    print("[ollama decision] detected_language=", _detected_language)
+    print("[ollama decision] is_non_english=",    _is_non_english)
+    print("[ollama decision] cleanup_mode=",      _cleanup_mode)
+    print("[ollama decision] will_run_ollama=",   _will_run_ollama)
+    print("[ollama decision] reason=",            skip_reason if skip_ollama else "eligible")
     if raw_text and not _is_repetitive(raw_text) and not skip_ollama:
         refined = ollama_query(raw_text, active_profile)
         ollama_text = refined or ""
@@ -2074,8 +3038,17 @@ def transcribe_and_type(wav_path, raw_frames):
 
     # 1. Use the final protected raw_text for output so "UI" stays "UI"
     _prev_last_text = last_text   # save before overwrite — used by formatting commands
-    text = _repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text))))
+    # SymSpell uses an English dictionary — skip it for non-English transcription
+    # to prevent French/Spanish words from being "corrected" to English equivalents.
+    if _is_non_english:
+        text = _repair_mojibake(smart_punctuate(apply_snippets(raw_text)))
+    else:
+        text = _repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text))))
     last_text = text
+    final_text = text
+    print("[unicode] after_cleanup=", repr(final_text))
+    print("[unicode] before_paste=", repr(final_text))
+    print("[FINAL TEXT]=", repr(final_text))
     log_event("final", repr(text))
     
     # 2. Use a separate variable 'lower' ONLY for background command checks
@@ -2084,11 +3057,18 @@ def transcribe_and_type(wav_path, raw_frames):
 
     if JARVIS_ENABLED and not settings.get("safe_mode", False):
         cmd_text = lower[7:].strip() if lower.startswith("jarvis ") else (lower[11:].strip() if lower.startswith("hey jarvis ") else lower)
-        jarvis_intent = _fast_jarvis_match(cmd_text)
+        print("[command route] whisper_text=", repr(whisper_text))
+        print("[command route] cmd_text=",    repr(cmd_text))
+        # Use whisper_text (pre-Ollama) for recipient/body extraction so
+        # Ollama reformulations can't scramble the email regex.
+        jarvis_intent = _fast_jarvis_match(cmd_text, raw_text=whisper_text)
         if jarvis_intent:
+            print("[command route] matched_action=", jarvis_intent[0], "params=", jarvis_intent[1])
             threading.Thread(target=execute_jarvis_command, args=(jarvis_intent[0], jarvis_intent[1]), daemon=True).start()
             app.set_state("idle")
             return
+        else:
+            print("[command route] matched_action= None (no Jarvis command matched)")
 
     if snippet_state == "waiting_trigger":
         if any(p in lower for p in ("create snippet","new snippet","add snippet","make snippet")):
@@ -2263,7 +3243,12 @@ def transcribe_and_type(wav_path, raw_frames):
         app.set_state("idle")
         return
 
-    text = _repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text))))
+    # Skip SymSpell for non-English — it uses an English dictionary and corrupts
+    # French/Spanish/etc. words.  apply_corrections runs for all languages.
+    if _is_non_english:
+        text = apply_corrections(_repair_mojibake(smart_punctuate(apply_snippets(raw_text))))
+    else:
+        text = apply_corrections(_repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text)))))
     last_text = text
     _add_to_history(text)
 
@@ -2272,6 +3257,23 @@ def transcribe_and_type(wav_path, raw_frames):
         formatted = format_for_app(text, active_app)
         if formatted and formatted != text:
             text = formatted
+
+    # ── Translate My Dictation To (explicit setting, command-safe) ────────────
+    # All Jarvis commands, snippet commands, formatting commands, etc. have
+    # already been checked and returned above.  This code only runs for plain
+    # dictated text that made it past every command gate.
+    _dictation_target = settings.get("translate_my_dictation", "Off")
+    if _dictation_target and _dictation_target != "Off":
+        print(f"[dictation-translate] translating to '{_dictation_target}'")
+        app.show_message(f"Translating to {_dictation_target}…", "#0a84ff")
+        _dt_result = _ollama_translate(text, _dictation_target)
+        if _dt_result:
+            text = _dt_result
+            last_text = text   # keep last_text in sync so "scratch that" removes the right length
+            print(f"[dictation-translate] result: {text!r}")
+        else:
+            print("[dictation-translate] translation failed or Ollama unavailable — using original text")
+    # ─────────────────────────────────────────────────────────────────────────
 
     app.set_transcript(text)
     paste_text(text)
@@ -2444,6 +3446,18 @@ def _show_history():
                                (FONT, 12, "bold"))
         cb.pack(side="right", padx=(0, WINDOW_EDGE_PAD), pady=13)
 
+        def _clear_all_history():
+            try:
+                if os.path.exists(HISTORY_FILE):
+                    os.remove(HISTORY_FILE)
+            except Exception:
+                pass
+            hwin.destroy()
+
+        cb_clear = _make_rounded_btn(btn_bar, "Clear All", _clear_all_history,
+                                     "#3a1a1a", "#ff453a", (FONT, 12, "bold"))
+        cb_clear.pack(side="right", padx=(0, 12), pady=13)
+
         # --- Main Content Pane ---
         content = tk.Frame(hwin, bg=BG_MAIN)
         content.pack(side="right", fill="both", expand=True, padx=16, pady=16)
@@ -2492,7 +3506,7 @@ def _show_history():
         hwin.bind("<Destroy>", _hwin_destroy)
 
         # --- History rows with rounded-corner canvas cards ---
-        def _rounded_card(parent, text_str, meta_str):
+        def _rounded_card(parent, text_str, meta_str, item_ts=""):
             """Draw a rounded-corner card using Canvas, embed Text widget inside."""
             W_CARD = 580
             PAD    = 12
@@ -2536,6 +3550,26 @@ def _show_history():
             c.create_window(PAD, PAD, window=tf, anchor="nw",
                             width=W_CARD - 2*PAD)
 
+            # Per-item delete button — removes this entry from the history file
+            def _delete_item():
+                try:
+                    if os.path.exists(HISTORY_FILE) and item_ts:
+                        with open(HISTORY_FILE, "r", encoding="utf-8") as _f:
+                            _all = json.load(_f)
+                        _all = [h for h in _all if h.get("timestamp", "") != item_ts]
+                        with open(HISTORY_FILE, "w", encoding="utf-8") as _f:
+                            json.dump(_all, _f, indent=2)
+                except Exception:
+                    pass
+                c.destroy()
+
+            x_btn = tk.Label(c, text="✕", bg=BG_CARD, fg="#555555",
+                             font=(FONT, 11), cursor="hand2")
+            c.create_window(W_CARD - PAD, PAD + 2, window=x_btn, anchor="ne")
+            x_btn.bind("<Button-1>", lambda e: _delete_item())
+            x_btn.bind("<Enter>",    lambda e: x_btn.configure(fg="#ff453a"))
+            x_btn.bind("<Leave>",    lambda e: x_btn.configure(fg="#555555"))
+
         try:
             if os.path.exists(HISTORY_FILE):
                 with open(HISTORY_FILE, "r") as f:
@@ -2560,7 +3594,8 @@ def _show_history():
                     else:
                         display_txt = final_txt
                     _rounded_card(inner, display_txt,
-                                  f"{item.get('app', '')} • {item.get('timestamp', '')}")
+                                  f"{item.get('app', '')} • {item.get('timestamp', '')}",
+                                  item_ts=item.get("timestamp", ""))
         except Exception:
             pass
 
@@ -2991,7 +4026,9 @@ def _show_about_window() -> None:
         tk.Label(w, text="Jarvis Dictation", bg=BG, fg=FG,
                  font=("Helvetica Neue", 22, "bold")).pack()
         tk.Label(w, text=APP_VERSION, bg=BG, fg=DIM,
-                 font=("Helvetica Neue", 12)).pack(pady=(4, 16))
+                 font=("Helvetica Neue", 12)).pack(pady=(4, 2))
+        tk.Label(w, text=f"Build: {BUILD_ID}", bg=BG, fg=DIM,
+                 font=("Helvetica Neue", 10)).pack(pady=(0, 16))
         card = tk.Frame(w, bg=CARD)
         card.pack(fill="x", padx=28, pady=(0, 18))
         msg = (
@@ -3131,7 +4168,9 @@ class MenuBarApp:
 
             self._model_menu = NSMenu.alloc().init()
             model_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Whisper Model", None, "")
-            for m in ["tiny.en", "base.en", "small.en", "medium.en", "large-v2", "large-v3", "distil-medium.en", "distil-large-v3"]:
+            for m in ["tiny.en", "base.en", "small.en", "medium.en", "large-v2", "large-v3",
+                      "distil-medium.en", "distil-large-v3",
+                      "tiny", "base", "small", "medium"]:
                 mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(m, "selectModel:", "")
                 mi.setTarget_(self._delegate)
                 self._model_menu.addItem_(mi)
@@ -3937,6 +4976,11 @@ class DictationApp:
         jarvis_var = tk.BooleanVar(value=settings.get("jarvis_enabled", True))
         format_var = tk.BooleanVar(value=settings.get("context_format", True))
         auto_var   = tk.BooleanVar(value=settings.get("auto_detect", True))
+        _tl_code_to_name = {v: k for k, v in TRANSCRIPTION_LANGUAGES.items() if v is not None}
+        _cur_lang_name = "Auto-detect" if settings.get("auto_detect", True) else _tl_code_to_name.get(settings.get("language", "en"), "English")
+        lang_var   = tk.StringVar(value=_cur_lang_name)
+        translate_lang_var = tk.StringVar(value=settings.get("translate_target_language", "English"))
+        dictation_translate_var = tk.StringVar(value=settings.get("translate_my_dictation", "Off"))
         ollama_var = tk.BooleanVar(value=settings.get("use_ollama", True))
         ai_cleanup_mode_var = tk.StringVar(value=settings.get("ai_cleanup_mode", "auto"))
         sounds_var = tk.BooleanVar(value=settings.get("play_sounds", True))
@@ -3998,13 +5042,15 @@ class DictationApp:
         nav_items = [
             "Setup",
             "Dictation",
-            "Audio",
+            "Audio & Language",
             "AI Cleanup",
             "Writing Profiles",
             "Jarvis",
             "Custom Commands",
+            "Contacts",
             "Vocabulary",
             "Cloud",
+            "Workflows",
             "Help",
         ]
         nav_btns = {}
@@ -4273,6 +5319,36 @@ class DictationApp:
                      font=(FONT, 10), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 10))
 
+        def restart_card(parent, title, body, restart_fn=None):
+            """Card with descriptive text and Restart Now / Later buttons.
+
+            restart_fn — callable invoked when the user clicks "Restart Now".
+            Defaults to the module-level _restart_app() if not provided.
+            Callers that need to flush Settings state first should pass their
+            own function; the default is kept for any other use-site.
+            """
+            inner = _rounded_card_canvas(parent, "#191919", radius=12,
+                                         padx=24, pady=(10, 8))
+            tk.Label(inner, text=title, bg="#191919", fg=FG,
+                     font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
+            tk.Label(inner, text=body, bg="#191919", fg=DIM,
+                     font=(FONT, 10), justify="left", wraplength=410
+            ).pack(anchor="w", padx=12, pady=(0, 8))
+            btn_row = tk.Frame(inner, bg="#191919")
+            btn_row.pack(anchor="w", padx=12, pady=(0, 10))
+            def _make_btn(parent, label, cmd, accent):
+                bg  = ACC if accent else CARD
+                hov = "#1a6fd4" if accent else CARD_HI
+                b = tk.Label(parent, text=label, bg=bg, fg="#ffffff",
+                             font=(FONT, 11, "bold"), padx=14, pady=7, cursor="hand2")
+                b.pack(side="left", padx=(0, 8))
+                b.bind("<Button-1>", lambda e: cmd())
+                b.bind("<Enter>",    lambda e: b.configure(bg=hov))
+                b.bind("<Leave>",    lambda e: b.configure(bg=bg))
+            _effective_restart = restart_fn if restart_fn is not None else _restart_app
+            _make_btn(btn_row, "Restart Now", _effective_restart, accent=True)
+            _make_btn(btn_row, "Later",       _win.destroy,       accent=False)
+
         def small_button(parent, text, cmd, accent=False):
             btn = tk.Label(parent, text=text, bg=ACC if accent else CARD, fg="#ffffff" if accent else FG,
                            font=(FONT, 11, "bold"), padx=14, pady=8, cursor="hand2")
@@ -4343,12 +5419,15 @@ class DictationApp:
         # ── Page: Setup ──────────────────────────────────────────────────────
         p = page("Setup")
         ph(p, "Professional Setup")
+        info_card(p, "Offline-first",
+                  "Jarvis works offline for dictation, local cleanup, reminders, contacts, system controls, and translation after the required models are installed.\n\n"
+                  "Internet is only needed for first-time model downloads, cloud AI mode, and sending emails.")
         section_note(p, "Recommended first-run path",
                      "Confirm the hotkey, keep local transcription on, choose the correct microphone if needed, and try one short dictation.")
         info_card(p, "1. Confirm your record key",
                   "Right Option with toggle mode is the stable Mac default. F13/F14/F15 are available as advanced alternatives for keyboards that support them.")
         info_card(p, "2. Confirm your microphone",
-                  "Use the Audio page to choose the right input device if the default microphone is not working. Restart after changing microphone devices.")
+                  "Use the Audio page to choose the right input device if the default microphone is not working. Use the Restart Now button on the Audio page after changing microphone.")
         info_card(p, "3. Keep the simple defaults",
                   "Use small.en, local Whisper, Ollama cleanup, Jarvis enabled, and Cloud mode off unless you specifically need cloud transcription.")
         info_card(p, "4. Try a short dictation",
@@ -4372,23 +5451,139 @@ class DictationApp:
         save_btn_row(p, lambda: _save())
 
         # ── Page: Audio ──────────────────────────────────────────────────────
-        p = page("Audio")
-        ph(p, "Audio")
+        p = page("Audio & Language", scrollable=True)
+        ph(p, "Audio & Language")
+
+        # Mutable baseline — compared against current values to decide whether to
+        # show the restart card.  Stored in a dict so the closure can update it
+        # after the initial auto-correction pass without needing `nonlocal`.
+        _initials = {
+            "mic":   mic_var.get(),
+            "model": model_var.get(),
+            "lang":  lang_var.get(),
+        }
+
         lbl(p, "MICROPHONE")
         if _dev_labels:
             combo(p, mic_var, _dev_labels, width=34)
         else:
             tk.Label(p, text=f"Device index: {current_mic}  (install sounddevice to list)",
                      bg=BG, fg=DIM, font=(FONT, 11)).pack(anchor="w", padx=24)
-        helper_text(p, "Microphone changes are safest after restarting the app. The built-in mic test has been removed for stability.")
+        helper_text(p, "Changes to microphone, Speech Model, or Spoken Language may require restarting Jarvis.")
 
-        lbl(p, "WHISPER MODEL")
-        combo(p, model_var, ["tiny.en","base.en","small.en","medium.en","large-v2","large-v3","distil-medium.en","distil-large-v3"])
-        helper_text(p, "Recommended: small.en. Larger models can be more accurate, but they load slower on Intel Macs.")
-        lbl(p, "LANGUAGE")
-        toggle_row(p, auto_var, "Auto-detect language", "Let Whisper identify the spoken language")
-        section_note(p, "Restart recommended",
-                     "Whisper model, microphone, and sample-rate style changes are most reliable after restarting.")
+        # Anchor frame — always packed, zero height.  The restart card repacks
+        # itself immediately after this anchor when a change is detected.
+        _restart_anchor = tk.Frame(p, bg=BG, height=1)
+        _restart_anchor.pack(fill="x")
+        _restart_wrapper = tk.Frame(p, bg=BG)
+
+        # "Restart Now" must save the current UI state FIRST so the relaunched
+        # instance picks up the new model/language from disk.  _save() is defined
+        # later in the same function scope; Python's late-binding closure means
+        # the name is resolved at call-time (button click), not at definition-time,
+        # so this works correctly even though _save() appears after this point.
+        def _save_and_restart():
+            _save()        # flush model_var / lang_var → settings dict → disk
+            _restart_app() # detached shell relaunch + quit
+
+        restart_card(_restart_wrapper, "Restart recommended for audio changes",
+                     "If you changed the microphone, Speech model, or Spoken Language, restart Jarvis so the new setting is fully applied.",
+                     restart_fn=_save_and_restart)
+        _restart_wrapper.pack_forget()   # hidden until a change is made
+
+        lbl(p, "I'M SPEAKING")
+        combo(p, lang_var, list(TRANSCRIPTION_LANGUAGES.keys()))
+        helper_text(p, "Choose the language you speak into the microphone.")
+        helper_text(p, "Speak French → choose French. Speak English → choose English or Auto-detect.")
+
+        lbl(p, "SPEECH MODEL")
+        combo(p, model_var, ["tiny.en","base.en","small.en","medium.en","large-v2","large-v3","distil-medium.en","distil-large-v3","tiny","base","small","medium"])
+        helper_text(p, "English-only models end in .en. Use multilingual models for French, Spanish, and other languages.")
+
+        # Dynamic warning — shown when an English-only model is paired with a non-English language.
+        _model_warn = tk.Label(p, text="", bg=BG, fg="#ff9f0a",
+                               font=(FONT, 10, "bold"), justify="left", wraplength=430)
+        _model_warn.pack(anchor="w", padx=24, pady=(0, 4))
+
+        def _is_en_only_model(name):
+            return name.endswith(".en") or name.startswith("distil-")
+
+        # Maps English-only model names to their multilingual counterparts so that
+        # when a non-English language is chosen, the auto-correction picks the closest
+        # multilingual model rather than always falling back to "small".
+        _ML_EQUIV = {
+            "tiny.en":          "tiny",
+            "base.en":          "base",
+            "small.en":         "small",
+            "medium.en":        "medium",
+            "distil-medium.en": "medium",
+            "distil-large-v3":  "large-v3",
+        }
+
+        # Reentrancy guard — model_var.set() inside the callback would otherwise
+        # re-trigger the trace, causing the restart-card logic to fire twice and
+        # leaving the card hidden even when the model actually changed.
+        _combo_in_progress = [False]
+
+        def _on_audio_combo_change(*_):
+            if _combo_in_progress[0]:
+                return
+            _combo_in_progress[0] = True
+            try:
+                lang = lang_var.get()
+                # Auto-correct incompatible model + language combination.
+                # Pick the multilingual equivalent so the dropdown visibly moves
+                # to a reachable model rather than snapping back to the same value.
+                if lang not in ("English", "Auto-detect") and _is_en_only_model(model_var.get()):
+                    suggested = _ML_EQUIV.get(model_var.get(), "small")
+                    model_var.set(suggested)
+                    _model_warn.config(
+                        text=f"Switched to multilingual model '{suggested}' for {lang}."
+                    )
+                else:
+                    _model_warn.config(text="")
+                # Show restart card only when something has changed from baseline.
+                changed = (
+                    mic_var.get()   != _initials["mic"]   or
+                    model_var.get() != _initials["model"] or
+                    lang_var.get()  != _initials["lang"]
+                )
+                if changed:
+                    _restart_wrapper.pack(fill="x", after=_restart_anchor)
+                else:
+                    _restart_wrapper.pack_forget()
+            finally:
+                _combo_in_progress[0] = False
+
+        mic_var.trace_add("write",  _on_audio_combo_change)
+        lang_var.trace_add("write", _on_audio_combo_change)
+        model_var.trace_add("write", _on_audio_combo_change)
+
+        # Run the initial correction pass (fixes any invalid saved model+language).
+        # Then re-snapshot the baseline to the post-correction values and force-hide
+        # the card — so the correction itself never counts as a user change.
+        _on_audio_combo_change()
+        _initials["model"] = model_var.get()
+        _initials["lang"]  = lang_var.get()
+        _restart_wrapper.pack_forget()
+
+        lbl(p, "TRANSLATE MY DICTATION TO")
+        combo(p, dictation_translate_var, list(DICTATION_TRANSLATION_LANGUAGES.keys()))
+        helper_text(p, "Optional. Translates what you dictate after transcription. Use Off for normal same-language dictation.")
+        helper_text(p, "Example: I'm Speaking = English + Translate My Dictation To = French → French output.")
+
+        tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(6, 10))
+
+        lbl(p, "TRANSLATE SELECTED TEXT TO")
+        combo(p, translate_lang_var, list(TRANSLATION_LANGUAGES.keys()))
+        helper_text(p, "Used only for commands like 'Translate selected text' or 'Translate clipboard.' Does not affect normal dictation.")
+        helper_text(p, "Select text, then say 'Translate selected text to French.'")
+
+        info_card(p, "How language settings work",
+                  "I'm Speaking — the language you speak into the mic. Controls transcription only.\n\n"
+                  "Translate My Dictation To — translates every dictated sentence to the chosen language after transcription. Off by default. Does not affect Jarvis commands.\n\n"
+                  "Translate Selected Text To — used only when you say 'Translate selected text' or 'Translate clipboard.' Has no effect on normal dictation.\n\n"
+                  "Speech Model — controls recognition quality and language support only. Does not translate anything by itself.")
         save_btn_row(p, lambda: _save())
 
         # ── Page: AI Cleanup ─────────────────────────────────────────────────
@@ -4397,6 +5592,11 @@ class DictationApp:
 
         toggle_row(p, ollama_var, "Local AI Cleanup",
                    "Polish dictated text with a local Ollama model after transcription")
+        tk.Label(p,
+                 text="Local AI Cleanup currently improves English dictation. "
+                      "For other spoken languages, Jarvis skips cleanup automatically to avoid accidental translation.",
+                 bg=BG, fg=DIM, font=(FONT, 10), justify="left", wraplength=430
+        ).pack(anchor="w", padx=24, pady=(2, 6))
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(4, 10))
 
         # ── Status card ───────────────────────────────────────────────────────
@@ -4676,14 +5876,17 @@ class DictationApp:
 
                 # ✕ must be packed BEFORE the expanding info frame so Tkinter
                 # reserves space for it on the right before fill="x" consumes the rest.
+                # fill="y" on the wrapper + anchor="n" on the label pins X to top-right.
                 def _delete(idx=i):
                     c = load_custom_commands()
                     c.pop(idx)
                     save_custom_commands(c)
                     _refresh_list()
-                del_btn = tk.Label(row, text="✕", bg=CARD, fg=DIM,
+                del_wrap = tk.Frame(row, bg=CARD)
+                del_wrap.pack(side="right", fill="y")
+                del_btn = tk.Label(del_wrap, text="✕", bg=CARD, fg=DIM,
                                    font=(FONT, 12), cursor="hand2", padx=12)
-                del_btn.pack(side="right")
+                del_btn.pack(anchor="n", pady=(8, 0))
                 del_btn.bind("<Button-1>", lambda e, d=_delete: d())
                 del_btn.bind("<Enter>", lambda e, b=del_btn: b.configure(fg="#ff3b30"))
                 del_btn.bind("<Leave>", lambda e, b=del_btn: b.configure(fg=DIM))
@@ -4815,38 +6018,251 @@ class DictationApp:
             w.bind("<Enter>", lambda e: add_btn.configure(bg="#1a94ff") or add_lbl.configure(bg="#1a94ff"))
             w.bind("<Leave>", lambda e: add_btn.configure(bg=ACC) or add_lbl.configure(bg=ACC))
 
+        # ── Page: Contacts ───────────────────────────────────────────────────
+        p = page("Contacts", scrollable=True)
+        ph(p, "Jarvis Contacts")
+        tk.Label(p, text=(
+            "Jarvis looks up contacts here when you say an email command.\n"
+            "Say a name or alias and Jarvis resolves it to the email address.\n"
+            "Changes save automatically."
+        ), bg=BG, fg=DIM, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
+
+        contacts_list_outer = tk.Frame(p, bg=BG)
+        contacts_list_outer.pack(fill="x", padx=24)
+
+        def _refresh_contacts():
+            for w in contacts_list_outer.winfo_children():
+                w.destroy()
+            ctcts = load_contacts()
+            if not ctcts:
+                tk.Label(contacts_list_outer,
+                         text="No contacts yet. Add one below.",
+                         bg=BG, fg=DIM, font=(FONT, 10)).pack(anchor="w", pady=(0, 8))
+                return
+            for i, ct in enumerate(ctcts):
+                row = _rounded_card_canvas(contacts_list_outer, CARD, radius=8, padx=0, pady=(0, 4))
+
+                def _del_contact(idx=i):
+                    c = load_contacts(); c.pop(idx); save_contacts(c); _refresh_contacts()
+                del_wrap_c = tk.Frame(row, bg=CARD)
+                del_wrap_c.pack(side="right", fill="y")
+                del_btn = tk.Label(del_wrap_c, text="✕", bg=CARD, fg=DIM,
+                                   font=(FONT, 12), cursor="hand2", padx=12)
+                del_btn.pack(anchor="n", pady=(8, 0))
+                del_btn.bind("<Button-1>", lambda e, d=_del_contact: d())
+                del_btn.bind("<Enter>", lambda e, b=del_btn: b.configure(fg="#ff3b30"))
+                del_btn.bind("<Leave>", lambda e, b=del_btn: b.configure(fg=DIM))
+
+                info = tk.Frame(row, bg=CARD)
+                info.pack(side="left", fill="x", expand=True, padx=10, pady=6)
+                name_line = ct.get("name", "") + "  →  " + ct.get("email", "")
+                tk.Label(info, text=name_line, bg=CARD, fg=FG,
+                         font=(FONT, 11, "bold"), anchor="w").pack(anchor="w")
+                aliases = ct.get("aliases", "").strip()
+                if aliases:
+                    tk.Label(info, text="Aliases: " + aliases, bg=CARD, fg=DIM,
+                             font=(FONT, 10), anchor="w").pack(anchor="w")
+
+        _refresh_contacts()
+
+        tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(14, 12))
+        lbl(p, "ADD CONTACT")
+
+        def _contact_field(label_text, placeholder=""):
+            tk.Label(p, text=label_text, bg=BG, fg=DIM,
+                     font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
+            f = _rounded_card_canvas(p, CARD, radius=8, padx=24, pady=(0, 0))
+            e = tk.Entry(f, bg=CARD, fg=FG, font=(FONT, 13), relief="flat",
+                         insertbackground=FG, bd=0, highlightthickness=0)
+            e.pack(fill="x", ipady=8, padx=10)
+            _bind_copy_paste(e)
+            if placeholder:
+                e.insert(0, placeholder); e.configure(fg=DIM)
+                e.bind("<FocusIn>",  lambda ev, ee=e, ph=placeholder: (
+                    ee.get() == ph and (ee.delete(0, "end") or ee.configure(fg=FG))))
+                e.bind("<FocusOut>", lambda ev, ee=e, ph=placeholder: (
+                    not ee.get().strip() and (ee.insert(0, ph) or ee.configure(fg=DIM))))
+            return e
+
+        ct_name_e    = _contact_field("NAME",    "e.g. Val")
+        ct_email_e   = _contact_field("EMAIL",   "e.g. val@example.com")
+        ct_aliases_e = _contact_field("ALIASES (optional, comma-separated)", "e.g. Valerie, Val S")
+
+        ct_err = tk.Label(p, text="", bg=BG, fg="#ff3b30", font=(FONT, 10))
+        ct_err.pack(anchor="w", padx=24, pady=(4, 0))
+
+        def _add_contact():
+            placeholders = {"e.g. Val", "e.g. val@example.com",
+                            "e.g. Valerie, Val S"}
+            name_val    = ct_name_e.get().strip()
+            email_val   = ct_email_e.get().strip()
+            aliases_val = ct_aliases_e.get().strip()
+            if name_val  in placeholders: name_val  = ""
+            if email_val in placeholders: email_val = ""
+            if aliases_val in placeholders: aliases_val = ""
+
+            if not name_val:
+                ct_err.configure(text="Name is required."); return
+            if not email_val or "@" not in email_val:
+                ct_err.configure(text="A valid email address is required."); return
+
+            ct_err.configure(text="")
+            ctcts = load_contacts()
+            ctcts.append({"name": name_val, "email": email_val,
+                          "aliases": aliases_val})
+            save_contacts(ctcts)
+            # Clear fields back to placeholders
+            for e, ph in [(ct_name_e, "e.g. Val"),
+                          (ct_email_e, "e.g. val@example.com"),
+                          (ct_aliases_e, "e.g. Valerie, Val S")]:
+                e.delete(0, "end"); e.insert(0, ph); e.configure(fg=DIM)
+            _refresh_contacts()
+
+        add_ct_btn = _rounded_card_canvas(p, ACC, radius=8, padx=24, pady=(10, 4))
+        add_ct_lbl = tk.Label(add_ct_btn, text="  Add Contact  ", bg=ACC, fg="#fff",
+                              font=(FONT, 11, "bold"), cursor="hand2")
+        add_ct_lbl.pack(ipady=7)
+        for w in (add_ct_btn, add_ct_lbl):
+            w.bind("<Button-1>", lambda e: _add_contact())
+            w.bind("<Enter>", lambda e: add_ct_btn.configure(bg="#1a94ff") or add_ct_lbl.configure(bg="#1a94ff"))
+            w.bind("<Leave>", lambda e: add_ct_btn.configure(bg=ACC)       or add_ct_lbl.configure(bg=ACC))
+
         # ── Page: Vocabulary ─────────────────────────────────────────────────
-        p = page("Vocabulary")
+        p = page("Vocabulary", scrollable=True)
         ph(p, "Custom Vocabulary")
         lbl(p, "USER DICTIONARY")
         tk.Label(p, text="Type words or names you want Whisper to recognize better.\nSeparate them with commas or new lines.",
                  bg=BG, fg=DIM, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 10))
 
-        # Save button gets its bottom space before the text box expands.
-        save_btn_row(p, lambda: _save())
-
         v_outer = tk.Frame(p, bg=BG)
-        v_outer.pack(fill="both", expand=True, padx=24, pady=10)
+        v_outer.pack(fill="x", padx=24, pady=(0, 10))
         v_frame = _rr(v_outer, CARD, radius=10, padx=0, pady=0)
 
         v_scroll = tk.Scrollbar(v_frame, orient="vertical", bg=BG, troughcolor=BG,
                                  width=10, elementborderwidth=0, bd=0)
         v_scroll.pack(side="right", fill="y")
 
-        v_box = tk.Text(v_frame, bg=CARD, fg=FG, font=(FONT, 13), relief="flat",
+        v_box = tk.Text(v_frame, height=6, bg=CARD, fg=FG, font=(FONT, 13), relief="flat",
                         insertbackground=FG, bd=0, highlightthickness=0,
                         yscrollcommand=v_scroll.set)
         v_box.insert("1.0", settings.get("manual_vocabulary", ""))
-        v_box.pack(fill="both", expand=True, padx=10, pady=10)
+        v_box.pack(fill="x", padx=10, pady=10)
         _bind_copy_paste(v_box)
         v_scroll.configure(command=v_box.yview)
-        
+
         def pause_on_any_key(event):
             # Guard for modifier-heavy typing inside the Settings text field on Intel Macs.
             globals()["WAKE_ENABLED"] = False
-            
+
         v_box.bind("<KeyPress>", pause_on_any_key)
         v_box.bind("<Shift-KeyPress>", pause_on_any_key)
+
+        # ── Personal Corrections ─────────────────────────────────────────────
+        tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(8, 4))
+        lbl(p, "PERSONAL CORRECTIONS")
+        tk.Label(p,
+                 text='Use this for recurring mistakes. Example: if Jarvis hears "a ten a", replace it with "Aetna".',
+                 bg=BG, fg=DIM, font=(FONT, 10), justify="left", wraplength=380
+        ).pack(anchor="w", padx=24, pady=(0, 8))
+
+        # ── Input card ───────────────────────────────────────────────────────
+        corr_card = _rounded_card_canvas(p, CARD, radius=12, padx=24, pady=(0, 0))
+
+        tk.Label(corr_card, text="When Jarvis hears:", bg=CARD, fg=DIM,
+                 font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
+        wrong_var = tk.StringVar()
+        wrong_entry = tk.Entry(corr_card, textvariable=wrong_var, bg="#2a2a2a", fg=FG,
+                               font=(FONT, 12), relief="flat", insertbackground=FG,
+                               bd=0, highlightthickness=0)
+        wrong_entry.pack(fill="x", padx=12, ipady=7)
+        _bind_copy_paste(wrong_entry)
+        wrong_entry.bind("<KeyPress>", pause_on_any_key)
+
+        tk.Label(corr_card, text="Replace with:", bg=CARD, fg=DIM,
+                 font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(8, 2))
+        right_var = tk.StringVar()
+        right_entry = tk.Entry(corr_card, textvariable=right_var, bg="#2a2a2a", fg=FG,
+                               font=(FONT, 12), relief="flat", insertbackground=FG,
+                               bd=0, highlightthickness=0)
+        right_entry.pack(fill="x", padx=12, ipady=7)
+        _bind_copy_paste(right_entry)
+        right_entry.bind("<KeyPress>", pause_on_any_key)
+
+        corr_status = tk.Label(corr_card, text="", bg=CARD, fg=DIM, font=(FONT, 9))
+        corr_status.pack(anchor="w", padx=12, pady=(4, 0))
+
+        add_btn_row = tk.Frame(corr_card, bg=CARD)
+        add_btn_row.pack(anchor="w", padx=12, pady=(8, 12))
+        add_btn = tk.Label(add_btn_row, text="Add Correction", bg=ACC, fg="#ffffff",
+                           font=(FONT, 11, "bold"), padx=14, pady=7, cursor="hand2")
+        add_btn.pack(side="left")
+        add_btn.bind("<Enter>", lambda e: add_btn.configure(bg="#1a6fd4"))
+        add_btn.bind("<Leave>", lambda e: add_btn.configure(bg=ACC))
+
+        # ── Saved corrections list ───────────────────────────────────────────
+        lbl(p, "SAVED CORRECTIONS")
+        list_card = _rounded_card_canvas(p, CARD, radius=12, padx=24, pady=(4, 0))
+
+        def _rebuild_corrections_list():
+            for w in list_card.winfo_children():
+                w.destroy()
+            vocab = load_vocab()
+            corrs = vocab.get("corrections", {})
+            if not corrs:
+                tk.Label(list_card, text="No corrections yet.", bg=CARD, fg=DIM,
+                         font=(FONT, 10)).pack(anchor="w", padx=12, pady=(10, 10))
+                return
+            for wrong, right in sorted(corrs.items()):
+                row = tk.Frame(list_card, bg=CARD)
+                row.pack(fill="x", padx=12, pady=(8, 0))
+                tk.Label(row, text=f'"{wrong}"', bg=CARD, fg=FG,
+                         font=(FONT, 10), anchor="w").pack(side="left")
+                tk.Label(row, text=" → ", bg=CARD, fg=DIM, font=(FONT, 10)).pack(side="left")
+                tk.Label(row, text=right, bg=CARD, fg=ACC,
+                         font=(FONT, 10, "bold")).pack(side="left")
+
+                def _delete(w=wrong):
+                    v = load_vocab()
+                    v.get("corrections", {}).pop(w, None)
+                    save_vocab(v)
+                    _rebuild_corrections_list()
+
+                del_btn = tk.Label(row, text="Delete", bg=CARD, fg="#ff453a",
+                                   font=(FONT, 9, "bold"), cursor="hand2")
+                del_btn.pack(side="right")
+                del_btn.bind("<Button-1>", lambda e, fn=_delete: fn())
+                del_btn.bind("<Enter>", lambda e, b=del_btn: b.configure(fg="#ff6961"))
+                del_btn.bind("<Leave>", lambda e, b=del_btn: b.configure(fg="#ff453a"))
+            tk.Frame(list_card, bg=CARD, height=8).pack()
+
+        _rebuild_corrections_list()
+
+        def _add_correction():
+            wrong = wrong_var.get().strip().lower()
+            right = right_var.get().strip()
+            if not wrong:
+                corr_status.config(text="Enter the phrase Jarvis hears incorrectly.", fg="#ff9f0a")
+                return
+            if not right:
+                corr_status.config(text="Enter the correct replacement text.", fg="#ff9f0a")
+                return
+            if wrong == right.lower():
+                corr_status.config(text="Correction matches the original — nothing to change.", fg="#ff9f0a")
+                return
+            vocab = load_vocab()
+            vocab.setdefault("corrections", {})[wrong] = right
+            save_vocab(vocab)
+            wrong_var.set("")
+            right_var.set("")
+            corr_status.config(text=f'Added: "{wrong}" → "{right}"', fg=ACC)
+            _rebuild_corrections_list()
+
+        add_btn.bind("<Button-1>", lambda e: _add_correction())
+        wrong_entry.bind("<Return>", lambda e: right_entry.focus_set())
+        right_entry.bind("<Return>", lambda e: _add_correction())
+
+        tk.Frame(p, bg=BG, height=12).pack()
+        save_btn_row(p, lambda: _save())
         
         # ── Page: Cloud ──────────────────────────────────────────────────────
         p = page("Cloud")
@@ -4866,8 +6282,106 @@ class DictationApp:
         save_btn_row(p, lambda: _save())
 
         # ── Page: Help ───────────────────────────────────────────────────────
+        # ── Workflows ─────────────────────────────────────────────────────────
+        p = page("Workflows", scrollable=True)
+        ph(p, "Workflows")
+        tk.Label(p, text="Use these voice patterns to tell Jarvis what to do.",
+                 bg=BG, fg=DIM, font=(FONT, 11), anchor="w", justify="left"
+        ).pack(anchor="w", padx=24, pady=(0, 10))
+
+        def wf_card(title, body=None, examples=None, note_label=None, note_text=None):
+            inner = _rounded_card_canvas(p, CARD, radius=12, padx=24, pady=(6, 0))
+            tk.Label(inner, text=title, bg=CARD, fg=FG,
+                     font=(FONT, 12, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 4))
+            if body:
+                tk.Label(inner, text=body, bg=CARD, fg=DIM,
+                         font=(FONT, 10), justify="left", wraplength=420
+                ).pack(anchor="w", padx=12, pady=(0, 4))
+            if examples:
+                ex_bg = "#191919"
+                ex_frame = tk.Frame(inner, bg=ex_bg)
+                ex_frame.pack(fill="x", padx=12, pady=(2, 4))
+                for ex in examples:
+                    tk.Label(ex_frame, text=ex, bg=ex_bg, fg="#8ab4f8",
+                             font=(FONT, 10), anchor="w", justify="left", wraplength=390
+                    ).pack(anchor="w", padx=10, pady=(4, 0))
+                tk.Frame(ex_frame, bg=ex_bg, height=6).pack()
+            if note_label and note_text:
+                note_frame = tk.Frame(inner, bg=CARD)
+                note_frame.pack(fill="x", padx=12, pady=(2, 4))
+                tk.Label(note_frame, text=note_label, bg=CARD, fg="#b0b0b0",
+                         font=(FONT, 9, "bold"), anchor="w").pack(anchor="w")
+                tk.Label(note_frame, text=note_text, bg=CARD, fg=DIM,
+                         font=(FONT, 10), justify="left", wraplength=400, anchor="w"
+                ).pack(anchor="w")
+            if examples:
+                copy_text = "\n".join(examples)
+                cp = tk.Label(inner, text="Copy examples", bg=CARD, fg=DIM,
+                              font=(FONT, 9), cursor="hand2", anchor="e")
+                cp.pack(anchor="e", padx=14, pady=(0, 8))
+                cp.bind("<Button-1>", lambda e, t=copy_text: copy_to_clipboard(t, "Examples copied"))
+                cp.bind("<Enter>", lambda e: cp.configure(fg=ACC))
+                cp.bind("<Leave>", lambda e: cp.configure(fg=DIM))
+            else:
+                tk.Frame(inner, bg=CARD, height=8).pack()
+
+        wf_card("Basic Dictation",
+                body="Press Right Option to start recording. Press it again to stop.",
+                examples=['"I reviewed the quote and I\'ll follow up Friday."'])
+
+        wf_card("Email Drafts",
+                body="Say:",
+                examples=[
+                    '"Send email to Val. Let her know the meeting is cancelled."',
+                    '"Compose email to John. Tell him I reviewed the quote."',
+                    '"Draft email to Sarah. Say the documents are ready."',
+                    '"Email Mike. Ask if tomorrow at 2 still works."',
+                ],
+                note_label="Important:",
+                note_text='Use "let her know," "tell him," "say," or "ask" so Jarvis knows where the email body starts.')
+
+        wf_card("Reminders",
+                body="Say:",
+                examples=[
+                    '"Remind me to call Steve tomorrow at 3 PM."',
+                    '"Set a reminder to send the quote to Sarah next Friday at 10 AM."',
+                    '"Create reminder to check the application next Tuesday."',
+                ],
+                note_label="Tip:",
+                note_text='Say "next Friday" when you mean Friday of next week.')
+
+        wf_card("Translation",
+                body="Select text, then say:",
+                examples=[
+                    '"Translate selected text to French."',
+                    '"Translate selected text to English."',
+                    '"Translate clipboard to Spanish."',
+                ],
+                note_label="Note:",
+                note_text="Normal dictation is not translated unless you use a translate command.")
+
+        wf_card("System Controls",
+                body="Say:",
+                examples=[
+                    '"Set volume to 50 percent."',
+                    '"Turn volume up."',
+                    '"Set brightness to 70 percent."',
+                    '"Decrease brightness."',
+                ])
+
+        wf_card("Contacts",
+                body="Add contacts in Settings → Contacts.\n\nExample:\n  Name: Valerie Johnson\n  Email: val@example.com\n  Aliases: Val, Valerie\n\nThen say:",
+                examples=['"Send email to Val. Let her know I\'ll follow up Friday."'])
+
+        tk.Frame(p, bg=BG, height=16).pack()  # bottom spacer
+
         p = page("Help", scrollable=True)
         ph(p, "Help & Quick Start")
+        info_card(p, "Build identity",
+                  f"BUILD_ID: {BUILD_ID}\n"
+                  f"Version:  {APP_VERSION}\n"
+                  f"Source:   {__file__}\n"
+                  f"Bundle:   {_startup_bundle or '(running as script)'}")
         info_card(p, "Professional app checklist",
                   "Use the Setup page for first-run configuration, keep the recommended defaults for reliability, and copy the setup summary when debugging or sharing support details.")
         info_card(p, "Start dictating",
@@ -4881,10 +6395,30 @@ class DictationApp:
         info_card(p, "Writing Profiles",
                   "Profiles adjust cleanup style for everyday writing, email, professional writing, developer work, notes, sales, legal, medical, creative, or verbatim dictation.")
         info_card(p, "Safe troubleshooting",
-                  "If recording feels stuck, release the hotkey, wait a second, then try again. If audio or model settings were changed, restart the app.")
+                  "If recording feels stuck, release the hotkey, wait a second, then try again.")
+        info_card(p, "Works offline",
+                  "Available offline:\n"
+                  "  · Dictation\n"
+                  "  · Local Whisper transcription\n"
+                  "  · Ollama cleanup (once Ollama and the model are installed)\n"
+                  "  · Writing profiles\n"
+                  "  · Voice commands\n"
+                  "  · Email draft creation\n"
+                  "  · Reminders\n"
+                  "  · Jarvis Contacts\n"
+                  "  · Volume and brightness controls\n"
+                  "  · Local translation with Ollama\n\n"
+                  "May need internet:\n"
+                  "  · First-time Whisper model downloads\n"
+                  "  · First-time Ollama model downloads\n"
+                  "  · Cloud AI mode\n"
+                  "  · Sending emails")
+        restart_card(p, "Need to restart?",
+                     "Use this if audio or model settings were changed and are not taking effect.")
 
         def copy_support_summary():
             summary = (
+                f"Jarvis is offline-first after setup. Your dictation stays on your Mac unless you enable Cloud mode.\n\n"
                 f"Dictation app {APP_VERSION}\n"
                 f"Hotkey: {hotkey_var.get()}\n"
                 f"Whisper model: {model_var.get()}\n"
@@ -4904,6 +6438,103 @@ class DictationApp:
             copy_to_clipboard(summary, "Support summary copied")
 
         small_button(p, "Copy setup summary", copy_support_summary)
+
+        # ── Storage & Cleanup ─────────────────────────────────────────────────
+        tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(16, 4))
+        lbl(p, "STORAGE & CLEANUP")
+        tk.Label(p, text="Manage local text history, learned vocabulary, and diagnostic logs.\nAudio recordings are not saved.",
+                 bg=BG, fg=DIM, font=(FONT, 10), anchor="w", justify="left").pack(anchor="w", padx=28, pady=(2, 6))
+
+        def _fmt_kb(path):
+            try:
+                return f"{os.path.getsize(os.path.expanduser(path)) // 1024} KB"
+            except Exception:
+                return "0 KB"
+
+        def _history_summary():
+            try:
+                with open(HISTORY_FILE, "r", encoding="utf-8") as _f:
+                    _h = json.load(_f)
+                return f"{_fmt_kb(HISTORY_FILE)}, {len(_h)} entries"
+            except Exception:
+                return "0 KB, 0 entries"
+
+        def _vocab_summary():
+            try:
+                _v = load_vocab()
+                words  = len(_v.get("word_counts", {}))
+                phrases = len(_v.get("phrases", {}))
+                return f"{_fmt_kb(VOCAB_FILE)}, {words} words / {phrases} phrases"
+            except Exception:
+                return "0 KB"
+
+        def _log_summary():
+            return _fmt_kb("~/jarvis_startup_debug.log")
+
+        # Storage info card — rebuilt each time the Help page is opened
+        _stor_card = _rounded_card_canvas(p, CARD, radius=12, padx=24, pady=(4, 0))
+
+        def _stor_row(label, value_fn, clear_fn, btn_label, confirm_msg, status_msg):
+            import tkinter.messagebox as _mb
+            row = tk.Frame(_stor_card, bg=CARD)
+            row.pack(fill="x", padx=12, pady=(8, 0))
+            tk.Label(row, text=label, bg=CARD, fg=FG,
+                     font=(FONT, 11, "bold"), anchor="w").pack(side="left")
+            val_lbl = tk.Label(row, text=value_fn(), bg=CARD, fg=DIM,
+                               font=(FONT, 10), anchor="e")
+            val_lbl.pack(side="left", padx=(8, 0))
+
+            def _do_clear(vl=val_lbl, vfn=value_fn):
+                if not _mb.askyesno("Confirm", confirm_msg, parent=_win):
+                    return
+                clear_fn()
+                vl.config(text=vfn())
+                app.show_message(status_msg, app.GREEN)
+
+            cl = tk.Label(row, text=btn_label, bg=CARD, fg="#ff453a",
+                          font=(FONT, 10, "bold"), cursor="hand2")
+            cl.pack(side="right")
+            cl.bind("<Button-1>", lambda e: _do_clear())
+            cl.bind("<Enter>",    lambda e: cl.configure(fg="#ff6961"))
+            cl.bind("<Leave>",    lambda e: cl.configure(fg="#ff453a"))
+
+        def _clear_history():
+            try:
+                if os.path.exists(HISTORY_FILE):
+                    os.remove(HISTORY_FILE)
+            except Exception:
+                pass
+
+        def _clear_vocab():
+            global _vocab_cache
+            try:
+                if os.path.exists(VOCAB_FILE):
+                    os.remove(VOCAB_FILE)
+                _vocab_cache = None
+            except Exception:
+                pass
+
+        def _clear_log():
+            try:
+                log_path = os.path.expanduser("~/jarvis_startup_debug.log")
+                if os.path.exists(log_path):
+                    os.remove(log_path)
+            except Exception:
+                pass
+
+        _stor_row("Dictation History",  _history_summary, _clear_history,
+                  "Clear History",
+                  "Clear all dictation history? This cannot be undone.",
+                  "History cleared.")
+        _stor_row("Learned Vocabulary", _vocab_summary,   _clear_vocab,
+                  "Clear Vocabulary",
+                  "Clear all learned vocabulary? This cannot be undone.",
+                  "Vocabulary cleared.")
+        _stor_row("Startup Log",        _log_summary,     _clear_log,
+                  "Clear Log",
+                  "Clear the startup diagnostic log?",
+                  "Startup log cleared.")
+        tk.Frame(_stor_card, bg=CARD, height=10).pack()   # bottom padding
 
         # ── Save logic ────────────────────────────────────────────────────────
         def _save():
@@ -4932,7 +6563,10 @@ class DictationApp:
                 "cloud_mode":     cloud_var.get(),
                 "jarvis_enabled": jarvis_var.get(),
                 "context_format": format_var.get(),
-                "auto_detect":    auto_var.get(),
+                "auto_detect":    lang_var.get() == "Auto-detect",
+                "language":       TRANSCRIPTION_LANGUAGES.get(lang_var.get()) or "en",
+                "translate_target_language": translate_lang_var.get(),
+                "translate_my_dictation":   dictation_translate_var.get(),
                 "use_ollama":     ollama_var.get(),
                 "play_sounds":    sounds_var.get(),
                 "show_startup_tips": startup_tips_var.get(),
@@ -4948,17 +6582,81 @@ class DictationApp:
                 "wake_dictation_silence_rms": WAKE_DICTATION_SILENCE_RMS,
             })
 
+            # ── Debug: log what we're about to save ───────────────────────────
+            print(f"[save] model_var  = '{model_var.get()}'")
+            print(f"[save] lang_var   = '{lang_var.get()}'")
+            print(f"[save] settings['model']      = '{settings.get('model')}'")
+            print(f"[save] settings['language']   = '{settings.get('language')}'")
+            print(f"[save] settings['auto_detect']= {settings.get('auto_detect')}")
+            print(f"[save] writing to {SETTINGS_FILE}")
+            # ──────────────────────────────────────────────────────────────────
+
             # Sync the global flags
             globals().update({
-                "WAKE_ENABLED":   wake_var.get(), 
-                "JARVIS_ENABLED": jarvis_var.get(), 
+                "WAKE_ENABLED":   wake_var.get(),
+                "JARVIS_ENABLED": jarvis_var.get(),
                 "OLLAMA_ENABLED": ollama_var.get() and not safe_mode_var.get()
             })
-            
+
             save_settings(settings)
+
+            # ── Debug: immediate JSON readback to confirm the write landed ─────
+            try:
+                with open(SETTINGS_FILE) as _rbf:
+                    _rb = json.load(_rbf)
+                print(f"[save] JSON readback: model='{_rb.get('model')}' "
+                      f"language='{_rb.get('language')}' auto_detect={_rb.get('auto_detect')}")
+            except Exception as _rbe:
+                print(f"[save] JSON readback FAILED: {_rbe}")
+            # ──────────────────────────────────────────────────────────────────
+
             _refresh_record_hotkey(log=True)
+
+            # ── Multilingual model download offer ─────────────────────────────
+            # If a non-English language was selected but the chosen model is
+            # English-only (.en), offer to download the multilingual 'small' model.
+            _chosen_lang = TRANSCRIPTION_LANGUAGES.get(lang_var.get())   # e.g. "fr", or None
+            _chosen_model = settings.get("model", "small.en")
+            _need_multilingual = (_chosen_lang and _chosen_lang != "en"
+                                  and _chosen_model.endswith(".en"))
+            if _need_multilingual:
+                import tkinter.messagebox as _mb
+                _do_download = _mb.askyesno(
+                    "Download multilingual model?",
+                    f"'{_chosen_model}' is English-only and cannot transcribe {lang_var.get()}.\n\n"
+                    "The 'small' multilingual model (~460 MB) supports all 13 languages "
+                    "in the dropdown.\n\n"
+                    "Download it now in the background? Dictation will resume automatically when ready.",
+                    parent=_win,
+                )
+                if _do_download:
+                    settings["model"] = "small"
+                    save_settings(settings)
+                    _win.destroy()
+                    threading.Thread(target=reload_model, daemon=True).start()
+                    return
+
+            # Sync menu bar checkmarks immediately so the next menu open shows
+            # the current model, hotkey, strength, etc. without requiring a restart.
+            if menubar:
+                menubar._refresh_menu_state()
+
+            # ── Reload model if it changed ────────────────────────────────────
+            # Language/hotkey/other changes take effect immediately from settings.
+            # The WhisperModel object only reloads explicitly via reload_model().
+            _model_changed = (settings.get("model") != MODEL)
             _win.destroy()
-            self.show_message("Saved! Hotkey changes apply now.", self.GREEN)
+            if _model_changed:
+                _new_model = settings.get("model", "")
+                _lang_name = lang_var.get()
+                if _lang_name not in ("English", "Auto-detect"):
+                    self.show_message(
+                        f"Saved. Loading speech model '{_new_model}' for {_lang_name}…", self.BLUE)
+                else:
+                    self.show_message(f"Saved. Loading speech model '{_new_model}'…", self.BLUE)
+                threading.Thread(target=reload_model, daemon=True).start()
+            else:
+                self.show_message("Saved.", self.GREEN)
 
         # Ensure every editable field in Settings supports Cmd+C/V/X/A and
         # right-click / Ctrl-click context menus, including fields added later.
@@ -5045,20 +6743,25 @@ class DictationApp:
 def reload_model():
     global whisper, MODEL
     model_name = settings["model"]
-    app.root.after(0, lambda: app.show_message(f"Loading {model_name}...", "#0a84ff"))
+    print(f"[model] reload_model() called — loading '{model_name}'")
+    app.root.after(0, lambda: app.show_message(f"Loading {model_name}…", "#0a84ff"))
     try:
-        whisper = WhisperModel(model_name, device=DEVICE, compute_type=COMPUTE)
+        new_whisper = WhisperModel(model_name, device=DEVICE, compute_type=COMPUTE)
+        whisper = new_whisper
         MODEL = model_name
+        print(f"[model] reload_model() success — MODEL={MODEL}")
         app.root.after(0, lambda: app.show_message(f"{model_name} ready!", "#30d158"))
-    except Exception:
-        app.root.after(0, lambda: app.show_message(f"Failed to load {model_name}", "#ff3b30"))
-        settings["model"] = "small.en"
-        save_settings(settings)
+    except Exception as _e:
+        print(f"[model] reload_model() FAILED for '{model_name}': {_e}")
+        app.root.after(0, lambda: app.show_message(
+            f"Failed to load '{model_name}'. Check internet and try again.", "#ff3b30"
+        ))
+        # Do NOT revert settings["model"] — keep user's choice so they can retry
     time.sleep(4.0)
     app.set_state("idle")
 
 def start_backend(stream):
-    global whisper, JARVIS_ENABLED, WAKE_ENABLED
+    global whisper, MODEL, JARVIS_ENABLED, WAKE_ENABLED
     JARVIS_ENABLED = settings.get("jarvis_enabled", True)
     WAKE_ENABLED = settings.get("wake_enabled", True)
     log_event("boot", f"Dictation v{APP_VERSION} — WAKE_ENABLED={WAKE_ENABLED} JARVIS_ENABLED={JARVIS_ENABLED}")
@@ -5072,6 +6775,7 @@ def start_backend(stream):
         try:
             print("[model] falling back to tiny.en...")
             whisper = WhisperModel("tiny.en", device=DEVICE, compute_type=COMPUTE)
+            MODEL = "tiny.en"
             settings["model"] = "tiny.en"
             save_settings(settings)
             print("[model] tiny.en loaded OK")
@@ -5089,7 +6793,13 @@ def start_backend(stream):
     # GIL-releasing function.  Starting the stream after the wake-word thread
     # caused PortAudio's C-level thread init to corrupt the wake-word thread's
     # PyThreadState, producing the fatal GIL abort on time.sleep().
-    stream.start()
+    print("[record] microphone init starting")
+    try:
+        stream.start()
+        print("[record] audio stream started")
+    except Exception as _stream_err:
+        print("[record] microphone init error=", _stream_err)
+        raise
     # Key detection is now handled entirely by the Quartz HID tap installed via
     # root.after(1000, _install_suppression_tap).  No pynput keyboard.Listener
     # thread is started here — eliminating the concurrent-SIMD SIGILL entirely.
@@ -5106,6 +6816,7 @@ def start_backend(stream):
 
 def _tap_record_start():
     global recording, cancelled, _record_started_at, _last_record_press_at, _recording_started_by_wake
+    print("[record] start_recording called")
     now = time.time()
     debounce = _setting_float("hotkey_debounce_seconds", HOTKEY_DEBOUNCE_SECONDS)
 
@@ -5114,6 +6825,7 @@ def _tap_record_start():
         return
     _last_record_press_at = now
 
+    print("[record] is_recording before=", recording)
     if recording:
         log_event("record", "start ignored — already recording")
         return
@@ -5124,6 +6836,7 @@ def _tap_record_start():
         return
 
     recording = True
+    print("[record] microphone init success")
     _recording_started_by_wake = False
     _record_started_at = now
     _wake_active.set()
@@ -5167,6 +6880,7 @@ def _finish_short_recording(duration: float):
 
 def _tap_record_stop():
     global recording, _wake_cooldown_until, _last_record_release_at, _recording_started_by_wake
+    print("[record] stop_recording called")
     now = time.time()
     debounce = _setting_float("hotkey_debounce_seconds", HOTKEY_DEBOUNCE_SECONDS)
 
@@ -5281,6 +6995,7 @@ def _drain_input_events():
                 continue
 
             if action == "record_press":
+                print("[record button] clicked — recording=", recording)
                 if not recording:
                     _tap_record_start()
                 elif settings.get("toggle_mode", False):
@@ -5298,6 +7013,7 @@ def _drain_input_events():
             elif action == "open_settings":
                 app.open_settings()
             elif action == "menu_start_stop":
+                print("[record button] clicked — recording=", recording)
                 if recording:
                     _tap_record_stop() if settings.get("toggle_mode", False) else _tap_record_stop()
                 else:
@@ -5541,7 +7257,23 @@ def main():
     app = DictationApp(root)
     if not settings.get("show_hud", True):
         root.withdraw()
-    stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", device=MIC_DEVICE, callback=audio_callback)
+    # Validate the saved mic device — fall back to default if it has no input channels
+    # (e.g. saved device index now points to an output-only device after a restart)
+    _mic = MIC_DEVICE
+    try:
+        _dev_info = sd.query_devices(_mic)
+        if _dev_info["max_input_channels"] < 1:
+            print(f"[audio] device {_mic} ({_dev_info['name']!r}) has no input channels — falling back to default input")
+            _mic = sd.query_devices(kind="input")["index"]
+            settings["mic_device"] = _mic
+            save_settings(settings)
+    except Exception as _e:
+        print(f"[audio] could not query device {_mic}: {_e} — using default input")
+        try:
+            _mic = sd.query_devices(kind="input")["index"]
+        except Exception:
+            _mic = None
+    stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", device=_mic, callback=audio_callback)
     threading.Thread(target=start_backend, args=(stream,), daemon=True).start()
     root.after(500, _init_menubar)
     root.after(600, _drain_input_events)
@@ -5571,9 +7303,13 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
     import traceback
+    _write_startup_log("calling main()")
     try:
         main()
+        _write_startup_log("main() returned normally")
     except Exception as e:
+        _tb = traceback.format_exc()
+        _write_startup_log(f"main() CRASHED:\n{_tb}")
         with open(os.path.expanduser("~/dictation_crash.log"), "w") as f:
-            f.write(traceback.format_exc())
+            f.write(_tb)
         raise
