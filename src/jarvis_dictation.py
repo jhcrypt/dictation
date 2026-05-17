@@ -1324,30 +1324,20 @@ def execute_jarvis_command(action, params):
                     translated = _repair_mojibake(translated)
                     _age = time.time() - _last_normal_dictation_time
                     if _age <= _SAFE_REPLACE_WINDOW:
-                        # ── Safe replace: backspace the previous paste, then paste translation ──
+                        # ── Safe replace: bulk-erase the previous paste, then paste translation ──
                         # paste_text() appends a trailing space, so erase len+1 chars.
+                        # No per-key sleep — fire all backspaces in one fast burst.
                         _erase = len(src_text) + 1
                         for _ in range(_erase):
                             typer.press(Key.backspace)
                             typer.release(Key.backspace)
-                            time.sleep(0.003)
-                        time.sleep(0.05)
-                        paste_text(translated)
-                        # Update reference so a second "translate that" works on the translation
-                        globals()["_last_normal_dictation"] = translated
-                        globals()["_last_normal_dictation_time"] = time.time()
-                        if app: app.show_message(f"Translated to {target}", "#30d158")
-                    else:
-                        # ── Paste too old — copy to clipboard, don't append ──────────────────
-                        try:
-                            from AppKit import NSPasteboard, NSStringPboardType
-                            pb = NSPasteboard.generalPasteboard()
-                            pb.clearContents()
-                            pb.setString_forType_(translated, NSStringPboardType)
-                        except Exception:
-                            import subprocess as _sp2
-                            _sp2.run(["pbcopy"], input=translated.encode("utf-8"), timeout=3)
-                        if app: app.show_message("Translation copied.", "#30d158")
+                        time.sleep(0.02)   # single brief settle before paste
+                    # Always paste the translation — whether we erased the original or not.
+                    paste_text(translated)
+                    # Update reference so a second "translate that" re-translates correctly.
+                    globals()["_last_normal_dictation"] = translated
+                    globals()["_last_normal_dictation_time"] = time.time()
+                    if app: app.show_message(f"Translated to {target}", "#30d158")
 
         elif action == "draft_email":
             _execute_draft_email(params)
