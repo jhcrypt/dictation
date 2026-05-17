@@ -6620,9 +6620,9 @@ class DictationApp:
 
         # ── Personal Corrections ─────────────────────────────────────────────
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(8, 4))
-        lbl(p, "ADD CORRECTION FROM LAST DICTATION")
+        lbl(p, "PERSONAL CORRECTIONS")
         tk.Label(p,
-                 text="Use this for recurring word or phrase mistakes. Avoid full sentence rewrites.",
+                 text="Add words or phrases Jarvis often hears incorrectly.",
                  bg=BG, fg=HINT, font=(FONT, 10), justify="left", wraplength=380
         ).pack(anchor="w", padx=24, pady=(0, 8))
 
@@ -6641,9 +6641,9 @@ class DictationApp:
 
         tk.Frame(corr_card, bg=SEP, height=1).pack(fill="x", padx=12, pady=(0, 8))
 
-        tk.Label(corr_card, text="When Jarvis hears this word or phrase:", bg=CARD, fg=HINT,
+        tk.Label(corr_card, text="Word or phrase Jarvis heard incorrectly:", bg=CARD, fg=HINT,
                  font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(0, 2))
-        wrong_var = tk.StringVar(value=prefill_correction if prefill_correction else "")
+        wrong_var = tk.StringVar(value="")
         wrong_entry = tk.Entry(corr_card, textvariable=wrong_var, bg="#2a2a2a", fg=FG,
                                font=(FONT, 12), relief="flat", insertbackground=FG,
                                bd=0, highlightthickness=0)
