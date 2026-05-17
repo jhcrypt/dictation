@@ -483,6 +483,88 @@ WRITING_PROFILES = {
 
 PROFILE_OPTIONS = list(WRITING_PROFILES.keys())
 
+# ── Profile vocabulary hints for Whisper ─────────────────────────────────────
+# Terms included in the Whisper initial_prompt when a profile is active.
+# Helps Whisper recognise domain-specific words correctly without changing
+# any other transcription behaviour.
+PROFILE_VOCABULARY: dict[str, list[str]] = {
+    "Developer": [
+        "UI", "UX", "API", "REST", "JSON", "XML", "HTML", "CSS", "SQL",
+        "React", "TypeScript", "JavaScript", "Python", "Rust", "Swift",
+        "frontend", "backend", "fullstack", "component", "terminal",
+        "localhost", "webhook", "GitHub", "repository", "pull request",
+        "CLI", "n8n", "Tauri", "Claude", "Ollama", "PyInstaller",
+    ],
+    "Medical": [
+        "hypertension", "diabetes", "tachycardia", "bradycardia",
+        "myocardial", "infarction", "pneumonia", "diagnosis", "prognosis",
+        "prescription", "dosage", "milligrams", "subcutaneous", "intravenous",
+        "systolic", "diastolic", "CBC", "EKG", "ECG", "MRI", "BMI",
+    ],
+    "Legal": [
+        "plaintiff", "defendant", "affidavit", "deposition", "subpoena",
+        "injunction", "indemnification", "liability", "negligence",
+        "jurisdiction", "arbitration", "litigation", "LLC", "LLP",
+    ],
+    "Sales": [
+        "CRM", "lead", "pipeline", "quota", "upsell", "cross-sell",
+        "follow-up", "proposal", "onboarding", "churn", "KPI", "ROI",
+    ],
+    "Email": [
+        "follow-up", "availability", "regards", "sincerely",
+        "attached", "reviewed", "circling back", "looping in",
+    ],
+    "Professional": [
+        "stakeholder", "deliverable", "milestone", "KPI", "ROI",
+        "actionable", "bandwidth",
+    ],
+}
+
+# ── Profile-specific safe aliases ─────────────────────────────────────────────
+# Spoken multi-word phrases → preferred abbreviation/term.
+# SAFETY RULES:
+#   - Keys MUST be multi-word phrases. Single-word keys are forbidden to prevent
+#     false positives (e.g. "i" → "UI" would fire on every "I").
+#   - Replacements preserve exact casing.
+#   - Applied only for the active writing profile.
+PROFILE_ALIASES: dict[str, dict[str, str]] = {
+    "Developer": {
+        "user interface":                    "UI",
+        "user experience":                   "UX",
+        "application programming interface": "API",
+        "java script object notation":       "JSON",
+        "type script":                       "TypeScript",
+        "java script":                       "JavaScript",
+        "local host":                        "localhost",
+        "pull request":                      "PR",
+        "command line interface":            "CLI",
+        "continuous integration":            "CI",
+        "continuous deployment":             "CD",
+        "continuous delivery":               "CD",
+    },
+    "Medical": {
+        "blood pressure":             "BP",
+        "heart rate":                 "HR",
+        "electrocardiogram":          "ECG",
+        "magnetic resonance imaging": "MRI",
+        "computed tomography":        "CT",
+        "body mass index":            "BMI",
+        "complete blood count":       "CBC",
+        "beats per minute":           "BPM",
+    },
+    "Legal": {
+        "limited liability company":      "LLC",
+        "limited liability partnership":  "LLP",
+    },
+    "Sales": {
+        "customer relationship management": "CRM",
+        "key performance indicator":        "KPI",
+        "return on investment":             "ROI",
+        "marketing qualified lead":         "MQL",
+        "sales qualified lead":             "SQL",
+    },
+}
+
 APP_PROFILE_RULES = {
     "mail": "Email",
     "spark": "Email",
@@ -1799,6 +1881,53 @@ def learn_from_text(text):
         save_vocab(vocab)
     except Exception as e: print(f"[vocab] error: {e}")
 
+_URL_EMAIL_RE = re.compile(r'https?://\S+|www\.\S+|\S+@\S+\.\S+')
+
+def apply_profile_aliases(text: str, profile: str) -> str:
+    """Replace spoken multi-word phrases with profile-specific abbreviations.
+
+    Only multi-word source phrases are allowed as keys — never single words —
+    to prevent dangerous substitutions (e.g. "I" → "UI").
+    Longest phrase is tried first. URLs and email addresses are never altered.
+    """
+    aliases = PROFILE_ALIASES.get(profile)
+    if not aliases:
+        return text
+
+    # Mask URLs/emails so they survive replacement unchanged.
+    masks: list[tuple[str, str]] = []
+    def _mask(m: re.Match) -> str:
+        token = f"\x00MASK{len(masks)}\x00"
+        masks.append((token, m.group(0)))
+        return token
+    masked = _URL_EMAIL_RE.sub(_mask, text)
+
+    # Apply longest phrase first so "application programming interface" wins
+    # over any shorter sub-phrase.
+    for phrase in sorted(aliases, key=len, reverse=True):
+        replacement = aliases[phrase]
+        pat = re.compile(r'\b' + re.escape(phrase) + r'\b', re.IGNORECASE)
+        masked = pat.sub(replacement, masked)
+
+    # Restore masked tokens.
+    for token, original in masks:
+        masked = masked.replace(token, original)
+    return masked
+
+def _apply_inline_linebreaks(text: str) -> str:
+    """Convert spoken 'next line' / 'next paragraph' markers to real line breaks.
+
+    Only runs on text that passed command detection — standalone 'next line'
+    dictations are caught earlier and handled as key-press commands.
+    Handles: 'next paragraph' → \\n\\n, 'next line' / 'new line' → \\n.
+    """
+    # paragraph before line so the longer phrase matches first
+    text = re.sub(r'\s*\bnext paragraph\b\s*', '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*\bnew paragraph\b\s*',  '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*\bnext line\b\s*',      '\n',   text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*\bnew line\b\s*',       '\n',   text, flags=re.IGNORECASE)
+    return text.strip()
+
 def apply_corrections(text: str) -> str:
     """Apply personal corrections (wrong → right) to normal dictation output.
 
@@ -1826,24 +1955,23 @@ def apply_corrections(text: str) -> str:
         print(f"[corrections] error: {e}")
         return text
 
-def get_personal_prompt():
-    """Combines manual vocabulary from settings with learned history."""
+def get_personal_prompt(profile: str | None = None) -> str:
+    """Combines manual vocabulary, learned history, and profile vocabulary for Whisper."""
     try:
-        # 1. Grab your manual list from the Settings window
         manual_vocab = settings.get("manual_vocabulary", "").strip()
-        
-        # 2. Grab the automated history
         vocab = load_vocab()
         word_counts = vocab.get("word_counts", {})
         top_words = sorted(word_counts, key=word_counts.get, reverse=True)[:20]
-        
-        # 3. Combine them into one hint for Whisper
+
         prompt = "Transcribe accurately."
         if manual_vocab:
             prompt += f" Technical terms: {manual_vocab}."
         if top_words:
             prompt += f" Common words: {', '.join(top_words)}."
-            
+        if profile:
+            profile_terms = PROFILE_VOCABULARY.get(profile)
+            if profile_terms:
+                prompt += f" {profile} terms: {', '.join(profile_terms)}."
         return prompt
     except Exception:
         return "Transcribe spoken English accurately."
@@ -3010,7 +3138,10 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
         app.set_state("idle")
         return
 
-    personal_prompt = get_personal_prompt()
+    # Detect active profile now so get_personal_prompt can include profile vocab.
+    active_app     = get_active_app_name()
+    active_profile = get_active_writing_profile(active_app)
+    personal_prompt = get_personal_prompt(active_profile)
     _dlog(f"[whisper-hint] {personal_prompt}")
 
     # ── Transcription language ────────────────────────────────────────────────
@@ -3092,8 +3223,6 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     whisper_text = raw_text
     ollama_text = ""
     ollama_status = "not used"
-    active_app = get_active_app_name()
-    active_profile = get_active_writing_profile(active_app)
     log_event("whisper", repr(whisper_text))
     log_event("profile", f"{active_profile}" + (f" via {active_app}" if active_app else ""))
 
@@ -3241,14 +3370,14 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
             typer.press(Key.shift); typer.press(Key.enter); typer.release(Key.enter); typer.release(Key.shift)
         else:
             typer.press(Key.enter); typer.release(Key.enter)
-        app.show_message("New line", "#0a84ff")
+        app.show_message("Next line", "#0a84ff")
         app.set_state("idle")
         return
-        
-    if lower == "new paragraph":
+
+    if lower in ("new paragraph", "next paragraph"):
         for _ in range(2):
             typer.press(Key.enter); typer.release(Key.enter)
-        app.show_message("New paragraph", "#0a84ff")
+        app.show_message("Next paragraph", "#0a84ff")
         app.set_state("idle")
         return
         
@@ -3356,15 +3485,88 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
         app.set_state("idle")
         return
 
+    if lower in ("correct that", "correct last", "add correction", "fix that"):
+        _wrong_prefill = re.sub(r'[^\w\s]', '', (last_text or "")).strip().lower()
+        def _open_correction_dialog(prefill=_wrong_prefill):
+            win = tk.Toplevel(app.root)
+            win.title("Add Correction")
+            win.configure(bg=BG)
+            win.resizable(False, False)
+            win.geometry("380x240")
+            win.lift(); win.focus_force()
+            tk.Label(win, text="When Jarvis hears:", bg=BG, fg=HINT,
+                     font=(FONT, 10), anchor="w").pack(anchor="w", padx=20, pady=(16, 2))
+            wrong_v = tk.StringVar(value=prefill)
+            wrong_e = tk.Entry(win, textvariable=wrong_v, bg="#2a2a2a", fg=FG,
+                               font=(FONT, 12), relief="flat", insertbackground=FG,
+                               bd=0, highlightthickness=0)
+            wrong_e.pack(fill="x", padx=20, ipady=7)
+            wrong_e.icursor(tk.END)
+            tk.Label(win, text="Replace with:", bg=BG, fg=HINT,
+                     font=(FONT, 10), anchor="w").pack(anchor="w", padx=20, pady=(10, 2))
+            right_v = tk.StringVar()
+            right_e = tk.Entry(win, textvariable=right_v, bg="#2a2a2a", fg=FG,
+                               font=(FONT, 12), relief="flat", insertbackground=FG,
+                               bd=0, highlightthickness=0)
+            right_e.pack(fill="x", padx=20, ipady=7)
+            right_e.focus_set()
+            status_l = tk.Label(win, text="", bg=BG, fg=DIM, font=(FONT, 9))
+            status_l.pack(anchor="w", padx=20, pady=(4, 0))
+            def _save_corr():
+                wrong = wrong_v.get().strip().lower()
+                right = right_v.get().strip()
+                if not wrong or not right:
+                    status_l.config(text="Both fields are required.", fg="#ff9f0a")
+                    return
+                if wrong == right.lower():
+                    status_l.config(text="Correction matches the original.", fg="#ff9f0a")
+                    return
+                # Safety warning for very short or single-character keys
+                if len(wrong.split()) == 1 and len(wrong) <= 2:
+                    status_l.config(
+                        text=f'Warning: "{wrong}" is very short — may replace unintended words.',
+                        fg="#ff9f0a"
+                    )
+                    # Show warning but still allow save on second click
+                    if not getattr(_save_corr, '_warned', False):
+                        _save_corr._warned = True
+                        return
+                vocab = load_vocab()
+                vocab.setdefault("corrections", {})[wrong] = right
+                save_vocab(vocab)
+                status_l.config(text=f'Saved: "{wrong}" → "{right}"', fg="#30d158")
+                win.after(1200, win.destroy)
+                if app:
+                    app.show_message(f"Correction saved", "#30d158")
+            right_e.bind("<Return>", lambda e: _save_corr())
+            wrong_e.bind("<Return>", lambda e: right_e.focus_set())
+            btn_row = tk.Frame(win, bg=BG)
+            btn_row.pack(fill="x", padx=20, pady=(10, 0))
+            tk.Button(btn_row, text="Add Correction", bg=ACC, fg="white",
+                      font=(FONT, 11, "bold"), relief="flat", cursor="hand2",
+                      command=_save_corr).pack(side="left")
+            tk.Button(btn_row, text="Cancel", bg=CARD, fg=FG,
+                      font=(FONT, 11), relief="flat", cursor="hand2",
+                      command=win.destroy).pack(side="left", padx=(8, 0))
+        app.root.after(0, _open_correction_dialog)
+        app.set_state("idle")
+        return
+
     _timing("command detection", _t_cmd)
 
     # Skip SymSpell for non-English — it uses an English dictionary and corrupts
     # French/Spanish/etc. words.  apply_corrections runs for all languages.
     _t_corrections = time.time()
     if _is_non_english:
-        text = apply_corrections(_repair_mojibake(smart_punctuate(apply_snippets(raw_text))))
+        text = _repair_mojibake(smart_punctuate(apply_snippets(raw_text)))
     else:
-        text = apply_corrections(_repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text)))))
+        text = _repair_mojibake(smart_punctuate(apply_snippets(symspell_correct(raw_text))))
+    # Profile aliases: safe multi-word phrase → abbreviation (English only)
+    if not _is_non_english:
+        text = apply_profile_aliases(text, active_profile)
+    # Inline linebreaks: "next line" / "next paragraph" → real newlines
+    text = _apply_inline_linebreaks(text)
+    text = apply_corrections(text)
     _timing("personal corrections", _t_corrections)
     last_text = text
     _add_to_history(text)
@@ -6478,6 +6680,16 @@ class DictationApp:
             if wrong == right.lower():
                 corr_status.config(text="Correction matches the original — nothing to change.", fg="#ff9f0a")
                 return
+            # Warn if wrong is a single very-short word (risk of over-correction)
+            if len(wrong.split()) == 1 and len(wrong) <= 2:
+                if not getattr(_add_correction, '_warned', False):
+                    _add_correction._warned = True
+                    corr_status.config(
+                        text=f'Warning: "{wrong}" is very short and may replace unintended words. Click Add again to confirm.',
+                        fg="#ff9f0a"
+                    )
+                    return
+            _add_correction._warned = False
             vocab = load_vocab()
             vocab.setdefault("corrections", {})[wrong] = right
             save_vocab(vocab)
@@ -6601,6 +6813,26 @@ class DictationApp:
         wf_card("Contacts",
                 body="Add contacts in Settings → Contacts.\n\nExample:\n  Name: Valerie Johnson\n  Email: val@example.com\n  Aliases: Val, Valerie\n\nThen say:",
                 examples=['"Send email to Val. Let her know I\'ll follow up Friday."'])
+
+        wf_card("Inline Formatting",
+                body='Say formatting commands inside your dictation. "next line" inserts a single line break. "next paragraph" inserts a blank line between paragraphs.',
+                examples=[
+                    '"The meeting is cancelled next line I will follow up next week."',
+                    '"Introduction next paragraph Here is the body of the note."',
+                    '"User interface" → typed as "UI" (Developer profile)',
+                    '"Customer relationship management" → typed as "CRM" (Sales profile)',
+                ],
+                note_label="Tip:",
+                note_text='Use "user interface" to get "UI" — never say "I" for UI. Profile aliases only apply in the matching writing profile.')
+
+        wf_card("Personal Corrections",
+                body='Teach Jarvis to fix recurring mistakes. Say "correct that" after a bad dictation, or add corrections in Settings → Corrections.',
+                examples=[
+                    '"Jarvis hears: a ten a  →  Replace with: Aetna"',
+                    '"Jarvis hears: pee why thon  →  Replace with: Python"',
+                ],
+                note_label="Voice shortcut:",
+                note_text='Say "correct that" right after a bad dictation to open the correction dialog pre-filled with what Jarvis heard.')
 
         tk.Frame(p, bg=BG, height=16).pack()  # bottom spacer
 
