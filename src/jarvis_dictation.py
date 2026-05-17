@@ -1914,6 +1914,84 @@ def apply_profile_aliases(text: str, profile: str) -> str:
         masked = masked.replace(token, original)
     return masked
 
+# Words that, when present in a sentence, strongly suggest UI/app context.
+# Used by _apply_ui_context_fix to decide whether "I" at sentence-start
+# should be upgraded to "UI" even without a determiner anchor.
+_UI_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "website", "app", "screen", "page", "layout", "design", "interface",
+    "button", "menu", "card", "settings", "frontend", "component", "modal",
+    "dashboard", "sidebar", "header", "footer", "navbar", "dropdown",
+    "form", "dialog", "popup", "panel", "widget", "theme", "css", "html",
+    "responsive", "mobile", "desktop", "viewport", "animation", "icon",
+})
+
+# Sentence-start "I" followed by these verbs → almost certainly "UI", not the speaker.
+_UI_VERB_RE = re.compile(
+    r'(must|should|needs|looks|renders|displays|shows|updates|loads|'
+    r'crashes|breaks|feels|appears|handles|requires|supports|allows)',
+    re.IGNORECASE,
+)
+
+def _apply_ui_context_fix(text: str, profile: str) -> str:
+    """Correct Whisper's mis-transcription of 'UI' as 'I' in Developer contexts.
+
+    Applied only when profile == 'Developer'. Three pattern tiers:
+
+    Tier 1 — Determiner-anchored (no context needed):
+        "the/this/that/our/your/its I …" → "the/this/that/our/your/its UI …"
+        Preserves the original determiner casing exactly.
+
+    Tier 2 — Sentence-start + visual verb (no context needed):
+        "(^|after . ! ?) I must/looks/renders/…" → "UI must/looks/renders/…"
+        Handles: "I must look clean." → "UI must look clean."
+        Does NOT match: "I reviewed the quote." (verb not in list)
+
+    Tier 3 — Context-word triggered (UI domain word present in text):
+        "I on …" → "UI on …"
+        Sentence-start "I is/was/has/will/can/needs to …" → "UI is/was/…"
+
+    Safety:
+        Never replaces standalone "I" without a structural anchor.
+        Counter-example preserved: "I reviewed the quote." → unchanged.
+    """
+    if profile != "Developer":
+        return text
+
+    # ── Tier 1: Determiner-anchored ──────────────────────────────────────────
+    # "the/this/that/our/your/its I" → same determiner + " UI"
+    text = re.sub(
+        r'\b(the|this|that|our|your|its)\s+I\b',
+        lambda m: m.group(1) + " UI",
+        text, flags=re.IGNORECASE,
+    )
+
+    # ── Tier 2: Sentence-start + visual/state verb ───────────────────────────
+    # Matches "I <verb>" at the absolute start of text or after sentence-ending
+    # punctuation + whitespace.  re.MULTILINE makes ^ match line starts too.
+    text = re.sub(
+        r'(^|(?<=[.!?])\s+)I\s+(' + _UI_VERB_RE.pattern + r')\b',
+        lambda m: m.group(1) + "UI " + m.group(2),
+        text, flags=re.IGNORECASE | re.MULTILINE,
+    )
+
+    # ── Tier 3: Context-word triggered ───────────────────────────────────────
+    text_words = set(re.findall(r'\b\w+\b', text.lower()))
+    if not (text_words & _UI_CONTEXT_WORDS):
+        return text
+
+    # "I on …" when a UI-domain word is present
+    text = re.sub(r'\bI\s+on\b', 'UI on', text, flags=re.IGNORECASE)
+
+    # Sentence-start "I" + auxiliary verbs (broader, only safe with context)
+    text = re.sub(
+        r'(^|(?<=[.!?])\s+)I\s+(is|was|has|will|can|would|needs to|should be)\b',
+        lambda m: m.group(1) + "UI " + m.group(2),
+        text, flags=re.IGNORECASE | re.MULTILINE,
+    )
+
+    return text
+
+
 def _apply_inline_linebreaks(text: str) -> str:
     """Convert spoken 'next line' / 'next paragraph' markers to real line breaks.
 
@@ -3572,6 +3650,8 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     # Profile aliases: safe multi-word phrase → abbreviation (English only)
     if not _is_non_english:
         text = apply_profile_aliases(text, active_profile)
+        # Contextual UI fix: "the I" / "I must" → "the UI" / "UI must" in Developer profile
+        text = _apply_ui_context_fix(text, active_profile)
     # Inline linebreaks: "next line" / "next paragraph" → real newlines
     text = _apply_inline_linebreaks(text)
     text = apply_corrections(text)
