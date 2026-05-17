@@ -1306,6 +1306,24 @@ def execute_jarvis_command(action, params):
                 else:
                     if app: app.show_message("Translation failed. Is Ollama running?", "#ff3b30")
 
+        elif action == "translate_prev_dictation":
+            # "Translate that to French" / "Translate last dictation to Spanish" etc.
+            # Source is _last_normal_dictation — the last text that was actually pasted
+            # as normal dictation.  The command text itself is never the source.
+            target = params.get("target", "English")
+            src_text = _last_normal_dictation
+            if not src_text:
+                if app: app.show_message("No previous dictation to translate.", "#ff9f0a")
+            else:
+                if app: app.show_message(f"Translating to {target}…", "#0a84ff")
+                translated = _ollama_translate(src_text, target)
+                if translated:
+                    translated = _repair_mojibake(translated)
+                    paste_text(translated)
+                    if app: app.show_message(f"Translated to {target}", "#30d158")
+                else:
+                    if app: app.show_message("Translation failed. Is Ollama running?", "#ff3b30")
+
         elif action == "draft_email":
             _execute_draft_email(params)
 
@@ -1602,6 +1620,10 @@ OLLAMA_ENABLED = settings.get("use_ollama", True)  # live-toggled by Settings �
 
 # GLOBALS RESTORED
 recording, audio_frames, last_text, typer, whisper, app, current_keys, cancelled = False, [], "", Controller(), None, None, set(), False
+# Tracks the last text that was *actually pasted* as normal dictation.
+# Updated only at paste time — never when a voice command is handled.
+# Used by "translate that to X" so the command text itself is never the source.
+_last_normal_dictation: str = ""
 # Live input level is updated by the existing audio stream. Mic Test must read
 # this value instead of opening a second PortAudio stream, which can crash
 # macOS/PortAudio when the main dictation stream is already active.
@@ -3143,6 +3165,20 @@ def _fast_jarvis_match(lower, raw_text=""):
 
     # ── Translation ──────────────────────────────────────────────────────────
     _lang_names = "|".join(TRANSLATION_LANGUAGES.keys()).lower()
+
+    # "translate that/it/last dictation to X" — translates _last_normal_dictation,
+    # NOT selected text.  Must be checked before the selected-text pattern below.
+    _translate_prev_m = re.match(
+        rf"(?i)^translate\s+"
+        rf"(?:that|it|last\s+dictation|my\s+last\s+dictation|"
+        rf"previous\s+dictation|the\s+last\s+dictation)\s+"
+        rf"(?:to|into)\s+({_lang_names})\b",
+        lower,
+    )
+    if _translate_prev_m:
+        return ("translate_prev_dictation", {"target": _translate_prev_m.group(1).title()})
+
+    # "translate selected text / this / clipboard to X"
     _translate_m = re.match(
         rf"(?i)^translate\s+(?:selected\s+text|this|clipboard|the\s+text)?\s*to\s+({_lang_names})\b",
         lower,
@@ -3695,6 +3731,12 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
         else:
             _dlog("[dictation-translate] translation failed or Ollama unavailable — using original text")
     # ─────────────────────────────────────────────────────────────────────────
+
+    # Record the final text as the last normal dictation *before* pasting.
+    # Only plain dictation that made it past every command gate reaches here,
+    # so voice commands never overwrite this reference.
+    globals()["_last_normal_dictation"] = text
+    _dlog(f"[dictation-translate] _last_normal_dictation updated: {text!r}")
 
     app.set_transcript(text)
     _t_paste = time.time()
