@@ -1308,21 +1308,46 @@ def execute_jarvis_command(action, params):
 
         elif action == "translate_prev_dictation":
             # "Translate that to French" / "Translate last dictation to Spanish" etc.
-            # Source is _last_normal_dictation — the last text that was actually pasted
-            # as normal dictation.  The command text itself is never the source.
-            target = params.get("target", "English")
+            # Source: _last_normal_dictation (set only when real text is pasted —
+            # command phrases never overwrite it).
+            _SAFE_REPLACE_WINDOW = 30.0  # seconds
+            target   = params.get("target", "English")
             src_text = _last_normal_dictation
             if not src_text:
                 if app: app.show_message("No previous dictation to translate.", "#ff9f0a")
             else:
                 if app: app.show_message(f"Translating to {target}…", "#0a84ff")
                 translated = _ollama_translate(src_text, target)
-                if translated:
-                    translated = _repair_mojibake(translated)
-                    paste_text(translated)
-                    if app: app.show_message(f"Translated to {target}", "#30d158")
-                else:
+                if not translated:
                     if app: app.show_message("Translation failed. Is Ollama running?", "#ff3b30")
+                else:
+                    translated = _repair_mojibake(translated)
+                    _age = time.time() - _last_normal_dictation_time
+                    if _age <= _SAFE_REPLACE_WINDOW:
+                        # ── Safe replace: backspace the previous paste, then paste translation ──
+                        # paste_text() appends a trailing space, so erase len+1 chars.
+                        _erase = len(src_text) + 1
+                        for _ in range(_erase):
+                            typer.press(Key.backspace)
+                            typer.release(Key.backspace)
+                            time.sleep(0.003)
+                        time.sleep(0.05)
+                        paste_text(translated)
+                        # Update reference so a second "translate that" works on the translation
+                        globals()["_last_normal_dictation"] = translated
+                        globals()["_last_normal_dictation_time"] = time.time()
+                        if app: app.show_message(f"Translated to {target}", "#30d158")
+                    else:
+                        # ── Paste too old — copy to clipboard, don't append ──────────────────
+                        try:
+                            from AppKit import NSPasteboard, NSStringPboardType
+                            pb = NSPasteboard.generalPasteboard()
+                            pb.clearContents()
+                            pb.setString_forType_(translated, NSStringPboardType)
+                        except Exception:
+                            import subprocess as _sp2
+                            _sp2.run(["pbcopy"], input=translated.encode("utf-8"), timeout=3)
+                        if app: app.show_message("Translation copied.", "#30d158")
 
         elif action == "draft_email":
             _execute_draft_email(params)
@@ -1624,6 +1649,7 @@ recording, audio_frames, last_text, typer, whisper, app, current_keys, cancelled
 # Updated only at paste time — never when a voice command is handled.
 # Used by "translate that to X" so the command text itself is never the source.
 _last_normal_dictation: str = ""
+_last_normal_dictation_time: float = 0.0   # epoch seconds; used for safe-replace window
 # Live input level is updated by the existing audio stream. Mic Test must read
 # this value instead of opening a second PortAudio stream, which can crash
 # macOS/PortAudio when the main dictation stream is already active.
@@ -2682,8 +2708,10 @@ def _ollama_email_call(prompt: str, timeout: int = 8) -> str | None:
 def _ollama_translate(text: str, target_language: str, timeout: int = 20) -> str | None:
     """Translate text to target_language using Ollama. Returns translated string or None."""
     prompt = (
-        f"Translate the following text to {target_language}. "
-        "Output ONLY the translation — no explanations, no labels, no quotes, no preamble.\n\n"
+        f"Translate the following text to {target_language}.\n"
+        "Return ONLY the translated text.\n"
+        "Do not include the original text.\n"
+        "Do not add explanations, labels, quotes, or preamble.\n\n"
         f"{text}"
     )
     result = _ollama_email_call(prompt, timeout=timeout)
@@ -3736,6 +3764,7 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
     # Only plain dictation that made it past every command gate reaches here,
     # so voice commands never overwrite this reference.
     globals()["_last_normal_dictation"] = text
+    globals()["_last_normal_dictation_time"] = time.time()
     _dlog(f"[dictation-translate] _last_normal_dictation updated: {text!r}")
 
     app.set_transcript(text)
