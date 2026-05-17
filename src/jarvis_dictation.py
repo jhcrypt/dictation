@@ -3567,9 +3567,8 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
 
     if lower in ("correct that", "correct last", "add correction", "fix that"):
         _wrong_prefill = re.sub(r'[^\w\s]', '', (last_text or "")).strip().lower()
-        _last_for_dialog = last_text or ""
-        app.root.after(0, lambda: _open_add_correction_dialog(
-            prefill_wrong=_wrong_prefill, last_dictation=_last_for_dialog))
+        app.root.after(0, lambda: app.open_settings(
+            navigate_to="Vocabulary", prefill_correction=_wrong_prefill))
         app.set_state("idle")
         return
 
@@ -3693,182 +3692,7 @@ def _reinsert_last():
     else:
         app.show_message("Nothing to re-insert", "#ff9f0a")
 
-def _open_add_correction_dialog(prefill_wrong: str = "", last_dictation: str = ""):
-    """Open the Add Personal Correction dialog on the Tk main thread.
-
-    Must be called via app.root.after(0, ...) from background threads.
-    Defines all style constants inline so it is self-contained regardless
-    of which function invokes it.
-    """
-    if not app or not getattr(app, "root", None):
-        return
-
-    # ── Style (matches Settings palette) ─────────────────────────────────────
-    BG     = "#141414"
-    CARD   = "#222222"
-    CARD2  = "#1c1c1c"
-    FG     = "#f0f0f0"
-    DIM    = "#6a6a6a"
-    HINT   = "#8ab4f8"
-    ACC    = "#0a84ff"
-    WARN   = "#ff9f0a"
-    OK     = "#30d158"
-    FONT   = "Helvetica Neue"
-    BORDER = "#3a3a3a"
-
-    win = tk.Toplevel(app.root)
-    win.title("Add Personal Correction")
-    win.configure(bg=BG)
-    win.resizable(False, False)
-
-    # Center on screen
-    W = 560
-    win.update_idletasks()
-    sw = win.winfo_screenwidth()
-    sh = win.winfo_screenheight()
-    win.geometry(f"{W}+{sw // 2 - W // 2}+{sh // 2 - 260}")
-    win.lift()
-    win.focus_force()
-
-    # Register with the hotkey / pynput guard so recording can't start
-    # while this window is open, and modifier-key state is flushed.
-    _toplevel_opened()
-    def _on_destroy(event):
-        if event.widget == win:
-            _toplevel_closed()
-    win.bind("<Destroy>", _on_destroy)
-    win.bind("<Escape>", lambda e: win.destroy())
-
-    # ── Outer padded container ────────────────────────────────────────────────
-    root_frame = tk.Frame(win, bg=BG)
-    root_frame.pack(fill="both", expand=True, padx=24, pady=(20, 20))
-
-    # ── Title ─────────────────────────────────────────────────────────────────
-    tk.Label(root_frame, text="Add Personal Correction",
-             bg=BG, fg=FG, font=(FONT, 14, "bold"), anchor="w"
-    ).pack(anchor="w")
-    tk.Label(root_frame,
-             text="Use this for repeated word or phrase mistakes. Avoid full sentence rewrites.",
-             bg=BG, fg=DIM, font=(FONT, 10), anchor="w",
-             wraplength=510, justify="left"
-    ).pack(anchor="w", pady=(2, 14))
-
-    # ── Last dictation card ───────────────────────────────────────────────────
-    ldc = tk.Frame(root_frame, bg=CARD2, bd=0)
-    ldc.pack(fill="x", pady=(0, 16))
-    tk.Frame(ldc, bg=CARD2, height=1).pack(fill="x")   # top breathing room
-    tk.Label(ldc, text="LAST DICTATION", bg=CARD2, fg=DIM,
-             font=(FONT, 9, "bold"), anchor="w"
-    ).pack(anchor="w", padx=14, pady=(8, 2))
-    display = last_dictation.strip() if last_dictation and last_dictation.strip() else None
-    tk.Label(ldc,
-             text=f'"{display}"' if display else "No recent dictation available.",
-             bg=CARD2,
-             fg=HINT if display else DIM,
-             font=(FONT, 10),
-             anchor="w",
-             wraplength=500,
-             justify="left",
-    ).pack(anchor="w", padx=14, pady=(0, 10))
-
-    # ── Field 1 ───────────────────────────────────────────────────────────────
-    tk.Label(root_frame, text="When Jarvis hears this word or phrase:",
-             bg=BG, fg=FG, font=(FONT, 11), anchor="w"
-    ).pack(anchor="w")
-    wrong_v = tk.StringVar(value=prefill_wrong)
-    wrong_e = tk.Entry(root_frame, textvariable=wrong_v,
-                       bg=CARD, fg=FG, font=(FONT, 12),
-                       relief="flat", insertbackground=FG,
-                       bd=1, highlightthickness=1,
-                       highlightcolor=ACC, highlightbackground=BORDER)
-    wrong_e.pack(fill="x", ipady=9, pady=(4, 14))
-    wrong_e.icursor(tk.END)
-    _bind_copy_paste(wrong_e)
-
-    # ── Field 2 ───────────────────────────────────────────────────────────────
-    tk.Label(root_frame, text="Replace it with:",
-             bg=BG, fg=FG, font=(FONT, 11), anchor="w"
-    ).pack(anchor="w")
-    right_v = tk.StringVar()
-    right_e = tk.Entry(root_frame, textvariable=right_v,
-                       bg=CARD, fg=FG, font=(FONT, 12),
-                       relief="flat", insertbackground=FG,
-                       bd=1, highlightthickness=1,
-                       highlightcolor=ACC, highlightbackground=BORDER)
-    right_e.pack(fill="x", ipady=9, pady=(4, 14))
-    _bind_copy_paste(right_e)
-    right_e.focus_set()   # cursor in the replacement field (wrong is pre-filled)
-
-    # ── Examples card ─────────────────────────────────────────────────────────
-    exc = tk.Frame(root_frame, bg=CARD2, bd=0)
-    exc.pack(fill="x", pady=(0, 14))
-    tk.Label(exc, text="EXAMPLES", bg=CARD2, fg=DIM,
-             font=(FONT, 9, "bold"), anchor="w"
-    ).pack(anchor="w", padx=14, pady=(8, 4))
-    for ex in (
-        '"a ten a"  →  "Aetna"',
-        '"mutual lava maha"  →  "Mutual of Omaha"',
-        '"user interface"  →  "UI"',
-    ):
-        tk.Label(exc, text=ex, bg=CARD2, fg=DIM,
-                 font=(FONT, 10), anchor="w"
-        ).pack(anchor="w", padx=14)
-    tk.Frame(exc, bg=CARD2, height=8).pack()
-
-    # ── Status label ──────────────────────────────────────────────────────────
-    status_l = tk.Label(root_frame, text="", bg=BG, fg=WARN, font=(FONT, 10))
-    status_l.pack(anchor="w", pady=(0, 10))
-
-    # ── Save logic ────────────────────────────────────────────────────────────
-    def _save_corr():
-        wrong = wrong_v.get().strip().lower()
-        right = right_v.get().strip()
-        if not wrong:
-            status_l.config(text="Enter the word or phrase Jarvis hears incorrectly.", fg=WARN)
-            wrong_e.focus_set()
-            return
-        if not right:
-            status_l.config(text="Enter the correct replacement text.", fg=WARN)
-            right_e.focus_set()
-            return
-        if wrong == right.lower():
-            status_l.config(text="Correction matches the original — nothing to change.", fg=WARN)
-            return
-        # Safety warning for very short or single-char keys
-        if len(wrong.split()) == 1 and len(wrong) <= 2:
-            if not getattr(_save_corr, "_warned", False):
-                _save_corr._warned = True
-                status_l.config(
-                    text=f'"{wrong}" is very short and may affect many future dictations. '
-                         f'Click Save again to confirm.',
-                    fg=WARN,
-                )
-                return
-        _save_corr._warned = False
-        vocab = load_vocab()
-        vocab.setdefault("corrections", {})[wrong] = right
-        save_vocab(vocab)
-        status_l.config(text=f'Saved: "{wrong}" → "{right}"', fg=OK)
-        if app:
-            app.show_message("Correction saved", OK)
-        win.after(1200, win.destroy)
-
-    wrong_e.bind("<Return>", lambda e: right_e.focus_set())
-    right_e.bind("<Return>", lambda e: _save_corr())
-
-    # ── Button row ────────────────────────────────────────────────────────────
-    btn_row = tk.Frame(root_frame, bg=BG)
-    btn_row.pack(fill="x")
-    tk.Button(btn_row, text="Save Correction", command=_save_corr,
-              bg=ACC, fg="white", font=(FONT, 11, "bold"),
-              relief="flat", bd=0, cursor="hand2",
-              padx=18, pady=9, activebackground="#1a6fd4", activeforeground="white",
-    ).pack(side="right")
-    tk.Button(btn_row, text="Cancel", command=win.destroy,
-              bg=CARD, fg=FG, font=(FONT, 11),
-              relief="flat", bd=0, cursor="hand2",
-              padx=14, pady=9, activebackground="#2e2e2e", activeforeground=FG,
-    ).pack(side="right", padx=(0, 10))
+# _open_add_correction_dialog removed — use app.open_settings(navigate_to="Vocabulary") instead
 
 
 def _show_history():
@@ -4644,6 +4468,9 @@ class MenuBarApp:
                 def showHistory_(self, sender):
                     _queue_input_event("menu_show_history")
 
+                def addCorrection_(self, sender):
+                    _queue_input_event("menu_add_correction")
+
                 def showAbout_(self, sender):
                     _queue_input_event("menu_show_about")
 
@@ -4742,6 +4569,7 @@ class MenuBarApp:
 
             for title, action in [
                 ("Open Settings...", "openSettings:"),
+                ("Add Correction from Last Dictation", "addCorrection:"),
                 ("Manage Snippets...", "showSnippets:"),
                 ("Show History...", "showHistory:"),
                 ("Open macOS Permissions...", "openPermissions:"),
@@ -5428,7 +5256,7 @@ class DictationApp:
         del_btn  = _btn(abar, "Delete",       delete_sel, danger=True)
         _bind_copy_paste_recursive(swin)
 
-    def open_settings(self):
+    def open_settings(self, navigate_to=None, prefill_correction=""):
         # Pause wake word while settings UI is open.
         # NOTE: stream.stop()/close() was removed here — the Quartz HID tap
         # already prevents the Caps Lock SIGILL, so killing the audio stream
@@ -5438,14 +5266,16 @@ class DictationApp:
         globals()["WAKE_ENABLED"] = False
 
         # Brief yield so the UI thread is idle before opening the window.
-        self.root.after(50, self._actual_open_ui)
+        self.root.after(50, lambda: self._actual_open_ui(
+            navigate_to=navigate_to, prefill_correction=prefill_correction))
 
-    def _actual_open_ui(self):
+    def _actual_open_ui(self, navigate_to=None, prefill_correction=""):
         # 3. CLEAR UI QUEUE & LAUNCH (Only once!)
         self.root.update_idletasks()
-        self.root.after(0, self._show_settings)
+        self.root.after(0, lambda: self._show_settings(
+            navigate_to=navigate_to, prefill_correction=prefill_correction))
 
-    def _show_settings(self):
+    def _show_settings(self, navigate_to=None, prefill_correction=""):
         # --- STABILITY GUARD: Pause Wake Word while UI is active ---
         global WAKE_ENABLED
         old_wake_state = WAKE_ENABLED
@@ -5657,6 +5487,7 @@ class DictationApp:
                 return outer
             canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0)
             inner = tk.Frame(canvas, bg=BG)
+            inner._scroll_canvas = canvas   # expose so callers can scroll programmatically
             win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
             # Lock inner frame width to canvas width — prevents horizontal overflow.
             canvas.bind("<Configure>",
@@ -6757,7 +6588,8 @@ class DictationApp:
         _wide_btn(p, "Add Contact", _add_contact, accent=True, padx=24, pady=(10, 4))
 
         # ── Page: Vocabulary ─────────────────────────────────────────────────
-        p = page("Vocabulary", scrollable=True)
+        vocab_page = page("Vocabulary", scrollable=True)
+        p = vocab_page
         ph(p, "Custom Vocabulary")
         lbl(p, "USER DICTIONARY")
         tk.Label(p, text="Type words or names you want Whisper to recognize better.\nSeparate them with commas or new lines.",
@@ -6788,18 +6620,30 @@ class DictationApp:
 
         # ── Personal Corrections ─────────────────────────────────────────────
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(8, 4))
-        lbl(p, "PERSONAL CORRECTIONS")
+        lbl(p, "ADD CORRECTION FROM LAST DICTATION")
         tk.Label(p,
-                 text='Use this for recurring mistakes. Example: if Jarvis hears "a ten a", replace it with "Aetna".',
+                 text="Use this for recurring word or phrase mistakes. Avoid full sentence rewrites.",
                  bg=BG, fg=HINT, font=(FONT, 10), justify="left", wraplength=380
         ).pack(anchor="w", padx=24, pady=(0, 8))
 
         # ── Input card ───────────────────────────────────────────────────────
         corr_card = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_CARD, padx=24, pady=(0, 0))
 
-        tk.Label(corr_card, text="When Jarvis hears:", bg=CARD, fg=HINT,
-                 font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
-        wrong_var = tk.StringVar()
+        # Last dictation reference ────────────────────────────────────────────
+        _last_dict_text = (last_text or "").strip()
+        tk.Label(corr_card, text="Last dictation:", bg=CARD, fg=DIM,
+                 font=(FONT, 9, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
+        _last_dict_display = f'"{_last_dict_text}"' if _last_dict_text else "No recent dictation available."
+        _last_dict_fg = HINT if _last_dict_text else DIM
+        tk.Label(corr_card, text=_last_dict_display, bg=CARD, fg=_last_dict_fg,
+                 font=(FONT, 10), wraplength=400, justify="left", anchor="w"
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        tk.Frame(corr_card, bg=SEP, height=1).pack(fill="x", padx=12, pady=(0, 8))
+
+        tk.Label(corr_card, text="When Jarvis hears this word or phrase:", bg=CARD, fg=HINT,
+                 font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(0, 2))
+        wrong_var = tk.StringVar(value=prefill_correction if prefill_correction else "")
         wrong_entry = tk.Entry(corr_card, textvariable=wrong_var, bg="#2a2a2a", fg=FG,
                                font=(FONT, 12), relief="flat", insertbackground=FG,
                                bd=0, highlightthickness=0)
@@ -6807,7 +6651,7 @@ class DictationApp:
         _bind_copy_paste(wrong_entry)
         wrong_entry.bind("<KeyPress>", pause_on_any_key)
 
-        tk.Label(corr_card, text="Replace with:", bg=CARD, fg=HINT,
+        tk.Label(corr_card, text="Replace it with:", bg=CARD, fg=HINT,
                  font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(8, 2))
         right_var = tk.StringVar()
         right_entry = tk.Entry(corr_card, textvariable=right_var, bg="#2a2a2a", fg=FG,
@@ -6820,10 +6664,23 @@ class DictationApp:
         corr_status = tk.Label(corr_card, text="", bg=CARD, fg=DIM, font=(FONT, 9))
         corr_status.pack(anchor="w", padx=12, pady=(4, 0))
 
-        # Canvas-drawn rounded Add Correction button inside the card
+        # Examples hint ───────────────────────────────────────────────────────
+        _ex_bg = "#1c1c1c"
+        ex_card = tk.Frame(corr_card, bg=_ex_bg)
+        ex_card.pack(fill="x", padx=12, pady=(6, 0))
+        tk.Label(ex_card, text="Examples:", bg=_ex_bg, fg=DIM,
+                 font=(FONT, 9, "bold"), anchor="w").pack(anchor="w", padx=10, pady=(6, 2))
+        for _ex in ['"a ten a"  →  "Aetna"',
+                    '"mutual lava maha"  →  "Mutual of Omaha"',
+                    '"user interface"  →  "UI"']:
+            tk.Label(ex_card, text=_ex, bg=_ex_bg, fg="#8ab4f8",
+                     font=(FONT, 10), anchor="w").pack(anchor="w", padx=10)
+        tk.Frame(ex_card, bg=_ex_bg, height=6).pack()
+
+        # Canvas-drawn rounded Save Correction button inside the card
         _CBH, _CBR = 38, UI_RADIUS_BUTTON
         add_btn = tk.Canvas(corr_card, height=_CBH, bg=CARD, highlightthickness=0, cursor="hand2")
-        add_btn.pack(fill="x", padx=12, pady=(8, 12))
+        add_btn.pack(fill="x", padx=12, pady=(10, 12))
         def _draw_corr_btn(col=ACC):
             add_btn.delete("all")
             w = add_btn.winfo_width()
@@ -6834,7 +6691,7 @@ class DictationApp:
             add_btn.create_arc(w-2*_CBR, _CBH-2*_CBR, w, _CBH, start=270, extent=90, fill=col, outline=col)
             add_btn.create_rectangle(_CBR, 0, w-_CBR, _CBH, fill=col, outline=col)
             add_btn.create_rectangle(0, _CBR, w, _CBH-_CBR, fill=col, outline=col)
-            add_btn.create_text(w//2, _CBH//2, text="Add Correction", fill="#ffffff", font=(FONT, 11, "bold"))
+            add_btn.create_text(w//2, _CBH//2, text="Save Correction", fill="#ffffff", font=(FONT, 11, "bold"))
         add_btn.bind("<Configure>", lambda e: _draw_corr_btn(ACC))
         add_btn.bind("<Enter>",     lambda e: _draw_corr_btn("#1a6fd4"))
         add_btn.bind("<Leave>",     lambda e: _draw_corr_btn(ACC))
@@ -6894,7 +6751,7 @@ class DictationApp:
                 if not getattr(_add_correction, '_warned', False):
                     _add_correction._warned = True
                     corr_status.config(
-                        text=f'Warning: "{wrong}" is very short and may replace unintended words. Click Add again to confirm.',
+                        text=f'Warning: "{wrong}" is very short and may replace unintended words. Click Save again to confirm.',
                         fg="#ff9f0a"
                     )
                     return
@@ -6904,8 +6761,10 @@ class DictationApp:
             save_vocab(vocab)
             wrong_var.set("")
             right_var.set("")
-            corr_status.config(text=f'Added: "{wrong}" → "{right}"', fg=ACC)
+            corr_status.config(text=f'Saved: "{wrong}" → "{right}"', fg="#30d158")
             _rebuild_corrections_list()
+            if app:
+                app.show_message("Correction saved", "#30d158")
 
         add_btn.bind("<Button-1>", lambda e: _add_correction())
         wrong_entry.bind("<Return>", lambda e: right_entry.focus_set())
@@ -7342,8 +7201,27 @@ class DictationApp:
         # right-click / Ctrl-click context menus, including fields added later.
         _bind_copy_paste_recursive(_win)
 
-        # Show first page
-        show_page("Setup" if not settings.get("first_run_complete", False) else "Dictation")
+        # Show initial page — use navigate_to override if provided
+        _initial_page = navigate_to if navigate_to else (
+            "Setup" if not settings.get("first_run_complete", False) else "Dictation")
+        show_page(_initial_page)
+
+        # If opened specifically to add a correction, scroll to the
+        # corrections section and focus the "wrong" entry field.
+        if navigate_to == "Vocabulary":
+            def _focus_corrections():
+                try:
+                    wrong_entry.focus_set()
+                    wrong_entry.icursor(tk.END)
+                except Exception:
+                    pass
+                try:
+                    c = vocab_page._scroll_canvas
+                    c.update_idletasks()
+                    c.yview_moveto(1.0)
+                except Exception:
+                    pass
+            _win.after(150, _focus_corrections)
         
 # --- ST# --- IRONCLAD STABILITY: Hardware Cleanup ---
         def on_settings_destroy(event):
@@ -7703,6 +7581,9 @@ def _drain_input_events():
                 _scratch_last(1)
             elif action == "open_settings":
                 app.open_settings()
+            elif action == "menu_add_correction":
+                _wrong_prefill = re.sub(r'[^\w\s]', '', (last_text or "")).strip().lower()
+                app.open_settings(navigate_to="Vocabulary", prefill_correction=_wrong_prefill)
             elif action == "menu_start_stop":
                 _dlog("[record button] clicked — recording=", recording)
                 if recording:
