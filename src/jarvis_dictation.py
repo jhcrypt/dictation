@@ -489,11 +489,12 @@ PROFILE_OPTIONS = list(WRITING_PROFILES.keys())
 # any other transcription behaviour.
 PROFILE_VOCABULARY: dict[str, list[str]] = {
     "Developer": [
-        "UI", "UX", "API", "REST", "JSON", "XML", "HTML", "CSS", "SQL",
+        "HUD", "UI", "UX", "API", "REST", "JSON", "XML", "HTML", "CSS", "SQL",
         "React", "TypeScript", "JavaScript", "Python", "Rust", "Swift",
         "frontend", "backend", "fullstack", "component", "terminal",
         "localhost", "webhook", "GitHub", "repository", "pull request",
         "CLI", "n8n", "Tauri", "Claude", "Ollama", "PyInstaller",
+        "overlay", "title bar", "menu bar", "settings window",
     ],
     "Medical": [
         "hypertension", "diabetes", "tachycardia", "bradycardia",
@@ -529,6 +530,20 @@ PROFILE_VOCABULARY: dict[str, list[str]] = {
 #   - Applied only for the active writing profile.
 PROFILE_ALIASES: dict[str, dict[str, str]] = {
     "Developer": {
+        # ── HUD mis-transcription fixes ──────────────────────────────────────
+        # Whisper often hears "HUD" as "had". These multi-word anchors are
+        # structurally impossible in normal English so they are false-positive safe.
+        "the had":      "the HUD",
+        "this had":     "this HUD",
+        "that had":     "that HUD",
+        "had window":   "HUD window",
+        "had overlay":  "HUD overlay",
+        "had card":     "HUD card",
+        "had icon":     "HUD icon",
+        "had position": "HUD position",
+        "had setting":  "HUD setting",
+        "had settings": "HUD settings",
+        # ── Standard abbreviations ────────────────────────────────────────────
         "user interface":                    "UI",
         "user experience":                   "UX",
         "application programming interface": "API",
@@ -1987,6 +2002,67 @@ def _apply_ui_context_fix(text: str, profile: str) -> str:
         r'(^|(?<=[.!?])\s+)I\s+(is|was|has|will|can|would|needs to|should be)\b',
         lambda m: m.group(1) + "UI " + m.group(2),
         text, flags=re.IGNORECASE | re.MULTILINE,
+    )
+
+    return text
+
+
+# Context words that make "had" → "HUD" safe in Developer profile.
+# These are HUD-adjacent UI/app terms unlikely to appear alongside
+# normal English uses of "had".
+_HUD_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "window", "overlay", "card", "settings", "setting", "icon",
+    "position", "floating", "recording", "dictation", "interface",
+    "screen", "transparent", "rounded", "corner", "resize", "drag",
+    "visible", "hidden", "opacity", "titlebar", "menubar", "panel",
+    "display", "layer", "mode", "state",
+})
+
+def _apply_hud_context_fix(text: str, profile: str) -> str:
+    """Correct Whisper's mis-transcription of 'HUD' as 'had' / 'hud' in Developer context.
+
+    Tier 1 — Casing normalization (always safe in Developer profile):
+        "hud" / "h u d" / "H U D"  →  "HUD"
+        Whisper sometimes spells it out or lowercases it.
+
+    Tier 2 — Context-word triggered (only when HUD domain words are present):
+        Standalone "had" adjacent to an HUD domain word is almost certainly
+        a mis-heard "HUD".  Applied after PROFILE_ALIASES has already caught
+        the multi-word compound patterns ("had window" → "HUD window" etc.).
+
+    Safety:
+        Never fires on General/other profiles.
+        Never replaces bare "had" without a structural or context anchor.
+        "I had a meeting today."  →  unchanged (no HUD context words).
+    """
+    if profile != "Developer":
+        return text
+
+    # ── Tier 1: casing normalisation ────────────────────────────────────────
+    # "h u d" / "H U D" spelt-out forms
+    text = re.sub(r'\bh\s+u\s+d\b', 'HUD', text, flags=re.IGNORECASE)
+    # plain "hud" (lowercase or mixed) — always safe to capitalise in dev ctx
+    text = re.sub(r'\bhud\b', 'HUD', text, flags=re.IGNORECASE)
+
+    # ── Tier 2: contextual "had" → "HUD" ────────────────────────────────────
+    text_words = set(re.findall(r'\b\w+\b', text.lower()))
+    if not (text_words & _HUD_CONTEXT_WORDS):
+        return text
+
+    # "had <HUD-adjacent noun>" — backup for any compound not in PROFILE_ALIASES
+    _HUD_NOUN_RE = (r'(window|overlay|card|icon|position|setting|settings|'
+                    r'panel|display|bar|mode|state|view|layer|opacity|size)')
+    text = re.sub(
+        r'\bhad\s+' + _HUD_NOUN_RE + r'\b',
+        lambda m: 'HUD ' + m.group(1),
+        text, flags=re.IGNORECASE,
+    )
+
+    # Determiner-anchored: "the/this/that had" — backup for PROFILE_ALIASES
+    text = re.sub(
+        r'\b(the|this|that|our|your|its)\s+had\b',
+        lambda m: m.group(1) + ' HUD',
+        text, flags=re.IGNORECASE,
     )
 
     return text
@@ -3586,6 +3662,8 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
         text = apply_profile_aliases(text, active_profile)
         # Contextual UI fix: "the I" / "I must" → "the UI" / "UI must" in Developer profile
         text = _apply_ui_context_fix(text, active_profile)
+        # Contextual HUD fix: "hud"/"had window"/etc. → "HUD" in Developer profile
+        text = _apply_hud_context_fix(text, active_profile)
     # Inline linebreaks: "next line" / "next paragraph" → real newlines
     text = _apply_inline_linebreaks(text)
     text = apply_corrections(text)
