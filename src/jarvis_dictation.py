@@ -1919,13 +1919,15 @@ def _apply_inline_linebreaks(text: str) -> str:
 
     Only runs on text that passed command detection — standalone 'next line'
     dictations are caught earlier and handled as key-press commands.
-    Handles: 'next paragraph' → \\n\\n, 'next line' / 'new line' → \\n.
+
+    NOTE: "new line" is intentionally NOT matched here — the phrase appears in
+    normal prose ("add a new line of code") and would cause false positives.
+    Only "next line" is the safe inline trigger.
     """
     # paragraph before line so the longer phrase matches first
     text = re.sub(r'\s*\bnext paragraph\b\s*', '\n\n', text, flags=re.IGNORECASE)
     text = re.sub(r'\s*\bnew paragraph\b\s*',  '\n\n', text, flags=re.IGNORECASE)
     text = re.sub(r'\s*\bnext line\b\s*',      '\n',   text, flags=re.IGNORECASE)
-    text = re.sub(r'\s*\bnew line\b\s*',       '\n',   text, flags=re.IGNORECASE)
     return text.strip()
 
 def apply_corrections(text: str) -> str:
@@ -3494,6 +3496,12 @@ def transcribe_and_type(wav_path, raw_frames, _t_stop=None):
             win.resizable(False, False)
             win.geometry("380x240")
             win.lift(); win.focus_force()
+            # Register so the Quartz tap / pynput guards know a window is open.
+            _toplevel_opened()
+            def _on_corr_destroy(event):
+                if event.widget == win:
+                    _toplevel_closed()
+            win.bind("<Destroy>", _on_corr_destroy)
             tk.Label(win, text="When Jarvis hears:", bg=BG, fg=HINT,
                      font=(FONT, 10), anchor="w").pack(anchor="w", padx=20, pady=(16, 2))
             wrong_v = tk.StringVar(value=prefill)
@@ -4154,10 +4162,18 @@ def _process(frames):
         transcribe_and_type(wav_path, frames, _t_stop)
     except Exception as e:
         log_event("error", f"processing failed: {e}")
+        _safe_print(f"[process] exception in transcribe_and_type: {e}")
         if app:
             app.show_message("Dictation processing error", "#ff3b30")
     finally:
         _transcription_busy = False
+        # Always reset HUD to idle so the app is never stuck in "transcribing".
+        # transcribe_and_type sets idle itself on success; this is the safety net.
+        try:
+            if app and getattr(app, "root", None):
+                app.root.after(0, lambda: app.set_state("idle") if app._state == "transcribing" else None)
+        except Exception:
+            pass
         try:
             os.unlink(wav_path)
         except Exception:
@@ -7292,15 +7308,18 @@ def _tap_record_start():
     debounce = _setting_float("hotkey_debounce_seconds", HOTKEY_DEBOUNCE_SECONDS)
 
     if now - _last_record_press_at < debounce:
+        _dlog(f"[record] start ignored — debounce ({now - _last_record_press_at:.3f}s < {debounce}s)")
         log_event("input", "ignored duplicate record press")
         return
     _last_record_press_at = now
 
-    _dlog("[record] is_recording before=", recording)
+    _dlog(f"[hotkey] is_recording before start = {recording}")
     if recording:
+        _dlog("[record] start ignored — already recording")
         log_event("record", "start ignored — already recording")
         return
     if _transcription_busy:
+        _dlog("[record] start ignored — transcription busy")
         log_event("record", "start ignored — transcription still running")
         if app:
             app.show_message("Finishing previous dictation...", "#ff9f0a")
@@ -7330,6 +7349,7 @@ def _tap_record_start():
             app.capture_active_app()
 
     threading.Thread(target=_side_effects, daemon=True).start()
+    _dlog(f"[hotkey] is_recording after start = {recording}")
     log_event("record", f"start via {settings.get('hotkey_label', 'Right Option')}")
 
 
@@ -7356,11 +7376,14 @@ def _tap_record_stop():
     debounce = _setting_float("hotkey_debounce_seconds", HOTKEY_DEBOUNCE_SECONDS)
 
     if now - _last_record_release_at < debounce:
+        _dlog(f"[record] stop ignored — debounce ({now - _last_record_release_at:.3f}s < {debounce}s)")
         log_event("input", "ignored duplicate record release")
         return
     _last_record_release_at = now
 
+    _dlog(f"[hotkey] is_recording before stop = {recording}")
     if not recording:
+        _dlog("[record] stop ignored — recording already False")
         log_event("record", "stop ignored — not recording")
         return
 
@@ -7378,6 +7401,7 @@ def _tap_record_stop():
     _recording_started_by_wake = False
     _wake_active.clear()
     _wake_cooldown_until = now + 2.0
+    _dlog(f"[hotkey] is_recording after stop = {recording}")
     if app:
         app.root.after(0, app.stop_wave)
         app.set_state("transcribing")
@@ -7466,14 +7490,17 @@ def _drain_input_events():
                 continue
 
             if action == "record_press":
-                _dlog("[record button] clicked — recording=", recording)
+                _dlog(f"[hotkey] record_press received — recording={recording} toggle={settings.get('toggle_mode', False)}")
                 if not recording:
                     _tap_record_start()
                 elif settings.get("toggle_mode", False):
                     _tap_record_toggle_stop()
             elif action == "record_release":
+                _dlog(f"[hotkey] record_release received — recording={recording} toggle={settings.get('toggle_mode', False)}")
                 if recording and not settings.get("toggle_mode", False):
                     _tap_record_stop()
+                elif not recording:
+                    _dlog("[hotkey] record_release ignored — recording already False")
             elif action == "cancel":
                 _tap_cancel()
             elif action == "wake_auto_stop":
@@ -7629,19 +7656,23 @@ def _install_suppression_tap():
                     is_right_option_fallback = keycode == RIGHT_OPTION_KEYCODE
                     if is_selected_modifier or is_right_option_fallback:
                         if _open_wins > 0:
+                            _dlog(f"[hotkey] keycode={keycode} ignored — window open (_open_wins={_open_wins})")
                             _modifier_keys_down.discard(keycode)
                             return event
 
                         flags = Quartz.CGEventGetFlags(event)
                         mask = _MODIFIER_FLAG_MASKS.get(keycode, _RIGHT_OPTION_MASK if keycode == RIGHT_OPTION_KEYCODE else 0)
                         is_down = bool(flags & mask) if mask else (keycode not in _modifier_keys_down)
+                        _dlog(f"[hotkey] flagsChanged keycode={keycode} is_down={is_down} keys_down={_modifier_keys_down}")
 
                         # Do not blindly alternate press/release on every flagsChanged event.
                         if is_down and keycode not in _modifier_keys_down:
                             _modifier_keys_down.add(keycode)
+                            _dlog(f"[hotkey] → queue record_press")
                             _queue_input_event("record_press")
                         elif (not is_down) and keycode in _modifier_keys_down:
                             _modifier_keys_down.discard(keycode)
+                            _dlog(f"[hotkey] → queue record_release")
                             _queue_input_event("record_release")
 
                 elif event_type == Quartz.kCGEventKeyDown:
