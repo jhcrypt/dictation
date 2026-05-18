@@ -2437,11 +2437,24 @@ def save_wav(frames, path):
         wf.writeframes((resampled * 32767).astype(np.int16).tobytes())
 
 _paste_lock = threading.Lock()   # prevents clipboard desync from overlapping pastes
+_PASTE_GENERATION = 0            # monotonically increases each time paste_text starts
+_paste_gen_lock   = threading.Lock()
+
+def _next_paste_gen() -> int:
+    """Increment and return the paste generation counter (thread-safe)."""
+    global _PASTE_GENERATION
+    with _paste_gen_lock:
+        _PASTE_GENERATION += 1
+        return _PASTE_GENERATION
 
 def paste_text(text):
     """Paste dictated text reliably without leaving the clipboard changed.
 
-    Clipboard flow: save → write → verify → send Cmd+V → restore (always).
+    Clipboard flow: save → write → verify → send Cmd+V → wait → restore.
+
+    Only one paste may run at a time (_paste_lock).  The generation counter
+    guards against stale restores if this function is ever made async: before
+    restoring we verify that no newer paste started while we were waiting.
 
     Write order (tries each until clipboard verifies):
       1. AppKit NSPasteboard.setString_forType_ — pure Unicode, no encoding step.
@@ -2453,6 +2466,11 @@ def paste_text(text):
       2. Quartz CGEventPost (fallback if pynput unavailable)
       3. typer.type() character-by-character (last resort — may corrupt non-ASCII)
 
+    Verification failure behaviour:
+      - Cmd+V is NOT sent.
+      - Old clipboard is NOT restored (new text stays on clipboard for manual paste).
+      - HUD shows "Paste failed. Dictation copied to clipboard."
+
     osascript / System Events is intentionally not used — it requires a separate
     Automation TCC grant that the packaged .app does not have by default.
     """
@@ -2460,11 +2478,21 @@ def paste_text(text):
         import subprocess as _sp
         import time as _t
 
+        _gen = _next_paste_gen()
+        _dlog(f"[paste] generation start = {_gen}")
+
         paste_content = text + " "
         log_event("paste", f"preparing {len(text)} chars")
 
         # ── Save previous clipboard as bytes (encoding-agnostic preserve) ────
         prev_bytes = _sp.run(["pbpaste"], capture_output=True, timeout=2).stdout
+        _dlog(f"[paste] previous clipboard captured = {len(prev_bytes)} bytes")
+        _dlog(f"[paste] intended text repr = {paste_content!r}")
+
+        # Controls whether the finally block restores the old clipboard.
+        # Set to False on verification failure so the new (unverified) text
+        # stays on the clipboard for the user to paste manually.
+        _should_restore = True
 
         try:
             # ── 1. Write + verify via AppKit NSPasteboard (no encoding step) ─
@@ -2475,11 +2503,14 @@ def paste_text(text):
                 pb.clearContents()
                 pb.setString_forType_(paste_content, NSStringPboardType)
                 readback = pb.stringForType_(NSStringPboardType) or ""
-                _dlog("[unicode] clipboard_roundtrip=", repr(readback))
+                _dlog(f"[paste] clipboard written = AppKit")
+                _dlog(f"[paste] readback repr = {readback!r}")
                 if readback == paste_content:
                     verified = True
+                    _dlog(f"[paste] verify success = True (AppKit)")
                     log_event("paste", "clipboard verified via AppKit")
                 else:
+                    _dlog(f"[paste] verify success = False (AppKit mismatch)")
                     log_event("paste", f"AppKit verify mismatch: wrote {paste_content!r} read {readback!r}")
             except Exception as _ak_err:
                 log_event("paste", f"AppKit clipboard unavailable ({_ak_err})")
@@ -2488,21 +2519,28 @@ def paste_text(text):
             if not verified:
                 for attempt in range(8):
                     _sp.run(["pbcopy"], input=paste_content, text=True, encoding="utf-8", timeout=2)
+                    _dlog(f"[paste] clipboard written = pbcopy attempt {attempt + 1}")
                     _t.sleep(0.08 + attempt * 0.03)
                     readback = _sp.run(
                         ["pbpaste"], capture_output=True, text=True, encoding="utf-8", timeout=2
                     ).stdout
-                    _dlog("[unicode] clipboard_roundtrip=", repr(readback))
+                    _dlog(f"[paste] readback repr = {readback!r}")
                     # pbpaste may append a trailing newline — strip it for comparison
                     if readback == paste_content or readback.rstrip("\n") == paste_content:
                         verified = True
+                        _dlog(f"[paste] verify success = True (pbcopy attempt {attempt + 1})")
                         log_event("paste", f"clipboard verified via pbcopy attempt {attempt + 1}")
                         break
                     log_event("paste", f"pbcopy retry {attempt + 1}")
 
             if not verified:
-                log_event("paste", "clipboard verification failed — typing directly")
-                _run_on_main(lambda: typer.type(text + " "))
+                # Verification failed: do NOT send Cmd+V, do NOT restore old
+                # clipboard.  New text stays on clipboard; user can paste manually.
+                _dlog("[paste] verify success = False — aborting Cmd+V, leaving new text on clipboard")
+                log_event("paste", "clipboard verification failed — not sending Cmd+V")
+                _should_restore = False
+                if app:
+                    app.show_message("Paste failed. Dictation copied to clipboard.", "#ff9f0a")
                 return
 
             # ── 3. Send Cmd+V ─────────────────────────────────────────────────
@@ -2519,6 +2557,7 @@ def paste_text(text):
                         _kbd.press('v')
                         _kbd.release('v')
                 _run_on_main(_pynput_cmd_v)
+                _dlog(f"[paste] cmd+v sent = True (pynput)")
                 log_event("paste", "sent cmd+v")
                 sent = True
             except Exception as _pe:
@@ -2536,6 +2575,7 @@ def paste_text(text):
                     _Q.CGEventPost(_Q.kCGHIDEventTap, _dn)
                     _t.sleep(0.05)
                     _Q.CGEventPost(_Q.kCGHIDEventTap, _up)
+                    _dlog(f"[paste] cmd+v sent = True (Quartz)")
                     log_event("paste", "sent cmd+v")
                     sent = True
                 except Exception as _qe:
@@ -2546,21 +2586,34 @@ def paste_text(text):
                 _run_on_main(lambda: typer.type(text + " "))
                 return
 
-            # Give the target app time to consume the clipboard before restore.
-            _t.sleep(0.35)
+            # Give the target app enough time to read the clipboard before we
+            # restore it.  0.6 s is deliberately conservative — rapid dictation
+            # is serialised by _paste_lock so the extra 0.25 s never stacks.
+            _t.sleep(0.6)
 
         finally:
-            # Always restore the previous clipboard content.
-            try:
-                if prev_bytes:
-                    _sp.run(["pbcopy"], input=prev_bytes, timeout=2)
+            if not _should_restore:
+                _dlog("[paste] restore skipped — verification failed, dictation left on clipboard")
+            else:
+                # Generation guard: belt-and-suspenders against any future async
+                # refactor where _paste_lock might be released before restore.
+                with _paste_gen_lock:
+                    _gen_now = _PASTE_GENERATION
+                if _gen_now != _gen:
+                    _dlog(f"[paste] restore skipped stale generation = {_gen} (current = {_gen_now})")
                 else:
-                    # Previous clipboard was empty — clear it
-                    from AppKit import NSPasteboard
-                    NSPasteboard.generalPasteboard().clearContents()
-                log_event("paste", "restored previous clipboard")
-            except Exception:
-                pass
+                    _dlog(f"[paste] restore scheduled generation = {_gen}")
+                    try:
+                        if prev_bytes:
+                            _sp.run(["pbcopy"], input=prev_bytes, timeout=2)
+                        else:
+                            # Previous clipboard was empty — clear it
+                            from AppKit import NSPasteboard
+                            NSPasteboard.generalPasteboard().clearContents()
+                        _dlog(f"[paste] restore completed = generation {_gen}")
+                        log_event("paste", "restored previous clipboard")
+                    except Exception:
+                        pass
 
 # ── Mojibake / mangled-whitespace repair ─────────────────────────────────────
 # macOS sometimes encodes non-breaking spaces and smart punctuation as UTF-8
@@ -7813,14 +7866,22 @@ def _drain_input_events():
                 continue
 
             if action == "record_press":
-                _dlog(f"[hotkey] record_press received — recording={recording} toggle={settings.get('toggle_mode', False)}")
+                _paste_busy = _paste_lock.locked()
+                _dlog(f"[hotkey] right option down — recording={recording} paste_in_progress={_paste_busy} toggle={settings.get('toggle_mode', False)}")
+                if _paste_busy:
+                    # Paste is still writing/verifying/restoring clipboard.
+                    # Starting a new recording now risks the next paste reading the
+                    # wrong prev_bytes.  Block until the lock is free.
+                    _dlog("[hotkey] start blocked reason = paste in progress")
+                    continue
                 if not recording:
                     _tap_record_start()
                 elif settings.get("toggle_mode", False):
                     _tap_record_toggle_stop()
             elif action == "record_release":
-                _dlog(f"[hotkey] record_release received — recording={recording} toggle={settings.get('toggle_mode', False)}")
+                _dlog(f"[hotkey] right option up — recording={recording} paste_in_progress={_paste_lock.locked()} toggle={settings.get('toggle_mode', False)}")
                 if recording and not settings.get("toggle_mode", False):
+                    _dlog("[hotkey] stop/transcribe begins")
                     _tap_record_stop()
                 elif not recording:
                     _dlog("[hotkey] record_release ignored — recording already False")
