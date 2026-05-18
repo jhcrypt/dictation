@@ -5918,7 +5918,7 @@ class DictationApp:
         # overrideredirect removes the native resize handle; we draw a subtle
         # dotted grip and bind mouse-drag to resize the window.
         _grip = tk.Canvas(content_host, width=16, height=16, bg=BG,
-                          highlightthickness=0, cursor="se-resize")
+                          highlightthickness=0, cursor="bottom_right_corner")
         _grip.place(relx=1.0, rely=1.0, anchor="se")
         for _gi in range(3):          # draw 3 diagonal dots
             _d = _gi * 5 + 2
