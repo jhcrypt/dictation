@@ -1169,6 +1169,94 @@ def _preferred_email_app_candidates(preferred: str = ""):
             cleaned.append(item)
     return cleaned
 
+def get_selected_text_safely() -> str | None:
+    """Return the currently selected text, or None if nothing is selected.
+
+    Algorithm:
+      1. Snapshot the current clipboard.
+      2. Write a unique sentinel so we can detect whether Cmd+C replaces it.
+      3. Send Cmd+C.
+      4. Poll clipboard for up to 600 ms (every 50 ms).
+      5. If clipboard changes to non-empty text that differs from the sentinel
+         → that is the selected text; return it.
+      6. Otherwise restore the previous clipboard and return None.
+
+    Never returns stale clipboard content for 'selected text' commands.
+    """
+    import subprocess as _sp, time as _time
+
+    debug = settings.get("debug_logging", False)
+
+    def _ml(msg):
+        if debug:
+            _dlog(msg)
+
+    sentinel = f"__JARVIS_SELECTION_SENTINEL_{_time.time()}__"
+
+    # 1. Save current clipboard
+    try:
+        prev_clip = _sp.run(
+            ["pbpaste"], capture_output=True, encoding="utf-8", errors="replace", timeout=3
+        ).stdout
+    except Exception:
+        prev_clip = ""
+    _ml("[selected] previous clipboard captured")
+
+    # 2. Write sentinel to clipboard
+    try:
+        _sp.run(["pbcopy"], input=sentinel, capture_output=True,
+                encoding="utf-8", timeout=3)
+    except Exception as exc:
+        _ml(f"[selected] sentinel write failed: {exc}")
+        return None
+    _ml("[selected] sentinel written")
+
+    # 3. Send Cmd+C
+    try:
+        with typer.pressed(Key.cmd):
+            typer.tap(keyboard.KeyCode.from_char("c"))
+    except Exception as exc:
+        _ml(f"[selected] cmd+c failed: {exc}")
+        # Restore clipboard and bail
+        try:
+            _sp.run(["pbcopy"], input=prev_clip, capture_output=True,
+                    encoding="utf-8", timeout=3)
+        except Exception:
+            pass
+        return None
+    _ml("[selected] cmd+c sent")
+
+    # 4. Poll clipboard for up to 600 ms
+    selected = None
+    for attempt in range(12):          # 12 × 50 ms = 600 ms
+        _time.sleep(0.05)
+        try:
+            current = _sp.run(
+                ["pbpaste"], capture_output=True, encoding="utf-8",
+                errors="replace", timeout=3
+            ).stdout
+        except Exception:
+            current = ""
+        _ml(f"[selected] readback attempt={attempt + 1} len={len(current)}")
+        if current and current != sentinel:
+            selected = current.strip()
+            _ml(f"[selected] selected text captured ({len(selected)} chars)")
+            break
+
+    # 5. Restore previous clipboard whether we got selection or not
+    try:
+        _sp.run(["pbcopy"], input=prev_clip, capture_output=True,
+                encoding="utf-8", timeout=3)
+    except Exception:
+        pass
+
+    if selected:
+        return selected
+
+    _ml("[selected] failed — clipboard unchanged (nothing selected)")
+    return None
+
+
 def execute_jarvis_command(action, params):
     global _last_jarvis_time
     if time.time() - _last_jarvis_time < 3.0: return
@@ -1286,18 +1374,30 @@ def execute_jarvis_command(action, params):
 
         elif action == "translate_text":
             target = params.get("target", settings.get("translate_target_language", "English"))
-            if app: app.show_message(f"Translating to {target}…", "#0a84ff")
-            # Get clipboard / selected text via pbpaste
-            try:
-                import subprocess as _sp
-                src_text = _sp.run(
-                    ["pbpaste"], capture_output=True, encoding="utf-8", errors="replace", timeout=3
-                ).stdout.strip()
-            except Exception:
-                src_text = ""
-            if not src_text:
-                if app: app.show_message("No text to translate. Copy text first.", "#ff9f0a")
+            source = params.get("source", "clipboard")   # "selected" or "clipboard"
+
+            if source == "selected":
+                # Use sentinel-based selection capture — never falls back to clipboard
+                if app: app.show_message("Reading selected text…", "#0a84ff")
+                src_text = get_selected_text_safely()
+                if not src_text:
+                    if app: app.show_message("No selected text found.", "#ff9f0a")
+                    src_text = None
             else:
+                # "translate clipboard to X" — intentional clipboard read
+                try:
+                    import subprocess as _sp
+                    src_text = _sp.run(
+                        ["pbpaste"], capture_output=True, encoding="utf-8",
+                        errors="replace", timeout=3
+                    ).stdout.strip() or None
+                except Exception:
+                    src_text = None
+                if not src_text:
+                    if app: app.show_message("Clipboard is empty.", "#ff9f0a")
+
+            if src_text:
+                if app: app.show_message(f"Translating to {target}…", "#0a84ff")
                 translated = _ollama_translate(src_text, target)
                 if translated:
                     translated = _repair_mojibake(translated)
@@ -3202,13 +3302,14 @@ def _fast_jarvis_match(lower, raw_text=""):
         return ("translate_prev_dictation", {"target": _translate_prev_m.group(1).title()})
 
     # Explicit clipboard/selection source only — requires an unambiguous subject.
-    # "selected text" and "clipboard" are the only accepted subjects here.
+    # "selected text" → sentinel-gated capture; "clipboard" → direct pbpaste.
     _translate_m = re.match(
-        rf"(?i)^translate\s+(?:selected\s+text|clipboard)\s+to\s+({_lang_names})\b",
+        rf"(?i)^translate\s+(selected\s+text|clipboard)\s+to\s+({_lang_names})\b",
         lower,
     )
     if _translate_m:
-        return ("translate_text", {"target": _translate_m.group(1).title()})
+        _src = "selected" if "selected" in _translate_m.group(1) else "clipboard"
+        return ("translate_text", {"target": _translate_m.group(2).title(), "source": _src})
 
     # ── Email draft ──────────────────────────────────────────────────────────
     # Step 1: detect the email trigger on the lowercased/stripped cmd text.
