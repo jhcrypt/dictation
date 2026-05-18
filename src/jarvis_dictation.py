@@ -3185,23 +3185,26 @@ def _fast_jarvis_match(lower, raw_text=""):
     # ── Translation ──────────────────────────────────────────────────────────
     _lang_names = "|".join(TRANSLATION_LANGUAGES.keys()).lower()
 
-    # "translate that/it/last dictation/bare to X" — translates _last_normal_dictation.
-    # Bare "translate to French" is included here so it always hits the previous-dictation
-    # path consistently, instead of the clipboard path which is intermittent.
-    # Must be checked before the selected-text pattern below.
+    # "translate [subject?] to X" — translates _last_normal_dictation.
+    # Subject is optional so bare "translate to French" routes here too.
+    # Accepted aliases: that / it / my dictation / my last dictation /
+    #   last dictation / previous dictation / the last dictation.
+    # Must be checked BEFORE the selected-text pattern below.
     _translate_prev_m = re.match(
         rf"(?i)^translate\s+"
-        rf"(?:that|it|last\s+dictation|my\s+last\s+dictation|"
-        rf"previous\s+dictation|the\s+last\s+dictation)?\s*"
+        rf"(?:that|it|"
+        rf"my\s+dictation|my\s+last\s+dictation|"
+        rf"last\s+dictation|previous\s+dictation|the\s+last\s+dictation)?\s*"
         rf"(?:to|into)\s+({_lang_names})\b",
         lower,
     )
     if _translate_prev_m:
         return ("translate_prev_dictation", {"target": _translate_prev_m.group(1).title()})
 
-    # "translate selected text / this / clipboard to X" — explicit clipboard/selection source
+    # Explicit clipboard/selection source only — requires an unambiguous subject.
+    # "selected text" and "clipboard" are the only accepted subjects here.
     _translate_m = re.match(
-        rf"(?i)^translate\s+(?:selected\s+text|this|clipboard|the\s+text)\s+to\s+({_lang_names})\b",
+        rf"(?i)^translate\s+(?:selected\s+text|clipboard)\s+to\s+({_lang_names})\b",
         lower,
     )
     if _translate_m:
