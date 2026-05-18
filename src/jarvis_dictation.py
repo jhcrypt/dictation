@@ -5577,30 +5577,32 @@ class DictationApp:
 
     # ── Settings window theme tokens ──────────────────────────────────────────
     _THEME_DARK = dict(
-        BG      = "#141414",
-        SIDEBAR = "#1a1a1a",
-        CARD    = "#222222",
-        CARD_HI = "#2a2a2a",
-        SEP     = "#2e2e2e",
-        ACC     = "#0a84ff",
-        ACC_DIM = "#1a3a5c",
-        FG      = "#f0f0f0",
-        DIM     = "#6a6a6a",
-        HINT    = "#8ab4f8",
+        BG         = "#141414",
+        SIDEBAR    = "#1a1a1a",
+        NAV_ACTIVE = "#252525",   # pill fill for active sidebar row
+        CARD       = "#222222",
+        CARD_HI    = "#2a2a2a",
+        SEP        = "#2e2e2e",
+        ACC        = "#0a84ff",
+        ACC_DIM    = "#1a3a5c",
+        FG         = "#f0f0f0",
+        DIM        = "#6a6a6a",
+        HINT       = "#8ab4f8",
         TOGGLE_OFF = "#3a3a3a",
         NOTE_BG    = "#191919",
     )
     _THEME_LIGHT = dict(
-        BG      = "#f5f5f7",
-        SIDEBAR = "#e8e8ed",
-        CARD    = "#ffffff",
-        CARD_HI = "#e5e5ea",
-        SEP     = "#d1d1d6",
-        ACC     = "#0a84ff",
-        ACC_DIM = "#cce0ff",
-        FG      = "#1c1c1e",
-        DIM     = "#8e8e93",
-        HINT    = "#0071e3",
+        BG         = "#f5f5f7",
+        SIDEBAR    = "#e8e8ed",
+        NAV_ACTIVE = "#d8d8dd",   # pill fill for active sidebar row
+        CARD       = "#ffffff",
+        CARD_HI    = "#e5e5ea",
+        SEP        = "#d1d1d6",
+        ACC        = "#0a84ff",
+        ACC_DIM    = "#cce0ff",
+        FG         = "#1c1c1e",
+        DIM        = "#8e8e93",
+        HINT       = "#0071e3",
         TOGGLE_OFF = "#b0b0b8",
         NOTE_BG    = "#e5e5ea",
     )
@@ -5635,6 +5637,7 @@ class DictationApp:
         _theme     = DictationApp._get_settings_theme(settings)
         BG         = _theme["BG"]
         SIDEBAR    = _theme["SIDEBAR"]
+        NAV_ACTIVE = _theme["NAV_ACTIVE"]
         CARD       = _theme["CARD"]
         CARD_HI    = _theme["CARD_HI"]
         SEP        = _theme["SEP"]
@@ -5751,10 +5754,11 @@ class DictationApp:
             tk.Label(shdr, text="Dictation", bg=SIDEBAR, fg=FG,
                      font=(FONT, 14, "bold")).place(x=42, rely=0.5, anchor="w")
         else:
-            tk.Label(shdr, text="🎙", bg=SIDEBAR, fg=FG,
-                     font=(FONT, 18)).place(x=14, rely=0.5, anchor="w")
+            # Flat monochrome fallback — no emoji
+            tk.Label(shdr, text="◉", bg=SIDEBAR, fg=DIM,
+                     font=(FONT, 16)).place(x=14, rely=0.5, anchor="w")
             tk.Label(shdr, text="Dictation", bg=SIDEBAR, fg=FG,
-                     font=(FONT, 14, "bold")).place(x=40, rely=0.5, anchor="w")
+                     font=(FONT, 14, "bold")).place(x=36, rely=0.5, anchor="w")
         # Close button top-right
         close_lbl = tk.Label(shdr, text="✕", bg=SIDEBAR, fg=DIM,
                              font=(FONT, 12), cursor="hand2")
@@ -5804,11 +5808,23 @@ class DictationApp:
 
         def show_page(name):
             active_page[0] = name
-            for n, (f, l, bar) in nav_btns.items():
+            for n, (f, pill_c, l) in nav_btns.items():
                 is_active = (n == name)
-                bar.configure(bg=ACC if is_active else SIDEBAR)
+                _w = f.winfo_width() or 172
+                _h = 36
+                R  = 7
+                pill_c.delete("all")
+                if is_active:
+                    # Rounded pill fill behind the active row
+                    pill_c.create_arc(4, 0, 4+R*2, R*2,           start=90,  extent=90, fill=NAV_ACTIVE, outline="")
+                    pill_c.create_arc(_w-4-R*2, 0, _w-4, R*2,     start=0,   extent=90, fill=NAV_ACTIVE, outline="")
+                    pill_c.create_arc(4, _h-R*2, 4+R*2, _h,       start=180, extent=90, fill=NAV_ACTIVE, outline="")
+                    pill_c.create_arc(_w-4-R*2, _h-R*2, _w-4, _h, start=270, extent=90, fill=NAV_ACTIVE, outline="")
+                    pill_c.create_rectangle(4+R, 0,   _w-4-R, _h,  fill=NAV_ACTIVE, outline="")
+                    pill_c.create_rectangle(4,   R,   _w-4,   _h-R, fill=NAV_ACTIVE, outline="")
                 l.configure(fg=FG if is_active else DIM,
-                            font=(FONT, 12, "bold") if is_active else (FONT, 12))
+                            font=(FONT, 12, "bold") if is_active else (FONT, 12),
+                            bg=NAV_ACTIVE if is_active else SIDEBAR)
             for n, pg in pages.items():
                 pg.pack_forget()
             if name in pages:
@@ -5816,25 +5832,24 @@ class DictationApp:
 
         for nav_name in nav_items:
             nf = tk.Frame(sidebar, bg=SIDEBAR, cursor="hand2", height=40)
-            nf.pack(fill="x")
+            nf.pack(fill="x", padx=4, pady=1)
             nf.pack_propagate(False)
-            # Left accent bar (shown when active)
-            accent_bar = tk.Frame(nf, bg=SIDEBAR, width=3)
-            accent_bar.pack(side="left", fill="y")
+            # Canvas layer draws the rounded-pill background when active
+            pill_c = tk.Canvas(nf, bg=SIDEBAR, highlightthickness=0, bd=0,
+                               height=36, cursor="hand2")
+            pill_c.place(x=0, y=2, relwidth=1.0, height=36)
             _icon = DictationApp._PAGE_ICONS.get(nav_name, "·")
             nl = tk.Label(nf, text=f"  {_icon}  {nav_name}", bg=SIDEBAR, fg=DIM,
-                          font=(FONT, 12), anchor="w", padx=8)
-            nl.pack(side="left", fill="x", expand=True)
-            nav_btns[nav_name] = (nf, nl, accent_bar)
-            for w in (nf, nl):
+                          font=(FONT, 12), anchor="w", padx=12)
+            nl.place(x=0, y=2, relwidth=1.0, height=36)
+            nav_btns[nav_name] = (nf, pill_c, nl)
+            for w in (nf, pill_c, nl):
                 w.bind("<Button-1>", lambda e, n=nav_name: show_page(n))
-                w.bind("<Enter>", lambda e, f=nf, l=nl, n=nav_name: (
-                    l.configure(fg=FG if active_page[0] != n else FG)
-                    if active_page[0] != n else None
+                w.bind("<Enter>", lambda e, l=nl, n=nav_name: (
+                    l.configure(fg=FG) if active_page[0] != n else None
                 ))
-                w.bind("<Leave>", lambda e, f=nf, l=nl, n=nav_name: (
-                    l.configure(fg=DIM if active_page[0] != n else FG)
-                    if active_page[0] != n else None
+                w.bind("<Leave>", lambda e, l=nl, n=nav_name: (
+                    l.configure(fg=DIM) if active_page[0] != n else None
                 ))
 
         # ── Shared helpers ────────────────────────────────────────────────────
