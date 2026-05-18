@@ -1618,6 +1618,7 @@ DEFAULT_SETTINGS = {
     "translate_my_dictation": "Off",
     "dictation_quality": "Balanced",
     "debug_logging": False,
+    "appearance": "dark",   # "dark" | "light"
 }
 
 def load_settings():
@@ -5574,21 +5575,76 @@ class DictationApp:
         self.root.after(0, lambda: self._show_settings(
             navigate_to=navigate_to, prefill_correction=prefill_correction))
 
+    # ── Settings window theme tokens ──────────────────────────────────────────
+    _THEME_DARK = dict(
+        BG      = "#141414",
+        SIDEBAR = "#1a1a1a",
+        CARD    = "#222222",
+        CARD_HI = "#2a2a2a",
+        SEP     = "#2e2e2e",
+        ACC     = "#0a84ff",
+        ACC_DIM = "#1a3a5c",
+        FG      = "#f0f0f0",
+        DIM     = "#6a6a6a",
+        HINT    = "#8ab4f8",
+        TOGGLE_OFF = "#3a3a3a",
+        NOTE_BG    = "#191919",
+    )
+    _THEME_LIGHT = dict(
+        BG      = "#f5f5f7",
+        SIDEBAR = "#e8e8ed",
+        CARD    = "#ffffff",
+        CARD_HI = "#e5e5ea",
+        SEP     = "#d1d1d6",
+        ACC     = "#0a84ff",
+        ACC_DIM = "#cce0ff",
+        FG      = "#1c1c1e",
+        DIM     = "#8e8e93",
+        HINT    = "#0071e3",
+        TOGGLE_OFF = "#b0b0b8",
+        NOTE_BG    = "#e5e5ea",
+    )
+
+    @staticmethod
+    def _get_settings_theme(settings):
+        return DictationApp._THEME_DARK if settings.get("appearance", "dark") == "dark" \
+               else DictationApp._THEME_LIGHT
+
+    # ── Sidebar page icons (flat Unicode, no emoji) ───────────────────────────
+    _PAGE_ICONS = {
+        "Setup":            "⊙",
+        "Dictation":        "◎",
+        "Audio & Language": "≋",
+        "AI Cleanup":       "✦",
+        "Writing Profiles": "≡",
+        "Jarvis":           "◆",
+        "Custom Commands":  "⌘",
+        "Contacts":         "◫",
+        "Vocabulary":       "∷",
+        "Cloud":            "○",
+        "Workflows":        "↻",
+        "Help":             "?",
+    }
+
     def _show_settings(self, navigate_to=None, prefill_correction=""):
         # --- STABILITY GUARD: Pause Wake Word while UI is active ---
         global WAKE_ENABLED
         old_wake_state = WAKE_ENABLED
         globals()["WAKE_ENABLED"] = False
-        BG      = "#141414"
-        SIDEBAR = "#1a1a1a"
-        CARD    = "#222222"
-        CARD_HI = "#2a2a2a"
-        SEP     = "#2e2e2e"
-        ACC     = "#0a84ff"
-        ACC_DIM = "#1a3a5c"
-        FG      = "#f0f0f0"
-        DIM     = "#6a6a6a"
-        HINT    = "#8ab4f8"   # blue used for all instructional / helper text
+        # ── Theme tokens ─────────────────────────────────────────────────────
+        _theme     = DictationApp._get_settings_theme(settings)
+        BG         = _theme["BG"]
+        SIDEBAR    = _theme["SIDEBAR"]
+        CARD       = _theme["CARD"]
+        CARD_HI    = _theme["CARD_HI"]
+        SEP        = _theme["SEP"]
+        ACC        = _theme["ACC"]
+        ACC_DIM    = _theme["ACC_DIM"]
+        FG         = _theme["FG"]
+        DIM        = _theme["DIM"]
+        HINT       = _theme["HINT"]
+        TOGGLE_OFF = _theme["TOGGLE_OFF"]
+        NOTE_BG    = _theme["NOTE_BG"]
         # ── Shared corner-radius constants ───────────────────────────────────
         UI_RADIUS_CARD   =  8   # cards, info panels, storage boxes
         UI_RADIUS_BUTTON =  8   # all buttons (primary, secondary, action toggles)
@@ -5598,7 +5654,7 @@ class DictationApp:
         FONT    = "Helvetica Neue"
 
         _win = tk.Toplevel(self.root)
-        _win.title("Settings")
+        _win.overrideredirect(True)   # frameless — custom header handles close/drag
         _win.configure(bg=BG)
         _win.attributes("-topmost", True)
         _win.attributes("-alpha", 1.0)
@@ -5625,6 +5681,8 @@ class DictationApp:
                 _win.geometry(f"+{e.x_root - _win._dx}+{e.y_root - _win._dy}")
 
         # ── Variables ─────────────────────────────────────────────────────────
+        appearance_var = tk.StringVar(value=settings.get("appearance", "dark").title())
+        dark_mode_var  = tk.BooleanVar(value=settings.get("appearance", "dark") == "dark")
         model_var   = tk.StringVar(value=settings["model"])
         quality_var = tk.StringVar(value=settings.get("dictation_quality", "Balanced"))
         hotkey_var  = tk.StringVar(value=settings.get("hotkey_label", "Right Option"))
@@ -5763,7 +5821,8 @@ class DictationApp:
             # Left accent bar (shown when active)
             accent_bar = tk.Frame(nf, bg=SIDEBAR, width=3)
             accent_bar.pack(side="left", fill="y")
-            nl = tk.Label(nf, text=f"  {nav_name}", bg=SIDEBAR, fg=DIM,
+            _icon = DictationApp._PAGE_ICONS.get(nav_name, "·")
+            nl = tk.Label(nf, text=f"  {_icon}  {nav_name}", bg=SIDEBAR, fg=DIM,
                           font=(FONT, 12), anchor="w", padx=8)
             nl.pack(side="left", fill="x", expand=True)
             nav_btns[nav_name] = (nf, nl, accent_bar)
@@ -5889,7 +5948,7 @@ class DictationApp:
 
             def draw_pill(on):
                 pill_c.delete("all")
-                bg_col = ACC if on else "#3a3a3a"
+                bg_col = ACC if on else TOGGLE_OFF
                 pill_c.create_oval(0, 0, pill_h, pill_h, fill=bg_col, outline="")
                 pill_c.create_oval(pill_w-pill_h, 0, pill_w, pill_h, fill=bg_col, outline="")
                 pill_c.create_rectangle(pill_h//2, 0, pill_w-pill_h//2, pill_h, fill=bg_col, outline="")
@@ -5988,11 +6047,11 @@ class DictationApp:
             return inner
 
         def section_note(parent, title, text):
-            inner = _rounded_card_canvas(parent, "#191919", radius=UI_RADIUS_CARD,
+            inner = _rounded_card_canvas(parent, NOTE_BG, radius=UI_RADIUS_CARD,
                                          padx=24, pady=(10, 8))
-            tk.Label(inner, text=title, bg="#191919", fg=FG,
+            tk.Label(inner, text=title, bg=NOTE_BG, fg=FG,
                      font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
-            tk.Label(inner, text=text, bg="#191919", fg=HINT,
+            tk.Label(inner, text=text, bg=NOTE_BG, fg=HINT,
                      font=(FONT, 10), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 10))
 
@@ -6004,23 +6063,23 @@ class DictationApp:
             Callers that need to flush Settings state first should pass their
             own function; the default is kept for any other use-site.
             """
-            inner = _rounded_card_canvas(parent, "#191919", radius=UI_RADIUS_CARD,
+            inner = _rounded_card_canvas(parent, NOTE_BG, radius=UI_RADIUS_CARD,
                                          padx=24, pady=(10, 8))
-            tk.Label(inner, text=title, bg="#191919", fg=FG,
+            tk.Label(inner, text=title, bg=NOTE_BG, fg=FG,
                      font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
-            tk.Label(inner, text=body, bg="#191919", fg=HINT,
+            tk.Label(inner, text=body, bg=NOTE_BG, fg=HINT,
                      font=(FONT, 10), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 8))
-            btn_row = tk.Frame(inner, bg="#191919")
+            btn_row = tk.Frame(inner, bg=NOTE_BG)
             btn_row.pack(anchor="w", padx=12, pady=(0, 10))
             def _make_btn(parent, label, cmd, accent):
                 bg  = ACC if accent else CARD
-                hov = "#1a6fd4" if accent else "#2e2e2e"
+                hov = "#1a6fd4" if accent else CARD_HI
                 BTN_H = 36
                 r     = UI_RADIUS_BUTTON
                 w_est = max(80, len(label) * 9 + 28)
                 c = tk.Canvas(parent, width=w_est, height=BTN_H,
-                              bg="#191919", highlightthickness=0, cursor="hand2")
+                              bg=NOTE_BG, highlightthickness=0, cursor="hand2")
                 c.pack(side="left", padx=(0, 8))
                 def _draw(col, _c=c, _w=w_est):
                     _c.delete("all")
@@ -6164,6 +6223,7 @@ class DictationApp:
         toggle_row(p, hud_var,    "Show HUD",    "Floating status bar while dictating")
         toggle_row(p, sounds_var, "Start / stop sounds", "Play a small sound when recording starts and stops")
         toggle_row(p, startup_tips_var, "Helpful HUD tips", "Show simple guidance instead of technical status whenever possible")
+        toggle_row(p, dark_mode_var, "Dark mode", "Settings window uses dark theme; toggle to switch to light theme (takes effect on next open)")
         small_button(p, "Reset to recommended defaults", reset_recommended_defaults)
         save_btn_row(p, lambda: _save())
 
@@ -7106,11 +7166,11 @@ class DictationApp:
                          font=(FONT, 10), justify="left", wraplength=420
                 ).pack(anchor="w", padx=12, pady=(0, 4))
             if examples:
-                ex_bg = "#191919"
+                ex_bg = NOTE_BG
                 ex_frame = tk.Frame(inner, bg=ex_bg)
                 ex_frame.pack(fill="x", padx=12, pady=(2, 4))
                 for ex in examples:
-                    tk.Label(ex_frame, text=ex, bg=ex_bg, fg="#8ab4f8",
+                    tk.Label(ex_frame, text=ex, bg=ex_bg, fg=HINT,
                              font=(FONT, 10), anchor="w", justify="left", wraplength=390
                     ).pack(anchor="w", padx=10, pady=(4, 0))
                 tk.Frame(ex_frame, bg=ex_bg, height=6).pack()
@@ -7424,6 +7484,7 @@ class DictationApp:
                 "wake_dictation_silence_seconds": max(1.0, min(12.0, _safe_float(wake_silence_var.get(), WAKE_DICTATION_SILENCE_SECONDS))),
                 "wake_dictation_max_seconds": max(10.0, min(120.0, _safe_float(wake_max_var.get(), WAKE_DICTATION_MAX_SECONDS))),
                 "wake_dictation_silence_rms": WAKE_DICTATION_SILENCE_RMS,
+                "appearance": "dark" if dark_mode_var.get() else "light",
             })
 
             # ── Debug: log what we're about to save ───────────────────────────
