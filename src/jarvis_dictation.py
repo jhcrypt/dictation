@@ -7872,6 +7872,9 @@ def _drain_input_events():
                     # Paste is still writing/verifying/restoring clipboard.
                     # Starting a new recording now risks the next paste reading the
                     # wrong prev_bytes.  Block until the lock is free.
+                    # Stamp the press time so record_release can detect a short tap
+                    # and show "hold a little longer" instead of silently ignoring it.
+                    globals()["_last_record_press_at"] = time.time()
                     _dlog("[hotkey] start blocked reason = paste in progress")
                     continue
                 if not recording:
@@ -7884,7 +7887,18 @@ def _drain_input_events():
                     _dlog("[hotkey] stop/transcribe begins")
                     _tap_record_stop()
                 elif not recording:
-                    _dlog("[hotkey] record_release ignored — recording already False")
+                    # If the most recent press was very recent (< min_record_seconds),
+                    # the user tapped too quickly — the press was either paste-blocked
+                    # or transcription-blocked and recording never started.
+                    # Show the same "hold a little longer" warning as a real short tap.
+                    _press_age = time.time() - _last_record_press_at
+                    _min_sec   = _setting_float("min_record_seconds", MIN_RECORD_SECONDS)
+                    if _last_record_press_at > 0 and _press_age < _min_sec:
+                        _dlog(f"[hotkey] record_release after blocked press ({_press_age:.3f}s) — showing short-tap warning")
+                        if app:
+                            app.show_message("Tap ignored — hold a little longer", "#ff9f0a")
+                    else:
+                        _dlog("[hotkey] record_release ignored — recording already False")
             elif action == "cancel":
                 _tap_cancel()
             elif action == "wake_auto_stop":
