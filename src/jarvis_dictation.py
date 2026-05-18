@@ -1485,7 +1485,8 @@ def symspell_correct(text):
 SETTINGS_FILE = os.path.expanduser("~/.dictation_settings.json")
 DEFAULT_SETTINGS = {
     "model": "small.en", 
-    "mic_device": 2, 
+    "mic_device": 2,
+    "mic_device_name": "",
     "sample_rate": 48000, 
     "hotkey_label": "Right Option", 
     "show_hud": True, 
@@ -7223,8 +7224,13 @@ class DictationApp:
             globals()["WAKE_ENABLED"] = False 
 
             new_mic = current_mic
+            new_mic_name = settings.get("mic_device_name", "")
             if _dev_labels and mic_var.get() in _dev_labels:
                 new_mic = _dev_indices[_dev_labels.index(mic_var.get())]
+                # Persist the device name so resolution survives index shifts
+                new_mic_name = next(
+                    (n for i, n in _input_devs if i == new_mic), new_mic_name
+                )
             
             raw_key = key_var.get().strip()
             if raw_key:
@@ -7235,7 +7241,8 @@ class DictationApp:
                 "model":             model_var.get(),
                 "dictation_quality": quality_var.get(),
                 "hotkey_label":      hotkey_var.get(),
-                "mic_device":     new_mic,
+                "mic_device":      new_mic,
+                "mic_device_name": new_mic_name,
                 "show_hud":       hud_var.get(),
                 "toggle_mode":    toggle_var.get(),
                 "wake_enabled":   wake_var.get(),
@@ -7967,6 +7974,96 @@ def _install_suppression_tap():
     except Exception as e:
         log_event("input", f"Quartz tap error: {e}")
 
+def resolve_input_device(settings: dict):
+    """Return (device_index, reason) for the best valid microphone input.
+
+    Resolution order:
+      A. Exact name match in mic_device_name among input-capable devices
+      B. Case-insensitive *contains* match (only when unambiguous)
+      C. Saved mic_device numeric index, if it has input channels
+      D. sounddevice default input device
+      E. None — no valid input exists; caller should surface an error
+
+    Also logs via _dlog when debug_logging is enabled.
+    Always prints a one-line summary at INFO level.
+    """
+    saved_idx  = settings.get("mic_device")
+    saved_name = (settings.get("mic_device_name") or "").strip()
+    debug      = settings.get("debug_logging", False)
+
+    def _ml(msg):   # mic log — always print at INFO, mirror to dlog if debug
+        print(msg)
+        if debug:
+            _dlog(msg)
+
+    if debug:
+        _dlog(f"[mic] saved index = {saved_idx}")
+        _dlog(f"[mic] saved name  = {saved_name!r}")
+
+    try:
+        all_devs = list(sd.query_devices())
+    except Exception as exc:
+        _ml(f"[mic] sounddevice query failed: {exc}")
+        if debug:
+            _dlog("[mic] reason = error (sounddevice unavailable)")
+        return None, "error"
+
+    input_devs = [(i, d) for i, d in enumerate(all_devs) if d["max_input_channels"] > 0]
+
+    def _log_resolved(idx, dev, reason):
+        if debug:
+            _dlog(f"[mic] resolved index = {idx}")
+            _dlog(f"[mic] resolved name  = {dev['name']!r}")
+            _dlog(f"[mic] input channels = {dev['max_input_channels']}")
+            _dlog(f"[mic] reason         = {reason}")
+        _ml(f"[mic] device resolved → [{idx}] '{dev['name']}' ({reason})")
+
+    # A. Exact name match
+    if saved_name:
+        exact = [(i, d) for i, d in input_devs if d["name"] == saved_name]
+        if exact:
+            idx, dev = exact[0]
+            _log_resolved(idx, dev, "name match (exact)")
+            return idx, "name match"
+
+        # B. Case-insensitive contains match — only if unambiguous
+        fuzzy = [(i, d) for i, d in input_devs if saved_name.lower() in d["name"].lower()]
+        if len(fuzzy) == 1:
+            idx, dev = fuzzy[0]
+            _log_resolved(idx, dev, "name match (contains, unambiguous)")
+            return idx, "name match (contains)"
+        elif len(fuzzy) > 1:
+            names = ", ".join(f"[{i}] '{d['name']}'" for i, d in fuzzy)
+            _ml(f"[mic] ambiguous name match for {saved_name!r} ({names}) — skipping fuzzy match")
+
+    # C. Saved numeric index
+    if saved_idx is not None:
+        try:
+            dev = all_devs[int(saved_idx)]
+            if dev["max_input_channels"] > 0:
+                _log_resolved(int(saved_idx), dev, "saved index valid")
+                return int(saved_idx), "saved index"
+            else:
+                _ml(f"[mic] saved index {saved_idx} ('{dev['name']}') has 0 input channels — skipping")
+        except (IndexError, KeyError, TypeError):
+            _ml(f"[mic] saved index {saved_idx!r} is out of range")
+
+    # D. Default input
+    try:
+        default_dev = sd.query_devices(kind="input")
+        idx = int(default_dev.get("index", sd.default.device[0]))
+        _log_resolved(idx, default_dev, "default input fallback")
+        return idx, "default fallback"
+    except Exception as exc:
+        _ml(f"[mic] could not get default input device: {exc}")
+
+    # E. No valid input
+    if debug:
+        _dlog("[mic] reason = no valid input device found")
+    _ml("[mic] no valid microphone input found — open Settings → Audio")
+    return None, "error"
+
+
 def main():
     global app, menubar
     root = tk.Tk()
@@ -7974,22 +8071,20 @@ def main():
     app = DictationApp(root)
     if not settings.get("show_hud", True):
         root.withdraw()
-    # Validate the saved mic device — fall back to default if it has no input channels
-    # (e.g. saved device index now points to an output-only device after a restart)
-    _mic = MIC_DEVICE
-    try:
-        _dev_info = sd.query_devices(_mic)
-        if _dev_info["max_input_channels"] < 1:
-            print(f"[audio] device {_mic} ({_dev_info['name']!r}) has no input channels — falling back to default input")
-            _mic = sd.query_devices(kind="input")["index"]
+    # Resolve microphone — by name first, then saved index, then default input.
+    # resolve_input_device() never opens an output-only device.
+    _mic, _mic_reason = resolve_input_device(settings)
+    if _mic is None:
+        # Surface clear error on HUD; still attempt to open with device=None
+        # so PortAudio picks whatever it can (stream may fail gracefully).
+        if app:
+            app.show_message("No valid microphone input found. Open Settings → Audio.", "#ff3b30")
+    else:
+        # Keep settings in sync: if resolution landed on a different numeric
+        # index than what was saved (e.g. headphones caused a shift), update it.
+        if _mic != settings.get("mic_device"):
             settings["mic_device"] = _mic
             save_settings(settings)
-    except Exception as _e:
-        print(f"[audio] could not query device {_mic}: {_e} — using default input")
-        try:
-            _mic = sd.query_devices(kind="input")["index"]
-        except Exception:
-            _mic = None
     stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", device=_mic, callback=audio_callback)
     threading.Thread(target=start_backend, args=(stream,), daemon=True).start()
     root.after(500, _init_menubar)
