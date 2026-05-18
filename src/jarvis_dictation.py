@@ -5580,6 +5580,7 @@ class DictationApp:
         BG         = "#141414",
         SIDEBAR    = "#1a1a1a",
         NAV_ACTIVE = "#252525",   # pill fill for active sidebar row
+        NAV_DIM    = "#909090",   # inactive nav label — readable on dark sidebar
         CARD       = "#222222",
         CARD_HI    = "#2a2a2a",
         SEP        = "#2e2e2e",
@@ -5595,6 +5596,7 @@ class DictationApp:
         BG         = "#f5f5f7",
         SIDEBAR    = "#e8e8ed",
         NAV_ACTIVE = "#d8d8dd",   # pill fill for active sidebar row
+        NAV_DIM    = "#6e6e73",   # inactive nav label — readable on light sidebar
         CARD       = "#ffffff",
         CARD_HI    = "#e5e5ea",
         SEP        = "#d1d1d6",
@@ -5638,6 +5640,7 @@ class DictationApp:
         BG         = _theme["BG"]
         SIDEBAR    = _theme["SIDEBAR"]
         NAV_ACTIVE = _theme["NAV_ACTIVE"]
+        NAV_DIM    = _theme["NAV_DIM"]
         CARD       = _theme["CARD"]
         CARD_HI    = _theme["CARD_HI"]
         SEP        = _theme["SEP"]
@@ -5657,7 +5660,6 @@ class DictationApp:
         FONT    = "Helvetica Neue"
 
         _win = tk.Toplevel(self.root)
-        _win.overrideredirect(True)   # frameless — custom header handles close/drag
         _win.configure(bg=BG)
         _win.attributes("-topmost", True)
         _win.attributes("-alpha", 1.0)
@@ -5822,7 +5824,7 @@ class DictationApp:
                     pill_c.create_arc(_w-4-R*2, _h-R*2, _w-4, _h, start=270, extent=90, fill=NAV_ACTIVE, outline="")
                     pill_c.create_rectangle(4+R, 0,   _w-4-R, _h,  fill=NAV_ACTIVE, outline="")
                     pill_c.create_rectangle(4,   R,   _w-4,   _h-R, fill=NAV_ACTIVE, outline="")
-                l.configure(fg=FG if is_active else DIM,
+                l.configure(fg=FG if is_active else NAV_DIM,
                             font=(FONT, 12, "bold") if is_active else (FONT, 12),
                             bg=NAV_ACTIVE if is_active else SIDEBAR)
             for n, pg in pages.items():
@@ -5839,7 +5841,7 @@ class DictationApp:
                                height=36, cursor="hand2")
             pill_c.place(x=0, y=2, relwidth=1.0, height=36)
             _icon = DictationApp._PAGE_ICONS.get(nav_name, "·")
-            nl = tk.Label(nf, text=f"  {_icon}  {nav_name}", bg=SIDEBAR, fg=DIM,
+            nl = tk.Label(nf, text=f"  {_icon}  {nav_name}", bg=SIDEBAR, fg=NAV_DIM,
                           font=(FONT, 12), anchor="w", padx=12)
             nl.place(x=0, y=2, relwidth=1.0, height=36)
             nav_btns[nav_name] = (nf, pill_c, nl)
@@ -5849,7 +5851,7 @@ class DictationApp:
                     l.configure(fg=FG) if active_page[0] != n else None
                 ))
                 w.bind("<Leave>", lambda e, l=nl, n=nav_name: (
-                    l.configure(fg=DIM) if active_page[0] != n else None
+                    l.configure(fg=NAV_DIM) if active_page[0] != n else None
                 ))
 
         # ── Shared helpers ────────────────────────────────────────────────────
