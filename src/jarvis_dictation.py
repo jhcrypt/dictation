@@ -5731,10 +5731,9 @@ class DictationApp:
         _win.attributes("-topmost", True)
         _win.attributes("-alpha", 1.0)
 
-        # ── Restore saved window size (clamp to minimum) ─────────────────────
-        MIN_W, MIN_H = 660, 580
-        W = max(MIN_W, settings.get("settings_win_w", 700))
-        H = max(MIN_H, settings.get("settings_win_h", 680))
+        # ── Restore saved window size ─────────────────────────────────────────
+        W = max(700, settings.get("settings_win_w", 1000))
+        H = max(580, settings.get("settings_win_h", 720))
         sw, sh = _win.winfo_screenwidth(), _win.winfo_screenheight()
 
         # ── Restore saved position (keep on-screen) ───────────────────────────
@@ -5776,10 +5775,10 @@ class DictationApp:
                             nsw.setOpaque_(False)
                             nsw.setBackgroundColor_(NSColor.clearColor())
                             nsw.setHasShadow_(True)
-                            cv = nsw.contentView()
-                            cv.setWantsLayer_(True)
-                            cv.layer().setCornerRadius_(12.0)
-                            cv.layer().setMasksToBounds_(True)
+                            # NOTE: Do NOT call setMasksToBounds_(True) on the
+                            # contentView layer — it prevents Tkinter from
+                            # re-rendering page content after pack_forget/pack
+                            # tab switches, producing a blank content area.
                             break
                     except Exception:
                         pass
@@ -5884,11 +5883,12 @@ class DictationApp:
         close_lbl.bind("<Button-1>", lambda e: _save_win_state_and_close())
         close_lbl.bind("<Enter>", lambda e: close_lbl.configure(fg=FG))
         close_lbl.bind("<Leave>", lambda e: close_lbl.configure(fg=DIM))
-        # Bind drag to sidebar header — keeps drag UX without stealing focus
-        # from Entry/Text widgets in the content area
-        for _drag_w in (sidebar, shdr):
-            _drag_w.bind("<ButtonPress-1>", _drag_start)
-            _drag_w.bind("<B1-Motion>",     _drag_move)
+        # Bind drag to the header strip only.
+        # The sidebar body is NOT bound — nav item child widgets would consume
+        # those events and block dragging anyway. Header has no interactive
+        # children between the icon/title and the close button.
+        shdr.bind("<ButtonPress-1>", _drag_start)
+        shdr.bind("<B1-Motion>",     _drag_move)
 
         tk.Frame(sidebar, bg=SEP, height=1).pack(fill="x")
 
@@ -5914,30 +5914,9 @@ class DictationApp:
         content_host = tk.Frame(_win, bg=BG)
         content_host.pack(side="left", fill="both", expand=True)
 
-        # ── Custom resize grip (bottom-right corner) ──────────────────────────
-        # overrideredirect removes the native resize handle; we draw a subtle
-        # dotted grip and bind mouse-drag to resize the window.
-        _grip = tk.Canvas(content_host, width=16, height=16, bg=BG,
-                          highlightthickness=0, cursor="bottom_right_corner")
-        _grip.place(relx=1.0, rely=1.0, anchor="se")
-        for _gi in range(3):          # draw 3 diagonal dots
-            _d = _gi * 5 + 2
-            _grip.create_rectangle(_d, 16-_d+1, _d+2, 16-_d+3, fill=DIM, outline="")
-
-        _resize_start = {}
-        def _grip_press(e):
-            _resize_start["x"]  = e.x_root
-            _resize_start["y"]  = e.y_root
-            _resize_start["w"]  = _win.winfo_width()
-            _resize_start["h"]  = _win.winfo_height()
-        def _grip_drag(e):
-            dw = e.x_root - _resize_start["x"]
-            dh = e.y_root - _resize_start["y"]
-            nw = max(MIN_W, _resize_start["w"] + dw)
-            nh = max(MIN_H, _resize_start["h"] + dh)
-            _win.geometry(f"{nw}x{nh}")
-        _grip.bind("<ButtonPress-1>",  _grip_press)
-        _grip.bind("<B1-Motion>",      _grip_drag)
+        # Resize disabled: place() inside content_host conflicts with pages'
+        # pack(fill="both") and causes blank content area. Revisit after content
+        # is stable.
 
         pages = {}
 
@@ -5948,8 +5927,6 @@ class DictationApp:
         footer.pack_propagate(False)
         tk.Label(footer, text=f"{BUILD_ID}  ·  ⌃, to open", bg=SIDEBAR, fg=ACC,
                  font=(FONT, 9)).place(x=14, rely=0.5, anchor="w")
-
-        nav_icon_lbls = {}   # nav_name -> icon tk.Label (when SF icons are used)
 
         def show_page(name):
             active_page[0] = name
@@ -5970,75 +5947,39 @@ class DictationApp:
                 l.configure(fg=FG if is_active else NAV_DIM,
                             font=(FONT, 12, "bold") if is_active else (FONT, 12),
                             bg=NAV_ACTIVE if is_active else SIDEBAR)
-                # Swap icon image colour (SF icons only)
-                if n in nav_icon_lbls and n in _icons_active:
-                    img = _icons_active[n] if is_active else _icons_inactive[n]
-                    nav_icon_lbls[n].configure(image=img,
-                                               bg=NAV_ACTIVE if is_active else SIDEBAR)
             for n, pg in pages.items():
                 pg.pack_forget()
             if name in pages:
                 pages[name].pack(fill="both", expand=True)
-
-        # ── Pre-render SF Symbol icons (active + inactive colour variants) ──────
-        ICON_SZ = 16
-        _icons_active   = {}   # nav_name -> PhotoImage (ACC colour)
-        _icons_inactive = {}   # nav_name -> PhotoImage (NAV_DIM colour)
-        _using_sf = False
-        for _nn in nav_items:
-            _sf = DictationApp._SF_ICON_NAMES.get(_nn, "")
-            if _sf:
-                _ia = DictationApp._render_sf_symbol(_sf, ICON_SZ, ACC)
-                _ii = DictationApp._render_sf_symbol(_sf, ICON_SZ, NAV_DIM)
-                if _ia and _ii:
-                    _icons_active[_nn]   = _ia
-                    _icons_inactive[_nn] = _ii
-                    _using_sf = True
-        # Keep references alive (PhotoImage is garbage-collected otherwise)
-        self._nav_icon_refs = list(_icons_active.values()) + list(_icons_inactive.values())
+                # Force Tkinter to flush layout and redraw after pack switch.
+                # Without this, the CA layer from _apply_rounded_corners can
+                # leave the content area blank until the next OS-level repaint.
+                _win.update_idletasks()
 
         for nav_name in nav_items:
             nf = tk.Frame(sidebar, bg=SIDEBAR, cursor="hand2", height=40)
             nf.pack(fill="x", padx=4, pady=1)
             nf.pack_propagate(False)
-            # Canvas layer draws the rounded-pill background when active
+            # Canvas draws the rounded-pill background behind the active row
             pill_c = tk.Canvas(nf, bg=SIDEBAR, highlightthickness=0, bd=0,
                                height=36, cursor="hand2")
             pill_c.place(x=0, y=2, relwidth=1.0, height=36)
-
-            if _using_sf and nav_name in _icons_inactive:
-                # Icon as image label + separate text label
-                icon_lbl = tk.Label(nf, image=_icons_inactive[nav_name],
-                                    bg=SIDEBAR, cursor="hand2")
-                icon_lbl.place(x=14, y=10, width=ICON_SZ, height=ICON_SZ)
-                nl = tk.Label(nf, text=nav_name, bg=SIDEBAR, fg=NAV_DIM,
-                              font=(FONT, 12), anchor="w")
-                nl.place(x=14 + ICON_SZ + 8, y=10, height=18)
-                nav_icon_lbls[nav_name] = icon_lbl
-                _extra_widgets = [icon_lbl]
-            else:
-                # Unicode fallback — single label with icon glyph + name
-                _uc = DictationApp._PAGE_ICONS.get(nav_name, "·")
-                nl = tk.Label(nf, text=f"  {_uc}  {nav_name}", bg=SIDEBAR,
-                              fg=NAV_DIM, font=(FONT, 12), anchor="w", padx=12)
-                nl.place(x=0, y=2, relwidth=1.0, height=36)
-                icon_lbl = None
-                _extra_widgets = []
+            # Single label: Unicode icon glyph + page name (stable, no layout conflicts)
+            _uc = DictationApp._PAGE_ICONS.get(nav_name, "·")
+            nl = tk.Label(nf, text=f"  {_uc}  {nav_name}", bg=SIDEBAR,
+                          fg=NAV_DIM, font=(FONT, 12), anchor="w", padx=12)
+            nl.place(x=0, y=2, relwidth=1.0, height=36)
 
             nav_btns[nav_name] = (nf, pill_c, nl)
 
-            def _on_click(e, n=nav_name): show_page(n)
-            def _on_enter(e, l=nl, il=icon_lbl, n=nav_name):
-                if active_page[0] != n:
-                    l.configure(fg=FG)
-            def _on_leave(e, l=nl, il=icon_lbl, n=nav_name):
-                if active_page[0] != n:
-                    l.configure(fg=NAV_DIM)
-
-            for w in [nf, pill_c, nl] + _extra_widgets:
-                w.bind("<Button-1>", _on_click)
-                w.bind("<Enter>",    _on_enter)
-                w.bind("<Leave>",    _on_leave)
+            for w in (nf, pill_c, nl):
+                w.bind("<Button-1>", lambda e, n=nav_name: show_page(n))
+                w.bind("<Enter>", lambda e, l=nl, n=nav_name: (
+                    l.configure(fg=FG) if active_page[0] != n else None
+                ))
+                w.bind("<Leave>", lambda e, l=nl, n=nav_name: (
+                    l.configure(fg=NAV_DIM) if active_page[0] != n else None
+                ))
 
         # ── Shared helpers ────────────────────────────────────────────────────
         def page(name, scrollable=False):
