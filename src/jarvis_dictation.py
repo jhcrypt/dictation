@@ -1618,7 +1618,6 @@ DEFAULT_SETTINGS = {
     "translate_my_dictation": "Off",
     "dictation_quality": "Balanced",
     "debug_logging": False,
-    "appearance": "dark",   # "dark" | "light"
 }
 
 def load_settings():
@@ -5575,148 +5574,21 @@ class DictationApp:
         self.root.after(0, lambda: self._show_settings(
             navigate_to=navigate_to, prefill_correction=prefill_correction))
 
-    # ── Settings window theme tokens ──────────────────────────────────────────
-    _THEME_DARK = dict(
-        BG         = "#141414",
-        SIDEBAR    = "#1a1a1a",
-        NAV_ACTIVE = "#252525",   # pill fill for active sidebar row
-        NAV_DIM    = "#909090",   # inactive nav label — readable on dark sidebar
-        CARD       = "#222222",
-        CARD_HI    = "#2a2a2a",
-        SEP        = "#2e2e2e",
-        ACC        = "#0a84ff",
-        ACC_DIM    = "#1a3a5c",
-        FG         = "#f0f0f0",
-        DIM        = "#6a6a6a",
-        HINT       = "#8ab4f8",
-        TOGGLE_OFF = "#3a3a3a",
-        NOTE_BG    = "#191919",
-    )
-    _THEME_LIGHT = dict(
-        BG         = "#f5f5f7",
-        SIDEBAR    = "#e8e8ed",
-        NAV_ACTIVE = "#d8d8dd",   # pill fill for active sidebar row
-        NAV_DIM    = "#6e6e73",   # inactive nav label — readable on light sidebar
-        CARD       = "#ffffff",
-        CARD_HI    = "#e5e5ea",
-        SEP        = "#d1d1d6",
-        ACC        = "#0a84ff",
-        ACC_DIM    = "#cce0ff",
-        FG         = "#1c1c1e",
-        DIM        = "#8e8e93",
-        HINT       = "#0071e3",
-        TOGGLE_OFF = "#b0b0b8",
-        NOTE_BG    = "#e5e5ea",
-    )
-
-    @staticmethod
-    def _get_settings_theme(settings):
-        return DictationApp._THEME_DARK if settings.get("appearance", "dark") == "dark" \
-               else DictationApp._THEME_LIGHT
-
-    # ── SF Symbol names for sidebar icons (macOS 11+) ─────────────────────────
-    _SF_ICON_NAMES = {
-        "Setup":            "gearshape",
-        "Dictation":        "mic",
-        "Audio & Language": "globe",
-        "AI Cleanup":       "wand.and.stars",
-        "Writing Profiles": "doc.text",
-        "Jarvis":           "brain",
-        "Custom Commands":  "command",
-        "Contacts":         "person",
-        "Vocabulary":       "book.closed",
-        "Cloud":            "cloud",
-        "Workflows":        "arrow.triangle.branch",
-        "Help":             "questionmark.circle",
-    }
-    # Unicode fallbacks — used when SF Symbols are unavailable (macOS <11)
-    _PAGE_ICONS = {
-        "Setup":            "⚙",
-        "Dictation":        "⊙",
-        "Audio & Language": "⊕",
-        "AI Cleanup":       "✦",
-        "Writing Profiles": "≡",
-        "Jarvis":           "◆",
-        "Custom Commands":  "⌘",
-        "Contacts":         "◉",
-        "Vocabulary":       "∷",
-        "Cloud":            "○",
-        "Workflows":        "↻",
-        "Help":             "?",
-    }
-
-    @staticmethod
-    def _render_sf_symbol(symbol_name: str, size: int, hex_color: str):
-        """Render an SF Symbol to a PIL ImageTk.PhotoImage.
-        Returns None if unavailable (macOS <11, PyObjC missing, bad name).
-        """
-        try:
-            from AppKit import (NSImage, NSBitmapImageRep, NSGraphicsContext,
-                                NSColor, NSBezierPath, NSRect,
-                                NSCompositingOperationSourceOver)
-            import ctypes
-
-            img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-                symbol_name, "")
-            if img is None:
-                return None
-
-            r = int(hex_color[1:3], 16) / 255.0
-            g = int(hex_color[3:5], 16) / 255.0
-            b = int(hex_color[5:7], 16) / 255.0
-            tint = NSColor.colorWithRed_green_blue_alpha_(r, g, b, 1.0)
-
-            bitmap = NSBitmapImageRep.alloc(
-            ).initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
-                None, size, size, 8, 4, True, False, "NSDeviceRGBColorSpace", 0, 0)
-
-            ctx = NSGraphicsContext.graphicsContextWithBitmapImageRep_(bitmap)
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.setCurrentContext_(ctx)
-
-            NSColor.clearColor().setFill()
-            NSBezierPath.fillRect_(NSRect((0, 0), (size, size)))
-
-            img.setTemplate_(True)   # makes the symbol use the current fill colour
-            tint.setFill()
-            img.drawInRect_fromRect_operation_fraction_(
-                NSRect((0, 0), (size, size)),
-                NSRect((0, 0), img.size()),
-                NSCompositingOperationSourceOver,
-                1.0,
-            )
-
-            NSGraphicsContext.restoreGraphicsState()
-
-            nbytes = size * size * 4
-            raw = (ctypes.c_uint8 * nbytes).from_address(int(bitmap.bitmapData()))
-            from PIL import Image, ImageTk
-            pil = Image.frombytes("RGBA", (size, size), bytes(raw))
-            return ImageTk.PhotoImage(pil)
-        except Exception:
-            return None
-
     def _show_settings(self, navigate_to=None, prefill_correction=""):
         # --- STABILITY GUARD: Pause Wake Word while UI is active ---
         global WAKE_ENABLED
         old_wake_state = WAKE_ENABLED
         globals()["WAKE_ENABLED"] = False
-        # ── Theme tokens ─────────────────────────────────────────────────────
-        _theme     = DictationApp._get_settings_theme(settings)
-        BG         = _theme["BG"]
-        SIDEBAR    = _theme["SIDEBAR"]
-        NAV_ACTIVE = _theme["NAV_ACTIVE"]
-        NAV_DIM    = _theme["NAV_DIM"]
-        CARD       = _theme["CARD"]
-        CARD_HI    = _theme["CARD_HI"]
-        SEP        = _theme["SEP"]
-        ACC        = _theme["ACC"]
-        ACC_DIM    = _theme["ACC_DIM"]
-        FG         = _theme["FG"]
-        DIM        = _theme["DIM"]
-        HINT       = _theme["HINT"]
-        TOGGLE_OFF = _theme["TOGGLE_OFF"]
-        NOTE_BG    = _theme["NOTE_BG"]
+        BG      = "#141414"
+        SIDEBAR = "#1a1a1a"
+        CARD    = "#222222"
+        CARD_HI = "#2a2a2a"
+        SEP     = "#2e2e2e"
+        ACC     = "#0a84ff"
+        ACC_DIM = "#1a3a5c"
+        FG      = "#f0f0f0"
+        DIM     = "#6a6a6a"
+        HINT    = "#8ab4f8"   # blue used for all instructional / helper text
         # ── Shared corner-radius constants ───────────────────────────────────
         UI_RADIUS_CARD   =  8   # cards, info panels, storage boxes
         UI_RADIUS_BUTTON =  8   # all buttons (primary, secondary, action toggles)
@@ -5726,19 +5598,15 @@ class DictationApp:
         FONT    = "Helvetica Neue"
 
         _win = tk.Toplevel(self.root)
-        _win.overrideredirect(True)   # remove native chrome (title bar / traffic lights)
+        _win.overrideredirect(True)   # remove native title bar
         _win.configure(bg=BG)
         _win.attributes("-topmost", True)
         _win.attributes("-alpha", 1.0)
-
-        # ── Restore saved window size ─────────────────────────────────────────
-        W = max(700, settings.get("settings_win_w", 1000))
-        H = max(580, settings.get("settings_win_h", 720))
+        _win.resizable(False, False)
+        W, H = 900, 700
         sw, sh = _win.winfo_screenwidth(), _win.winfo_screenheight()
-
-        # ── Restore saved position (keep on-screen) ───────────────────────────
-        _sx = settings.get("settings_win_x", None)
-        _sy = settings.get("settings_win_y", None)
+        _sx = settings.get("settings_win_x")
+        _sy = settings.get("settings_win_y")
         if _sx is not None and _sy is not None:
             win_x = max(0, min(int(_sx), sw - W))
             win_y = max(0, min(int(_sy), sh - H))
@@ -5747,27 +5615,14 @@ class DictationApp:
         _win.geometry(f"{W}x{H}+{win_x}+{win_y}")
         _win.update_idletasks()
 
-        # ── Save position+size on close ───────────────────────────────────────
-        def _save_win_state_and_close():
-            settings["settings_win_x"] = _win.winfo_x()
-            settings["settings_win_y"] = _win.winfo_y()
-            settings["settings_win_w"] = _win.winfo_width()
-            settings["settings_win_h"] = _win.winfo_height()
-            save_settings(settings)
-            _win.destroy()
-
-        # ── Rounded corners via PyObjC (macOS only) ───────────────────────────
-        # overrideredirect removes the native chrome that normally rounds the
-        # window.  We restore rounding by clipping the contentView's CALayer
-        # to a rounded rect and making the NSWindow background transparent so
-        # the cut corners show the desktop behind the window.
-        def _apply_rounded_corners():
+        # Rounded card look via PyObjC — transparent background + shadow.
+        # Do NOT call setMasksToBounds_ — it breaks tab-switch redraws.
+        def _apply_card_look():
             try:
                 from AppKit import NSApplication, NSColor
                 _win.update_idletasks()
-                tx = _win.winfo_rootx()
-                ty = _win.winfo_rooty()
-                mac_y = _win.winfo_screenheight() - ty - H  # macOS: origin is bottom-left
+                tx, ty = _win.winfo_rootx(), _win.winfo_rooty()
+                mac_y = _win.winfo_screenheight() - ty - H
                 for nsw in NSApplication.sharedApplication().windows():
                     try:
                         fr = nsw.frame()
@@ -5775,23 +5630,23 @@ class DictationApp:
                             nsw.setOpaque_(False)
                             nsw.setBackgroundColor_(NSColor.clearColor())
                             nsw.setHasShadow_(True)
-                            # NOTE: Do NOT call setMasksToBounds_(True) on the
-                            # contentView layer — it prevents Tkinter from
-                            # re-rendering page content after pack_forget/pack
-                            # tab switches, producing a blank content area.
                             break
                     except Exception:
                         pass
             except Exception:
-                pass   # non-macOS or PyObjC unavailable — square corners fallback
-
-        _win.after(60, _apply_rounded_corners)
+                pass
+        _win.after(80, _apply_card_look)
         # Treat Settings like the other utility windows so modifier state is
         # flushed correctly while changing record keys. This keeps Right Option
         # stable after switching away and back.
         _toplevel_opened()
-        # Close on Escape — saves position/size first
-        _win.bind("<Escape>", lambda e: _save_win_state_and_close())
+        def _close_settings():
+            settings["settings_win_x"] = _win.winfo_x()
+            settings["settings_win_y"] = _win.winfo_y()
+            save_settings(settings)
+            _win.destroy()
+
+        _win.bind("<Escape>", lambda e: _close_settings())
 
         # Drag bound only to sidebar (not content area) so Entry/Text widgets
         # still receive clicks and keyboard focus correctly.
@@ -5801,8 +5656,6 @@ class DictationApp:
                 _win.geometry(f"+{e.x_root - _win._dx}+{e.y_root - _win._dy}")
 
         # ── Variables ─────────────────────────────────────────────────────────
-        appearance_var = tk.StringVar(value=settings.get("appearance", "dark").title())
-        dark_mode_var  = tk.BooleanVar(value=settings.get("appearance", "dark") == "dark")
         model_var   = tk.StringVar(value=settings["model"])
         quality_var = tk.StringVar(value=settings.get("dictation_quality", "Balanced"))
         hotkey_var  = tk.StringVar(value=settings.get("hotkey_label", "Right Option"))
@@ -5871,22 +5724,18 @@ class DictationApp:
             tk.Label(shdr, text="Dictation", bg=SIDEBAR, fg=FG,
                      font=(FONT, 14, "bold")).place(x=42, rely=0.5, anchor="w")
         else:
-            # Flat monochrome fallback — no emoji
-            tk.Label(shdr, text="◉", bg=SIDEBAR, fg=DIM,
-                     font=(FONT, 16)).place(x=14, rely=0.5, anchor="w")
+            tk.Label(shdr, text="🎙", bg=SIDEBAR, fg=FG,
+                     font=(FONT, 18)).place(x=14, rely=0.5, anchor="w")
             tk.Label(shdr, text="Dictation", bg=SIDEBAR, fg=FG,
-                     font=(FONT, 14, "bold")).place(x=36, rely=0.5, anchor="w")
+                     font=(FONT, 14, "bold")).place(x=40, rely=0.5, anchor="w")
         # Close button top-right
         close_lbl = tk.Label(shdr, text="✕", bg=SIDEBAR, fg=DIM,
                              font=(FONT, 12), cursor="hand2")
         close_lbl.place(relx=1.0, x=-14, rely=0.5, anchor="e")
-        close_lbl.bind("<Button-1>", lambda e: _save_win_state_and_close())
+        close_lbl.bind("<Button-1>", lambda e: _close_settings())
         close_lbl.bind("<Enter>", lambda e: close_lbl.configure(fg=FG))
         close_lbl.bind("<Leave>", lambda e: close_lbl.configure(fg=DIM))
-        # Bind drag to the header strip only.
-        # The sidebar body is NOT bound — nav item child widgets would consume
-        # those events and block dragging anyway. Header has no interactive
-        # children between the icon/title and the close button.
+        # Drag bound to header strip only — sidebar body children block events
         shdr.bind("<ButtonPress-1>", _drag_start)
         shdr.bind("<B1-Motion>",     _drag_move)
 
@@ -5914,10 +5763,6 @@ class DictationApp:
         content_host = tk.Frame(_win, bg=BG)
         content_host.pack(side="left", fill="both", expand=True)
 
-        # Resize disabled: place() inside content_host conflicts with pages'
-        # pack(fill="both") and causes blank content area. Revisit after content
-        # is stable.
-
         pages = {}
 
         # Sidebar footer
@@ -5930,55 +5775,36 @@ class DictationApp:
 
         def show_page(name):
             active_page[0] = name
-            for n, (f, pill_c, l) in nav_btns.items():
+            for n, (f, l, bar) in nav_btns.items():
                 is_active = (n == name)
-                _w = f.winfo_width() or 172
-                _h = 36
-                R  = 7
-                pill_c.delete("all")
-                if is_active:
-                    pill_c.create_arc(4, 0, 4+R*2, R*2,           start=90,  extent=90, fill=NAV_ACTIVE, outline="")
-                    pill_c.create_arc(_w-4-R*2, 0, _w-4, R*2,     start=0,   extent=90, fill=NAV_ACTIVE, outline="")
-                    pill_c.create_arc(4, _h-R*2, 4+R*2, _h,       start=180, extent=90, fill=NAV_ACTIVE, outline="")
-                    pill_c.create_arc(_w-4-R*2, _h-R*2, _w-4, _h, start=270, extent=90, fill=NAV_ACTIVE, outline="")
-                    pill_c.create_rectangle(4+R, 0,   _w-4-R, _h,  fill=NAV_ACTIVE, outline="")
-                    pill_c.create_rectangle(4,   R,   _w-4,   _h-R, fill=NAV_ACTIVE, outline="")
-                # Update text label colour + pill bg
-                l.configure(fg=FG if is_active else NAV_DIM,
-                            font=(FONT, 12, "bold") if is_active else (FONT, 12),
-                            bg=NAV_ACTIVE if is_active else SIDEBAR)
+                bar.configure(bg=ACC if is_active else SIDEBAR)
+                l.configure(fg=FG if is_active else DIM,
+                            font=(FONT, 12, "bold") if is_active else (FONT, 12))
             for n, pg in pages.items():
                 pg.pack_forget()
             if name in pages:
                 pages[name].pack(fill="both", expand=True)
-                # Force Tkinter to flush layout and redraw after pack switch.
-                # Without this, the CA layer from _apply_rounded_corners can
-                # leave the content area blank until the next OS-level repaint.
-                _win.update_idletasks()
 
         for nav_name in nav_items:
             nf = tk.Frame(sidebar, bg=SIDEBAR, cursor="hand2", height=40)
-            nf.pack(fill="x", padx=4, pady=1)
+            nf.pack(fill="x")
             nf.pack_propagate(False)
-            # Canvas draws the rounded-pill background behind the active row
-            pill_c = tk.Canvas(nf, bg=SIDEBAR, highlightthickness=0, bd=0,
-                               height=36, cursor="hand2")
-            pill_c.place(x=0, y=2, relwidth=1.0, height=36)
-            # Single label: Unicode icon glyph + page name (stable, no layout conflicts)
-            _uc = DictationApp._PAGE_ICONS.get(nav_name, "·")
-            nl = tk.Label(nf, text=f"  {_uc}  {nav_name}", bg=SIDEBAR,
-                          fg=NAV_DIM, font=(FONT, 12), anchor="w", padx=12)
-            nl.place(x=0, y=2, relwidth=1.0, height=36)
-
-            nav_btns[nav_name] = (nf, pill_c, nl)
-
-            for w in (nf, pill_c, nl):
+            # Left accent bar (shown when active)
+            accent_bar = tk.Frame(nf, bg=SIDEBAR, width=3)
+            accent_bar.pack(side="left", fill="y")
+            nl = tk.Label(nf, text=f"  {nav_name}", bg=SIDEBAR, fg=DIM,
+                          font=(FONT, 12), anchor="w", padx=8)
+            nl.pack(side="left", fill="x", expand=True)
+            nav_btns[nav_name] = (nf, nl, accent_bar)
+            for w in (nf, nl):
                 w.bind("<Button-1>", lambda e, n=nav_name: show_page(n))
-                w.bind("<Enter>", lambda e, l=nl, n=nav_name: (
-                    l.configure(fg=FG) if active_page[0] != n else None
+                w.bind("<Enter>", lambda e, f=nf, l=nl, n=nav_name: (
+                    l.configure(fg=FG if active_page[0] != n else FG)
+                    if active_page[0] != n else None
                 ))
-                w.bind("<Leave>", lambda e, l=nl, n=nav_name: (
-                    l.configure(fg=NAV_DIM) if active_page[0] != n else None
+                w.bind("<Leave>", lambda e, f=nf, l=nl, n=nav_name: (
+                    l.configure(fg=DIM if active_page[0] != n else FG)
+                    if active_page[0] != n else None
                 ))
 
         # ── Shared helpers ────────────────────────────────────────────────────
@@ -6092,7 +5918,7 @@ class DictationApp:
 
             def draw_pill(on):
                 pill_c.delete("all")
-                bg_col = ACC if on else TOGGLE_OFF
+                bg_col = ACC if on else "#3a3a3a"
                 pill_c.create_oval(0, 0, pill_h, pill_h, fill=bg_col, outline="")
                 pill_c.create_oval(pill_w-pill_h, 0, pill_w, pill_h, fill=bg_col, outline="")
                 pill_c.create_rectangle(pill_h//2, 0, pill_w-pill_h//2, pill_h, fill=bg_col, outline="")
@@ -6191,11 +6017,11 @@ class DictationApp:
             return inner
 
         def section_note(parent, title, text):
-            inner = _rounded_card_canvas(parent, NOTE_BG, radius=UI_RADIUS_CARD,
+            inner = _rounded_card_canvas(parent, "#191919", radius=UI_RADIUS_CARD,
                                          padx=24, pady=(10, 8))
-            tk.Label(inner, text=title, bg=NOTE_BG, fg=FG,
+            tk.Label(inner, text=title, bg="#191919", fg=FG,
                      font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
-            tk.Label(inner, text=text, bg=NOTE_BG, fg=HINT,
+            tk.Label(inner, text=text, bg="#191919", fg=HINT,
                      font=(FONT, 10), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 10))
 
@@ -6207,23 +6033,23 @@ class DictationApp:
             Callers that need to flush Settings state first should pass their
             own function; the default is kept for any other use-site.
             """
-            inner = _rounded_card_canvas(parent, NOTE_BG, radius=UI_RADIUS_CARD,
+            inner = _rounded_card_canvas(parent, "#191919", radius=UI_RADIUS_CARD,
                                          padx=24, pady=(10, 8))
-            tk.Label(inner, text=title, bg=NOTE_BG, fg=FG,
+            tk.Label(inner, text=title, bg="#191919", fg=FG,
                      font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
-            tk.Label(inner, text=body, bg=NOTE_BG, fg=HINT,
+            tk.Label(inner, text=body, bg="#191919", fg=HINT,
                      font=(FONT, 10), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 8))
-            btn_row = tk.Frame(inner, bg=NOTE_BG)
+            btn_row = tk.Frame(inner, bg="#191919")
             btn_row.pack(anchor="w", padx=12, pady=(0, 10))
             def _make_btn(parent, label, cmd, accent):
                 bg  = ACC if accent else CARD
-                hov = "#1a6fd4" if accent else CARD_HI
+                hov = "#1a6fd4" if accent else "#2e2e2e"
                 BTN_H = 36
                 r     = UI_RADIUS_BUTTON
                 w_est = max(80, len(label) * 9 + 28)
                 c = tk.Canvas(parent, width=w_est, height=BTN_H,
-                              bg=NOTE_BG, highlightthickness=0, cursor="hand2")
+                              bg="#191919", highlightthickness=0, cursor="hand2")
                 c.pack(side="left", padx=(0, 8))
                 def _draw(col, _c=c, _w=w_est):
                     _c.delete("all")
@@ -6367,7 +6193,6 @@ class DictationApp:
         toggle_row(p, hud_var,    "Show HUD",    "Floating status bar while dictating")
         toggle_row(p, sounds_var, "Start / stop sounds", "Play a small sound when recording starts and stops")
         toggle_row(p, startup_tips_var, "Helpful HUD tips", "Show simple guidance instead of technical status whenever possible")
-        toggle_row(p, dark_mode_var, "Dark mode", "Settings window uses dark theme; toggle to switch to light theme (takes effect on next open)")
         small_button(p, "Reset to recommended defaults", reset_recommended_defaults)
         save_btn_row(p, lambda: _save())
 
@@ -7310,11 +7135,11 @@ class DictationApp:
                          font=(FONT, 10), justify="left", wraplength=420
                 ).pack(anchor="w", padx=12, pady=(0, 4))
             if examples:
-                ex_bg = NOTE_BG
+                ex_bg = "#191919"
                 ex_frame = tk.Frame(inner, bg=ex_bg)
                 ex_frame.pack(fill="x", padx=12, pady=(2, 4))
                 for ex in examples:
-                    tk.Label(ex_frame, text=ex, bg=ex_bg, fg=HINT,
+                    tk.Label(ex_frame, text=ex, bg=ex_bg, fg="#8ab4f8",
                              font=(FONT, 10), anchor="w", justify="left", wraplength=390
                     ).pack(anchor="w", padx=10, pady=(4, 0))
                 tk.Frame(ex_frame, bg=ex_bg, height=6).pack()
@@ -7628,7 +7453,6 @@ class DictationApp:
                 "wake_dictation_silence_seconds": max(1.0, min(12.0, _safe_float(wake_silence_var.get(), WAKE_DICTATION_SILENCE_SECONDS))),
                 "wake_dictation_max_seconds": max(10.0, min(120.0, _safe_float(wake_max_var.get(), WAKE_DICTATION_MAX_SECONDS))),
                 "wake_dictation_silence_rms": WAKE_DICTATION_SILENCE_RMS,
-                "appearance": "dark" if dark_mode_var.get() else "light",
             })
 
             # ── Debug: log what we're about to save ───────────────────────────
