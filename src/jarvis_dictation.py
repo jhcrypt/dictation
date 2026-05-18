@@ -3184,21 +3184,23 @@ def _fast_jarvis_match(lower, raw_text=""):
     # ── Translation ──────────────────────────────────────────────────────────
     _lang_names = "|".join(TRANSLATION_LANGUAGES.keys()).lower()
 
-    # "translate that/it/last dictation to X" — translates _last_normal_dictation,
-    # NOT selected text.  Must be checked before the selected-text pattern below.
+    # "translate that/it/last dictation/bare to X" — translates _last_normal_dictation.
+    # Bare "translate to French" is included here so it always hits the previous-dictation
+    # path consistently, instead of the clipboard path which is intermittent.
+    # Must be checked before the selected-text pattern below.
     _translate_prev_m = re.match(
         rf"(?i)^translate\s+"
         rf"(?:that|it|last\s+dictation|my\s+last\s+dictation|"
-        rf"previous\s+dictation|the\s+last\s+dictation)\s+"
+        rf"previous\s+dictation|the\s+last\s+dictation)?\s*"
         rf"(?:to|into)\s+({_lang_names})\b",
         lower,
     )
     if _translate_prev_m:
         return ("translate_prev_dictation", {"target": _translate_prev_m.group(1).title()})
 
-    # "translate selected text / this / clipboard to X"
+    # "translate selected text / this / clipboard to X" — explicit clipboard/selection source
     _translate_m = re.match(
-        rf"(?i)^translate\s+(?:selected\s+text|this|clipboard|the\s+text)?\s*to\s+({_lang_names})\b",
+        rf"(?i)^translate\s+(?:selected\s+text|this|clipboard|the\s+text)\s+to\s+({_lang_names})\b",
         lower,
     )
     if _translate_m:
