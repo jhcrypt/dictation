@@ -5660,17 +5660,46 @@ class DictationApp:
         FONT    = "Helvetica Neue"
 
         _win = tk.Toplevel(self.root)
+        _win.overrideredirect(True)   # remove native chrome (title bar / traffic lights)
         _win.configure(bg=BG)
         _win.attributes("-topmost", True)
         _win.attributes("-alpha", 1.0)
         _win.resizable(False, False)
-        # Center on screen
-        # Slightly taller to prevent bottom action buttons from being clipped
-        # by the macOS/Tk title-bar/client-area calculation on some displays.
         W, H = 700, 680
         sw, sh = _win.winfo_screenwidth(), _win.winfo_screenheight()
         _win.geometry(f"{W}x{H}+{sw//2 - W//2}+{sh//2 - H//2}")
         _win.update_idletasks()
+
+        # ── Rounded corners via PyObjC (macOS only) ───────────────────────────
+        # overrideredirect removes the native chrome that normally rounds the
+        # window.  We restore rounding by clipping the contentView's CALayer
+        # to a rounded rect and making the NSWindow background transparent so
+        # the cut corners show the desktop behind the window.
+        def _apply_rounded_corners():
+            try:
+                from AppKit import NSApplication, NSColor
+                _win.update_idletasks()
+                tx = _win.winfo_rootx()
+                ty = _win.winfo_rooty()
+                mac_y = _win.winfo_screenheight() - ty - H  # macOS: origin is bottom-left
+                for nsw in NSApplication.sharedApplication().windows():
+                    try:
+                        fr = nsw.frame()
+                        if abs(fr.origin.x - tx) <= 20 and abs(fr.origin.y - mac_y) <= 20:
+                            nsw.setOpaque_(False)
+                            nsw.setBackgroundColor_(NSColor.clearColor())
+                            nsw.setHasShadow_(True)
+                            cv = nsw.contentView()
+                            cv.setWantsLayer_(True)
+                            cv.layer().setCornerRadius_(12.0)
+                            cv.layer().setMasksToBounds_(True)
+                            break
+                    except Exception:
+                        pass
+            except Exception:
+                pass   # non-macOS or PyObjC unavailable — square corners fallback
+
+        _win.after(60, _apply_rounded_corners)
         # Treat Settings like the other utility windows so modifier state is
         # flushed correctly while changing record keys. This keeps Right Option
         # stable after switching away and back.
