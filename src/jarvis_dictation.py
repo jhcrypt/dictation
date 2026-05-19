@@ -4020,7 +4020,6 @@ def _show_history():
                             cv = nsw.contentView()
                             cv.setWantsLayer_(True)
                             cv.layer().setCornerRadius_(12.0)
-                            cv.layer().setMasksToBounds_(True)
                             break
                     except Exception:
                         pass
@@ -5337,7 +5336,6 @@ class DictationApp:
                             cv = nsw.contentView()
                             cv.setWantsLayer_(True)
                             cv.layer().setCornerRadius_(12.0)
-                            cv.layer().setMasksToBounds_(True)
                             break
                     except Exception:
                         pass
@@ -5942,10 +5940,16 @@ class DictationApp:
                 # Force Tk to realise widget geometries so canvas-hosted inner
                 # frames report correct winfo_reqheight() on first show.
                 _win.update_idletasks()
-                # DIAGNOSTIC: _ping_canvases disabled to isolate whether it
-                # is the cause of content disappearing after tab switches.
-                # Do not re-enable until the failure path is confirmed.
-                pass
+                # Force CoreAnimation to repaint the window layer after tab
+                # switch.  overrideredirect(True) removes the native repaint
+                # trigger; setNeedsDisplay_ nudges CA to redraw the content
+                # view so cards and backgrounds are not clipped/blank.
+                try:
+                    if _nsw_ref[0]:
+                        cv = _nsw_ref[0].contentView()
+                        cv.setNeedsDisplay_(True)
+                except Exception:
+                    pass
             # Refresh Snippets list each time user navigates to that page so
             # edits from an external session are picked up immediately.
             if name == "Snippets":
