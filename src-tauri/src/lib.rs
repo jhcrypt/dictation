@@ -61,7 +61,7 @@ pub fn run() {
                 .focused(false)
                 .resizable(false)
                 .shadow(false)
-                .inner_size(520.0, 58.0)
+                .inner_size(420.0, 52.0)
                 .visible(true)
                 .build()?;
 
@@ -74,8 +74,8 @@ pub fn run() {
                 let mut hud_x = saved.hud_x;
                 let mut hud_y = saved.hud_y;
                 // Reset off-screen positions to default top-center.
-                if hud_x < 0 || hud_x + 520 > screen_w || hud_y < 0 || hud_y + 58 > screen_h {
-                    hud_x = (screen_w - 520) / 2;
+                if hud_x < 0 || hud_x + 420 > screen_w || hud_y < 0 || hud_y + 52 > screen_h {
+                    hud_x = (screen_w - 420) / 2;
                     hud_y = 28;
                 }
                 let _ = hud.set_position(tauri::Position::Logical(

@@ -105,12 +105,15 @@ unsafe extern "C" fn tap_callback(
         CG_EVENT_FLAGS_CHANGED if kc == KEY_RIGHT_OPTION => {
             let is_down = CGEventGetFlags(event) & CG_FLAG_ALTERNATE != 0;
             if is_down && !ctx.held.swap(true, Ordering::SeqCst) {
+                eprintln!("[hotkey] right option DOWN");
                 (ctx.emit_down)();
             } else if !is_down && ctx.held.swap(false, Ordering::SeqCst) {
+                eprintln!("[hotkey] right option UP");
                 (ctx.emit_up)();
             }
         }
         CG_EVENT_KEY_DOWN if kc == KEY_ESCAPE => {
+            eprintln!("[hotkey] ESC");
             (ctx.emit_esc)();
         }
         _ => {}

@@ -22,14 +22,27 @@ interface HudPayload {
 
 // ── Indicator components ──────────────────────────────────────────────────────
 
-function PulsingDot({ color = "#ff453a" }: { color?: string }) {
+// Animated waveform bars — used for recording state
+function WaveformBars({ color = "#ff453a" }: { color?: string }) {
   return (
-    <div className="relative w-4 h-4 flex items-center justify-center flex-shrink-0">
-      <div
-        className="absolute inset-0 rounded-full animate-ping opacity-30"
-        style={{ background: color }}
-      />
-      <div className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
+    <div
+      className="flex items-end flex-shrink-0"
+      style={{ gap: 2, height: 16, width: 20 }}
+    >
+      {[0, 1, 2, 3].map((i) => (
+        <div
+          key={i}
+          style={{
+            width: 3,
+            height: 16,
+            background: color,
+            borderRadius: 2,
+            transformOrigin: "bottom center",
+            animation: "hud-wave 0.75s ease-in-out infinite",
+            animationDelay: `${i * 0.14}s`,
+          }}
+        />
+      ))}
     </div>
   );
 }
@@ -73,14 +86,14 @@ function getConfig(state: HudState, payload: HudPayload): StateConfig {
       };
     case "recording":
       return {
-        icon:       <PulsingDot color={RED} />,
+        icon:       <WaveformBars color={RED} />,
         label:      "Recording…",
         labelColor: FG,
         subColor:   DIM,
       };
     case "wake_recording":
       return {
-        icon:       <PulsingDot color={RED} />,
+        icon:       <WaveformBars color={RED} />,
         label:      "Jarvis wake-word recording",
         labelColor: FG,
         subColor:   DIM,
@@ -217,7 +230,7 @@ export default function HudApp() {
         padding:      "0 18px",
         background:   "rgba(28, 28, 30, 0.96)",
         border:       "1px solid rgba(255,255,255,0.10)",
-        borderRadius: "18px",
+        borderRadius: "14px",
         cursor:       "grab",
         overflow:     "hidden",
         backdropFilter: "blur(20px)",

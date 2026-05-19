@@ -33,6 +33,35 @@ html, body, #root {
   background: #3a3a3a;
 }
 
+/* ── Input / textarea / select distinction ─────────────────────────────────
+   Cards use bg-jarvis-surface (#222). Inputs need to be visually distinct.  */
+input[type="text"],
+input[type="number"],
+input[type="password"],
+input[type="email"],
+input[type="search"],
+textarea,
+select {
+  background: rgba(0, 0, 0, 0.22) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+}
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="password"]:focus,
+input[type="email"]:focus,
+input[type="search"]:focus,
+textarea:focus,
+select:focus {
+  border-color: #0a84ff !important;
+  outline: none;
+}
+
+/* ── HUD waveform animation ─────────────────────────────────────────────── */
+@keyframes hud-wave {
+  0%, 100% { transform: scaleY(0.25); opacity: 0.55; }
+  50%       { transform: scaleY(1.0);  opacity: 1.0;  }
+}
+
 /* HUD window — transparent chrome so only the rounded card is visible. */
 html.hud-mode {
   background: transparent !important;

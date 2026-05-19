@@ -10,6 +10,8 @@ export default function DictationPage() {
   const [sidecarStatus, setSidecarStatus] = useState<SidecarStatus>("checking");
   const [sidecarError,  setSidecarError]  = useState("");
   const [state,         setState]         = useState<RecordingState>("idle");
+  // hudState mirrors the global HUD so the button reflects hotkey-initiated recording
+  const [hudState,      setHudState]      = useState<string>("idle");
   const [lastText,      setLastText]      = useState("");
   const [timing,        setTiming]        = useState<{ whisper: number; ollama: number; total: number } | null>(null);
   const [axGranted,     setAxGranted]     = useState<boolean | null>(null);
@@ -23,6 +25,17 @@ export default function DictationPage() {
     pollTargetApp();
     const interval = setInterval(pollTargetApp, 2000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Mirror global hud-state so the button can reflect hotkey-initiated recording
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<{ state: string }>("hud-state", (e) => {
+        setHudState(e.payload.state);
+      }).then(fn => { unlisten = fn; });
+    }).catch(() => {});
+    return () => { unlisten?.(); };
   }, []);
 
   async function pollTargetApp() {
@@ -91,6 +104,16 @@ export default function DictationPage() {
       } catch { /* ignore */ }
     }
   }, []);
+
+  // ── Stop hotkey-initiated recording from the UI button ───────────────────
+
+  const handleStopHotkey = async () => {
+    console.log("[DictationPage] stop button → emitting ui-stop-recording");
+    try {
+      const { emit } = await import("@tauri-apps/api/event");
+      await emit("ui-stop-recording", {});
+    } catch { /* browser preview */ }
+  };
 
   // ── Manual record button ──────────────────────────────────────────────────
 
@@ -246,27 +269,41 @@ export default function DictationPage() {
         </div>
       )}
 
-      {/* Manual record button */}
+      {/* Manual record button — reflects both button-initiated and hotkey-initiated state */}
       <Card>
-        <button
-          onClick={handleRecord}
-          disabled={state === "transcribing" || sidecarStatus !== "ready"}
-          className={`w-full py-2.5 rounded-lg font-medium text-sm transition-all ${
-            sidecarStatus !== "ready"
-              ? "bg-jarvis-surface text-jarvis-muted cursor-not-allowed"
-              : state === "idle"
-              ? "bg-jarvis-accent hover:bg-jarvis-accent-hover text-white"
-              : state === "recording"
-              ? "bg-jarvis-recording hover:bg-red-600 text-white"
-              : "bg-jarvis-surface text-jarvis-muted cursor-not-allowed"
-          }`}
-        >
-          {sidecarStatus === "checking"  ? "Starting engine…"
-          : sidecarStatus === "error"    ? "Engine unavailable"
-          : state === "idle"             ? "Start Recording"
-          : state === "recording"        ? "Stop Recording"
-          :                               "Transcribing…"}
-        </button>
+        {(() => {
+          // Effective state: prefer local state, fall back to hudState for hotkey sessions
+          const hotkeyRecording    = state === "idle" && hudState === "recording";
+          const hotkeyTranscribing = state === "idle" && (hudState === "transcribing" || hudState === "cleanup" || hudState === "skipped");
+          const effectiveRecording = state === "recording" || hotkeyRecording;
+          const effectiveBusy      = state === "transcribing" || hotkeyTranscribing;
+
+          const onClick = hotkeyRecording ? handleStopHotkey : handleRecord;
+          const isDisabled = effectiveBusy || sidecarStatus !== "ready";
+
+          const label =
+            sidecarStatus === "checking"  ? "Starting engine…" :
+            sidecarStatus === "error"     ? "Engine unavailable" :
+            effectiveBusy                 ? "Transcribing…" :
+            effectiveRecording            ? "Stop Recording" :
+                                            "Start Recording";
+
+          const cls = sidecarStatus !== "ready" || effectiveBusy
+            ? "bg-jarvis-surface text-jarvis-muted cursor-not-allowed"
+            : effectiveRecording
+            ? "bg-jarvis-recording hover:bg-red-600 text-white"
+            : "bg-jarvis-accent hover:bg-jarvis-accent-hover text-white";
+
+          return (
+            <button
+              onClick={onClick}
+              disabled={isDisabled}
+              className={`w-full py-2.5 rounded-lg font-medium text-sm transition-all ${cls}`}
+            >
+              {label}
+            </button>
+          );
+        })()}
         {/* Target app indicator */}
         <div className="mt-2 text-center">
           {targetApp ? (
