@@ -1,0 +1,30 @@
+[package]
+name = "jarvis-dictation"
+version = "0.1.0"
+description = "Jarvis Dictation"
+authors = []
+edition = "2021"
+
+[lib]
+name = "jarvis_dictation_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-ico", "image-png", "macos-private-api"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+arboard = "3"
+# rdev removed — crashes on macOS 12 via TSMGetInputSourceProperty off-main-thread
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

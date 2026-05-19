@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: transparent;
+  color: #f0f0f0;
+  font-family: "Helvetica Neue", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2e2e2e;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a3a;
+}
+
+/* HUD window — transparent chrome so only the rounded card is visible. */
+html.hud-mode {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+html.hud-mode body,
+html.hud-mode #root {
+  background: transparent !important;
+  background-color: transparent !important;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}

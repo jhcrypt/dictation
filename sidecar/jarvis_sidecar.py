@@ -1,0 +1,809 @@
+#!/usr/bin/env python3
+"""
+Jarvis Dictation Sidecar — JSON stdin/stdout bridge.
+
+Reads one JSON command per line from stdin.
+Writes one JSON response per line to stdout.
+
+Supported commands:
+  {"action": "ping"}
+  {"action": "start_recording"}
+  {"action": "stop_recording"}
+  {"action": "cancel_recording"}
+  {"action": "get_status"}
+  {"action": "transcribe_last", "active_app": "Notion"}
+  {"action": "list_microphones"}
+  {"action": "test_microphone"}
+"""
+
+import sys
+import os
+import json
+import re
+import time
+import threading
+import wave
+import tempfile
+
+# ── Environment guards (same as main app) ────────────────────────────────────
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["CT2_USE_EXPERIMENTAL_PACKED_GEMM"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_WAIT_POLICY"] = "PASSIVE"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+def _log(msg: str):
+    try:
+        log_path = os.path.expanduser("~/jarvis_sidecar.log")
+        with open(log_path, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+SETTINGS_FILE  = os.path.expanduser("~/.dictation_settings.json")
+VOCAB_FILE     = os.path.expanduser("~/.dictation_vocabulary.json")
+SNIPPETS_FILE  = os.path.expanduser("~/.dictation_snippets.json")
+
+def load_settings() -> dict:
+    try:
+        with open(SETTINGS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+# ── Writing profiles (ported from jarvis_dictation.py) ───────────────────────
+WRITING_PROFILES = {
+    "General": (
+        "Use balanced everyday dictation cleanup. Preserve the speaker's wording and intent."
+    ),
+    "Professional": (
+        "Make the text clear, polished, and professional without sounding stiff. Do not add content."
+    ),
+    "Email": (
+        "Use complete sentences and a polite professional tone. Do not add greetings, sign-offs, subjects, or recipients unless dictated."
+    ),
+    "Developer": (
+        "Preserve technical terms, commands, package names, filenames, paths, variables, acronyms, casing, and symbols. Do not convert commands into prose."
+    ),
+    "Medical": (
+        "Preserve clinical terminology, medication names, measurements, acronyms, and dictated structure. Do not infer diagnoses, findings, or clinical facts."
+    ),
+    "Legal": (
+        "Use precise formal language. Preserve names, dates, clauses, citations, and quoted language. Do not invent facts or legal conclusions."
+    ),
+    "Sales": (
+        "Make the text concise, client-friendly, persuasive, and clear while preserving factual meaning."
+    ),
+    "Notes": (
+        "Format as clean notes when appropriate. Keep wording concise. Use bullets only if the speaker clearly dictated a list."
+    ),
+    "Creative": (
+        "Improve flow and readability while preserving the speaker's voice, style, and meaning."
+    ),
+    "Verbatim": (
+        "Use minimal cleanup only. Preserve the original wording. Fix only punctuation, spacing, capitalization, and obvious recognition errors."
+    ),
+}
+
+# ── App → profile auto-detection rules ───────────────────────────────────────
+APP_PROFILE_RULES = {
+    "mail":               "Email",
+    "spark":              "Email",
+    "spark desktop":      "Email",
+    "readdle":            "Email",
+    "outlook":            "Email",
+    "gmail":              "Email",
+    "terminal":           "Developer",
+    "iterm":              "Developer",
+    "visual studio code": "Developer",
+    "code":               "Developer",
+    "xcode":              "Developer",
+    "notes":              "Notes",
+    "notion":             "Notes",
+    "obsidian":           "Notes",
+    "word":               "Professional",
+    "pages":              "Professional",
+    "slack":              "General",
+    "messages":           "General",
+    "teams":              "General",
+}
+
+# ── App → format rules (rule-based, no LLM) ──────────────────────────────────
+APP_FORMAT_RULES = {
+    "mail":               "email",
+    "spark":              "email",
+    "spark desktop":      "email",
+    "readdle":            "email",
+    "outlook":            "email",
+    "notes":              "notes",
+    "iterm":              "terminal",
+    "terminal":           "terminal",
+    "code":               "terminal",
+    "visual studio code": "terminal",
+    "messages":           "casual",
+    "slack":              "casual",
+}
+
+# ── Ollama base system prompt ─────────────────────────────────────────────────
+_OLLAMA_SYSTEM_PROMPT = (
+    "You are a dictation cleanup engine. "
+    "Correct only the text the user dictated. "
+    "Preserve the user's exact meaning, wording, and intent. "
+    "Do not answer questions. "
+    "Do not continue the conversation. "
+    "Do not add new information. "
+    "Do not expand short phrases into longer responses. "
+    "Do not rewrite the text unless it is clearly needed. "
+    "Fix obvious speech-to-text errors, punctuation, capitalization, grammar, and spacing. "
+    "If the input is already clear, return it unchanged. "
+    "Return only the corrected dictation text."
+)
+
+# ── Word-to-digit map ─────────────────────────────────────────────────────────
+WORD_TO_NUM = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+    "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+    "eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30",
+    "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70",
+    "eighty": "80", "ninety": "90", "hundred": "100", "thousand": "1000",
+}
+
+STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "is", "it", "i", "you", "we", "he", "she", "they",
+    "this", "that", "was", "are", "be", "been", "have", "has", "had",
+    "do", "did", "will", "would", "could", "should", "not", "no", "so",
+    "if", "as", "by", "up", "out", "about", "just", "like", "from",
+    "what", "when", "where", "how", "why", "who", "my", "your", "its",
+    "our", "their", "testing", "one", "two", "three", "four", "five",
+    "okay", "yes", "no",
+}
+
+# ── Profile / prompt helpers ──────────────────────────────────────────────────
+
+def get_active_writing_profile(settings: dict, active_app: str | None = None) -> str:
+    """Return the writing profile, optionally auto-detected from the active app name."""
+    default = settings.get("writing_profile", "General")
+    if default not in WRITING_PROFILES:
+        default = "General"
+
+    if settings.get("auto_profile_detection", True) and active_app:
+        app_lower = active_app.lower()
+        for key, profile in APP_PROFILE_RULES.items():
+            if key in app_lower and profile in WRITING_PROFILES:
+                return profile
+
+    return default
+
+
+def build_ollama_system_prompt(profile: str, strength: str) -> str:
+    """Build full Ollama system prompt from profile + correction strength."""
+    if profile not in WRITING_PROFILES:
+        profile = "General"
+
+    prompt = (
+        _OLLAMA_SYSTEM_PROMPT + " "
+        f"Active writing profile: {profile}. "
+        + WRITING_PROFILES[profile] + " "
+    )
+
+    if strength == "Light":
+        return (
+            prompt +
+            "Use light correction only: punctuation, capitalization, spacing, and obvious word errors. "
+            "Keep the original wording whenever possible."
+        )
+    if strength == "Strong":
+        return (
+            prompt +
+            "You may smooth awkward dictated phrasing, but you must not add ideas, answer questions, or change the speaker's intent."
+        )
+    # Standard (default)
+    return prompt
+
+
+# ── Ollama safety filter (ported from jarvis_dictation.py) ───────────────────
+
+def _dictation_words(text: str) -> list:
+    return re.findall(r"[a-zA-Z0-9']+", text or "")
+
+
+def _is_question_like(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    question_starters = (
+        "what", "when", "where", "who", "why", "how", "which", "whose",
+        "is", "are", "was", "were", "will", "would", "could", "should",
+        "do", "does", "did", "have", "has", "had", "can", "may", "might",
+        "am", "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't",
+    )
+    first = _dictation_words(t)[:1]
+    return t.endswith("?") or (first and first[0] in question_starters)
+
+
+def _looks_like_assistant_answer(text: str) -> bool:
+    t = (text or "").strip().lower()
+    suspicious_starts = (
+        "sure", "certainly", "here is", "here's", "i can", "i will",
+        "you should", "the next", "next is", "to improve", "it sounds like",
+        "based on", "as an ai", "let's", "we should", "you asked",
+        "the answer", "this means",
+    )
+    return any(t.startswith(p) for p in suspicious_starts)
+
+
+def ollama_result_is_safe(original: str, refined: str) -> tuple:
+    """Return (ok: bool, reason: str). Reject expansions, replies, meaning changes."""
+    if not refined or refined.lower().strip() == "nothing":
+        return False, "empty result"
+
+    orig = (original or "").strip()
+    out  = (refined or "").strip()
+    if not orig:
+        return False, "empty original"
+
+    orig_words = _dictation_words(orig.lower())
+    out_words  = _dictation_words(out.lower())
+    if not out_words:
+        return False, "empty output"
+
+    # Most dangerous: short prompt becomes a long assistant answer
+    if len(orig_words) <= 6 and len(out_words) > max(10, len(orig_words) * 3):
+        return False, "expanded short dictation"
+
+    if _is_question_like(orig) and not _is_question_like(out):
+        return False, "question became non-question"
+
+    if _looks_like_assistant_answer(out):
+        return False, "looks like assistant response"
+
+    orig_set = set(orig_words)
+    if len(orig_words) >= 3 and orig_set:
+        new_words = [w for w in out_words if w not in orig_set]
+        if len(new_words) > max(6, len(orig_words)):
+            return False, "too many new words"
+
+    if len(out) > max(len(orig) * 2.2, len(orig) + 80):
+        return False, "output too long"
+
+    return True, "accepted"
+
+
+# ── Vocabulary helpers ────────────────────────────────────────────────────────
+
+def get_personal_prompt(settings: dict) -> str:
+    """Build Whisper initial_prompt from manual vocabulary + learned words."""
+    try:
+        manual_vocab = settings.get("manual_vocabulary", "").strip()
+
+        top_words: list = []
+        try:
+            with open(VOCAB_FILE) as f:
+                vocab = json.load(f)
+            word_counts = vocab.get("word_counts", {})
+            top_words = sorted(word_counts, key=word_counts.get, reverse=True)[:20]
+        except Exception:
+            pass
+
+        prompt = "Transcribe accurately."
+        if manual_vocab:
+            prompt += f" Technical terms: {manual_vocab}."
+        if top_words:
+            prompt += f" Common words: {', '.join(top_words)}."
+        return prompt
+    except Exception:
+        return "Transcribe spoken English accurately."
+
+
+def learn_from_text(text: str):
+    """Update vocabulary word counts after each dictation."""
+    try:
+        vocab = {"word_counts": {}, "total_dictations": 0, "phrases": {}}
+        try:
+            with open(VOCAB_FILE) as f:
+                vocab = json.load(f)
+        except Exception:
+            pass
+
+        vocab["total_dictations"] = vocab.get("total_dictations", 0) + 1
+        words = re.findall(r"[a-zA-Z']+", text.lower())
+        for word in words:
+            if len(word) > 3 and word not in STOPWORDS:
+                vocab["word_counts"][word] = vocab["word_counts"].get(word, 0) + 1
+        for i in range(len(words) - 1):
+            phrase = words[i] + " " + words[i + 1]
+            if not any(w in STOPWORDS for w in [words[i], words[i + 1]]):
+                vocab["phrases"][phrase] = vocab["phrases"].get(phrase, 0) + 1
+
+        with open(VOCAB_FILE, "w") as f:
+            json.dump(vocab, f, indent=2)
+    except Exception as e:
+        _log(f"learn_from_text error: {e}")
+
+
+# ── Snippets ──────────────────────────────────────────────────────────────────
+
+def apply_snippets(text: str) -> str:
+    """Replace exact trigger phrases with their expanded snippets."""
+    try:
+        with open(SNIPPETS_FILE) as f:
+            snippets = json.load(f)
+        lower = text.strip().lower().rstrip(".,!?")
+        for trigger, expansion in snippets.items():
+            if lower == trigger.lower():
+                return expansion
+    except Exception:
+        pass
+    return text
+
+
+# ── Text post-processing ──────────────────────────────────────────────────────
+
+def smart_punctuate(text: str) -> str:
+    """Add terminal punctuation if missing."""
+    if not text or text.rstrip()[-1] in ".!?":
+        return text
+    question_starters = (
+        "what", "when", "where", "who", "why", "how", "which", "whose",
+        "is ", "are ", "was ", "were ", "will ", "would ", "could ", "should ",
+        "do ", "does ", "did ", "have ", "has ", "had ", "can ", "may ",
+        "might ", "shall ", "am ", "isn't", "aren't", "wasn't", "weren't",
+        "don't", "doesn't", "didn't", "won't", "wouldn't", "couldn't",
+    )
+    if any(text.lower().strip().startswith(q) for q in question_starters):
+        return text.rstrip() + "?"
+    return text.rstrip() + "."
+
+
+def words_to_digits(text: str) -> str:
+    """Convert spoken number words to digits."""
+    def replace(m):
+        return WORD_TO_NUM.get(m.group(0).lower(), m.group(0))
+    pattern = r'\b(' + '|'.join(re.escape(k) for k in WORD_TO_NUM.keys()) + r')\b'
+    return re.sub(pattern, replace, text, flags=re.IGNORECASE)
+
+
+def format_for_app(text: str, app_name: str) -> str:
+    """Rule-based formatting — no LLM required."""
+    if not app_name:
+        return text
+    app_lower = app_name.lower()
+    rule_key = next((k for k in APP_FORMAT_RULES if k in app_lower), None)
+    if not rule_key:
+        return text
+
+    rule = APP_FORMAT_RULES[rule_key]
+    text = text.strip()
+    if not text:
+        return text
+
+    # Capitalize first letter for all rules
+    text = text[0].upper() + text[1:]
+
+    if rule == "email":
+        if text[-1] not in ".!?":
+            text += "."
+        text = re.sub(r'(\.\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
+
+    elif rule == "casual":
+        if text.endswith("."):
+            text = text[:-1]
+
+    elif rule == "terminal":
+        text = text.lower().strip()
+        if text.endswith("."):
+            text = text[:-1]
+
+    _log(f"format_for_app: '{app_name}' → rule='{rule}'")
+    return text
+
+
+# ── Strip common Ollama preamble patterns ─────────────────────────────────────
+
+def strip_ollama_preamble(text: str) -> str:
+    for prefix in (
+        "Corrected transcription:", "Corrected:", "Here is the corrected",
+        "Here's the corrected", "Output:", "Result:",
+    ):
+        if text.lower().startswith(prefix.lower()):
+            text = text[len(prefix):].strip()
+            break
+    # If model returned multiple lines, take only the last non-empty one
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) > 1:
+        text = lines[-1]
+    return text
+
+
+# ── Audio state ───────────────────────────────────────────────────────────────
+_recording     = False
+_audio_frames: list = []
+_audio_lock    = threading.Lock()
+_stream        = None
+_last_result: dict | None = None
+
+CHUNK = 1024
+
+# ── Whisper model (lazy loaded) ───────────────────────────────────────────────
+_model      = None
+_model_name = None
+
+def _get_model(model_name: str):
+    global _model, _model_name
+    if _model is None or _model_name != model_name:
+        _log(f"Loading Whisper model: {model_name}")
+        from faster_whisper import WhisperModel
+        _model = WhisperModel(model_name, device="cpu", compute_type="int8")
+        _model_name = model_name
+    return _model
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+def cmd_ping(_cmd: dict) -> dict:
+    return {"ok": True, "pong": True}
+
+
+def _resolve_input_device(mic_device, sample_rate):
+    """Return (device, channels) — falls back to system default if needed."""
+    import sounddevice as sd
+
+    if mic_device is not None:
+        try:
+            info = sd.query_devices(int(mic_device))
+            if info["max_input_channels"] < 1:
+                _log(f"Device {mic_device} has no input channels, using system default")
+                mic_device = None
+        except Exception:
+            _log(f"Device {mic_device} not found, using system default")
+            mic_device = None
+
+    try:
+        if mic_device is not None:
+            info = sd.query_devices(int(mic_device))
+        else:
+            info = sd.query_devices(kind="input")
+        native_ch = int(info["max_input_channels"])
+    except Exception:
+        native_ch = 1
+
+    channels = 1 if native_ch >= 1 else native_ch
+    return mic_device, channels
+
+
+def cmd_start_recording(_cmd: dict) -> dict:
+    global _recording, _audio_frames, _stream
+    if _recording:
+        return {"ok": False, "error": "already recording"}
+    with _audio_lock:
+        _audio_frames = []
+    _recording = True
+
+    settings    = load_settings()
+    mic_device  = settings.get("mic_device", None)
+    sample_rate = settings.get("sample_rate", 48000)
+
+    try:
+        import sounddevice as sd
+        device, channels = _resolve_input_device(mic_device, sample_rate)
+
+        def _callback(indata, frames, time_info, status):
+            if _recording:
+                with _audio_lock:
+                    _audio_frames.append(indata.copy())
+
+        _stream = sd.InputStream(
+            samplerate=sample_rate,
+            channels=channels,
+            dtype="float32",
+            device=device,
+            blocksize=CHUNK,
+            callback=_callback,
+        )
+        _stream.start()
+        _log(f"Recording started: device={device} channels={channels} rate={sample_rate}")
+        return {"ok": True, "status": "recording"}
+    except Exception as e:
+        _recording = False
+        _log(f"start_recording error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+def cmd_stop_recording(_cmd: dict) -> dict:
+    global _recording, _stream
+    _recording = False
+    if _stream:
+        try:
+            _stream.stop()
+            _stream.close()
+        except Exception:
+            pass
+        _stream = None
+    _log("Recording stopped")
+    return {"ok": True, "status": "stopped"}
+
+
+def cmd_get_status(_cmd: dict) -> dict:
+    return {"ok": True, "recording": _recording, "has_audio": len(_audio_frames) > 0}
+
+
+def cmd_transcribe_last(cmd: dict) -> dict:
+    global _last_result
+    t_total_start = time.time()
+
+    settings    = load_settings()
+    quality     = settings.get("dictation_quality", "Balanced")
+    model_override = settings.get("model", "")
+    language    = settings.get("language", "en") or None
+    auto_detect = settings.get("auto_detect", False)
+    translate_target = settings.get("translate_my_dictation", "Off")
+
+    # Active app passed from Rust (for auto profile detection)
+    active_app  = cmd.get("active_app") or ""
+
+    quality_to_model = {"Fast": "tiny.en", "Balanced": "small.en", "Accurate": "medium.en"}
+    if auto_detect or (language and language != "en"):
+        quality_to_model = {"Fast": "tiny", "Balanced": "small", "Accurate": "medium"}
+
+    model_name = model_override if model_override else quality_to_model.get(quality, "small.en")
+
+    with _audio_lock:
+        frames = list(_audio_frames)
+
+    if not frames:
+        return {"ok": False, "error": "no audio recorded"}
+
+    # ── Write WAV ──────────────────────────────────────────────────────────────
+    sample_rate = settings.get("sample_rate", 48000)
+    import numpy as np
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    try:
+        audio = np.concatenate(frames, axis=0)
+        if audio.ndim > 1 and audio.shape[1] > 1:
+            audio = audio.mean(axis=1)
+        audio = audio.flatten()
+        audio_int16 = (audio * 32767).clip(-32768, 32767).astype(np.int16)
+        with wave.open(tmp.name, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_int16.tobytes())
+
+        # ── Transcribe with Whisper ────────────────────────────────────────────
+        t_whisper_start = time.time()
+        model = _get_model(model_name)
+        transcribe_kwargs: dict = {}
+        if language and not auto_detect:
+            transcribe_kwargs["language"] = language
+
+        # Build initial_prompt from vocabulary (manual + learned)
+        if not model_name.startswith("distil-"):
+            personal_prompt = get_personal_prompt(settings)
+            if personal_prompt:
+                transcribe_kwargs["initial_prompt"] = personal_prompt
+
+        segments, _info = model.transcribe(tmp.name, beam_size=5, **transcribe_kwargs)
+        raw_text = " ".join(seg.text.strip() for seg in segments).strip()
+        t_whisper = int((time.time() - t_whisper_start) * 1000)
+        _log(f"Whisper: {raw_text!r} ({t_whisper}ms)")
+
+        text = raw_text
+
+        # ── Snippets (applied before Ollama — exact phrase triggers) ──────────
+        text = apply_snippets(text)
+        if text != raw_text:
+            _log(f"Snippet expanded: {text!r}")
+
+        # ── Ollama cleanup ─────────────────────────────────────────────────────
+        t_ollama = 0
+        use_ollama   = settings.get("use_ollama", True)
+        ai_mode      = settings.get("ai_cleanup_mode", "auto")
+        strength     = settings.get("correction_strength", "Standard")
+        safe_mode    = settings.get("safe_mode", False)
+
+        # Determine profile (auto-detect or manual)
+        profile = get_active_writing_profile(settings, active_app if active_app else None)
+        _log(f"Profile: {profile} (app={active_app!r})")
+
+        skip_ollama = (
+            safe_mode
+            or not use_ollama
+            or ai_mode == "off"
+            or strength == "Off"
+            or not text
+            or len(_dictation_words(text)) <= 4
+        )
+
+        if not skip_ollama:
+            t_ollama_start = time.time()
+            try:
+                import requests
+                system_prompt = build_ollama_system_prompt(profile, strength)
+                resp = requests.post(
+                    "http://localhost:11434/api/chat",
+                    json={
+                        "model": "qwen2.5:3b",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user",   "content": text},
+                        ],
+                        "stream": False,
+                        "options": {
+                            "repeat_penalty": 1.15,
+                            "num_predict":    180,
+                            "temperature":    0.35,
+                            "top_p":          0.85,
+                        },
+                    },
+                    timeout=12,
+                )
+                if resp.ok:
+                    raw_ollama = resp.json().get("message", {}).get("content", "").strip()
+                    if raw_ollama:
+                        cleaned = strip_ollama_preamble(raw_ollama)
+                        ok, reason = ollama_result_is_safe(text, cleaned)
+                        if ok:
+                            text = cleaned
+                            _log(f"Ollama accepted: {text!r}")
+                        else:
+                            _log(f"Ollama rejected ({reason}): {cleaned!r}")
+                t_ollama = int((time.time() - t_ollama_start) * 1000)
+            except Exception as e:
+                _log(f"Ollama skipped: {e}")
+
+        # ── Translation ────────────────────────────────────────────────────────
+        if translate_target and translate_target != "Off" and text:
+            try:
+                import requests
+                prompt = f"Translate to {translate_target}. Return only the translation:\n\n{text}"
+                resp = requests.post(
+                    "http://localhost:11434/api/generate",
+                    json={"model": "qwen2.5:3b", "prompt": prompt, "stream": False},
+                    timeout=12,
+                )
+                if resp.ok:
+                    translated = resp.json().get("response", text).strip()
+                    if translated:
+                        text = translated
+            except Exception as e:
+                _log(f"Translation skipped: {e}")
+
+        # ── Post-processing ────────────────────────────────────────────────────
+        text = words_to_digits(text)
+        text = smart_punctuate(text)
+
+        # App-context formatting (email → period, terminal → lowercase, etc.)
+        if active_app:
+            text = format_for_app(text, active_app)
+
+        _log(f"Final text: {text!r}")
+
+        # ── Learn vocabulary from this dictation ───────────────────────────────
+        if text:
+            learn_from_text(text)
+
+        t_total = int((time.time() - t_total_start) * 1000)
+        result = {
+            "ok":     True,
+            "text":   text,
+            "timing": {"whisper": t_whisper, "ollama": t_ollama, "total": t_total},
+            "profile": profile,
+        }
+        _last_result = result
+        return result
+
+    except Exception as e:
+        _log(f"transcribe_last error: {e}")
+        return {"ok": False, "error": str(e)}
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+
+def cmd_cancel_recording(_cmd: dict) -> dict:
+    global _recording, _stream, _audio_frames
+    _recording = False
+    if _stream:
+        try:
+            _stream.stop()
+            _stream.close()
+        except Exception:
+            pass
+        _stream = None
+    with _audio_lock:
+        _audio_frames = []
+    _log("Recording cancelled and buffer cleared")
+    return {"ok": True, "status": "cancelled"}
+
+
+def cmd_list_microphones(_cmd: dict) -> dict:
+    try:
+        import sounddevice as sd
+        all_devices = sd.query_devices()
+        devices = []
+        for i, info in enumerate(all_devices):
+            if info["max_input_channels"] > 0:
+                devices.append({
+                    "index":               i,
+                    "name":                info["name"],
+                    "default_sample_rate": int(info["default_samplerate"]),
+                })
+        settings = load_settings()
+        mic_device = settings.get("mic_device", None)
+        try:
+            default_info = sd.query_devices(kind="input")
+            default_idx  = int(default_info["index"]) if hasattr(default_info, "__getitem__") else None
+        except Exception:
+            default_idx = None
+        selected_exists = any(d["index"] == int(mic_device) for d in devices) if mic_device is not None else True
+        return {
+            "ok":             True,
+            "devices":        devices,
+            "selected":       mic_device,
+            "default_index":  default_idx,
+            "selected_exists": selected_exists,
+        }
+    except Exception as e:
+        _log(f"list_microphones error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+def cmd_test_microphone(_cmd: dict) -> dict:
+    settings    = load_settings()
+    mic_device  = settings.get("mic_device", None)
+    sample_rate = settings.get("sample_rate", 48000)
+    try:
+        import sounddevice as sd
+        import numpy as np
+        data       = sd.rec(CHUNK, samplerate=sample_rate, channels=1, dtype="float32",
+                            device=mic_device, blocking=True)
+        bytes_read = data.nbytes
+        _log(f"test_microphone ok: device={mic_device} rate={sample_rate} bytes={bytes_read}")
+        return {"ok": True, "device": mic_device, "sample_rate": sample_rate, "bytes_read": bytes_read}
+    except Exception as e:
+        _log(f"test_microphone error: {e}")
+        return {"ok": False, "error": str(e), "device": mic_device, "sample_rate": sample_rate}
+
+
+# ── Dispatch ──────────────────────────────────────────────────────────────────
+HANDLERS = {
+    "ping":              cmd_ping,
+    "start_recording":   cmd_start_recording,
+    "stop_recording":    cmd_stop_recording,
+    "cancel_recording":  cmd_cancel_recording,
+    "get_status":        cmd_get_status,
+    "transcribe_last":   cmd_transcribe_last,
+    "list_microphones":  cmd_list_microphones,
+    "test_microphone":   cmd_test_microphone,
+}
+
+def main():
+    _log("Sidecar started")
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            cmd     = json.loads(line)
+            action  = cmd.get("action", "")
+            handler = HANDLERS.get(action)
+            if handler:
+                resp = handler(cmd)
+            else:
+                resp = {"ok": False, "error": f"unknown action: {action}"}
+        except Exception as e:
+            resp = {"ok": False, "error": str(e)}
+
+        sys.stdout.write(json.dumps(resp) + "\n")
+        sys.stdout.flush()
+
+    _log("Sidecar stdin closed, exiting")
+
+if __name__ == "__main__":
+    main()
