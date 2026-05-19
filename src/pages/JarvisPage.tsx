@@ -1,3 +1,10 @@
+// FUTURE SIDECAR FEATURE GAP
+// Jarvis settings (wake_enabled, jarvis_enabled, timing values) are saved to
+// ~/.dictation_settings.json and are readable by the stable Python Quill app.
+// However, the Tauri sidecar (jarvis_sidecar.py) does NOT yet implement
+// continuous wake-word listening or voice command dispatch.
+// Until the sidecar gains a "start_wake_listen" / "stop_wake_listen" action,
+// these settings have no effect on Tauri dictation behavior.
 import React from "react";
 import Card from "../components/ui/Card";
 import Toggle from "../components/ui/Toggle";

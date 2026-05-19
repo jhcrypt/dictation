@@ -32,7 +32,9 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let sep1   = PredefinedMenuItem::separator(app)?;
 
     // ── Toggle items (with checkmarks) ────────────────────────────────────────
-    let hide_hud  = MenuItem::with_id(app, "hide_hud",  if s.show_hud { "Hide HUD" } else { "Show HUD" }, true, None::<&str>)?;
+    // "Toggle HUD" uses a stable label with a checkmark so the label never goes
+    // stale (Tauri v2 does not support changing MenuItem text at runtime).
+    let hide_hud  = CheckMenuItem::with_id(app, "hide_hud", "Toggle HUD", true, s.show_hud, None::<&str>)?;
     let safe_mode = CheckMenuItem::with_id(app, "safe_mode", "Safe Mode",       true, s.safe_mode,      None::<&str>)?;
     let wake      = CheckMenuItem::with_id(app, "wake",      "Wake Word",        true, s.wake_enabled,   None::<&str>)?;
     let jarvis    = CheckMenuItem::with_id(app, "jarvis",    "Jarvis Commands",  true, s.jarvis_enabled, None::<&str>)?;

@@ -14,6 +14,14 @@ Supported commands:
   {"action": "transcribe_last", "active_app": "Notion"}
   {"action": "list_microphones"}
   {"action": "test_microphone"}
+
+FUTURE SIDECAR FEATURE GAP — wake-word / continuous listening:
+  The Tauri JarvisPage saves wake_enabled, jarvis_enabled, and timing values to
+  ~/.dictation_settings.json, but this sidecar does NOT implement continuous
+  wake-word detection.  The Python Quill app handles "hey Jarvis" in its own
+  event loop.  To support this in Tauri, add start_wake_listen /
+  stop_wake_listen actions that run VAD + keyword matching on a background
+  thread and push results back over stdout.
 """
 
 import sys
