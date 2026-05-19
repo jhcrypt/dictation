@@ -2489,10 +2489,9 @@ def paste_text(text):
         _dlog(f"[paste] previous clipboard captured = {len(prev_bytes)} bytes")
         _dlog(f"[paste] intended text repr = {paste_content!r}")
 
-        # Controls whether the finally block restores the old clipboard.
-        # Set to False on verification failure so the new (unverified) text
-        # stays on the clipboard for the user to paste manually.
-        _should_restore = True
+        # Never restore the old clipboard — leave dictated text in place so
+        # the user can paste manually if Cmd+V misfires.
+        _should_restore = False
 
         try:
             # ── 1. Write + verify via AppKit NSPasteboard (no encoding step) ─
@@ -2592,28 +2591,7 @@ def paste_text(text):
             _t.sleep(0.6)
 
         finally:
-            if not _should_restore:
-                _dlog("[paste] restore skipped — verification failed, dictation left on clipboard")
-            else:
-                # Generation guard: belt-and-suspenders against any future async
-                # refactor where _paste_lock might be released before restore.
-                with _paste_gen_lock:
-                    _gen_now = _PASTE_GENERATION
-                if _gen_now != _gen:
-                    _dlog(f"[paste] restore skipped stale generation = {_gen} (current = {_gen_now})")
-                else:
-                    _dlog(f"[paste] restore scheduled generation = {_gen}")
-                    try:
-                        if prev_bytes:
-                            _sp.run(["pbcopy"], input=prev_bytes, timeout=2)
-                        else:
-                            # Previous clipboard was empty — clear it
-                            from AppKit import NSPasteboard
-                            NSPasteboard.generalPasteboard().clearContents()
-                        _dlog(f"[paste] restore completed = generation {_gen}")
-                        log_event("paste", "restored previous clipboard")
-                    except Exception:
-                        pass
+            _dlog("[paste] restore skipped — dictated text left on clipboard")
 
 # ── Mojibake / mangled-whitespace repair ─────────────────────────────────────
 # macOS sometimes encodes non-breaking spaces and smart punctuation as UTF-8
