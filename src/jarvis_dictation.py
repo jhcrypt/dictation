@@ -2492,7 +2492,7 @@ def paste_text(text):
         # Controls whether the finally block restores the old clipboard.
         # Set to False on verification failure so the new (unverified) text
         # stays on the clipboard for the user to paste manually.
-        _should_restore = True
+        _should_restore = False  # never restore old clipboard — leave dictated text in place
 
         try:
             # ── 1. Write + verify via AppKit NSPasteboard (no encoding step) ─
@@ -2592,28 +2592,11 @@ def paste_text(text):
             _t.sleep(0.6)
 
         finally:
-            if not _should_restore:
-                _dlog("[paste] restore skipped — verification failed, dictation left on clipboard")
-            else:
-                # Generation guard: belt-and-suspenders against any future async
-                # refactor where _paste_lock might be released before restore.
-                with _paste_gen_lock:
-                    _gen_now = _PASTE_GENERATION
-                if _gen_now != _gen:
-                    _dlog(f"[paste] restore skipped stale generation = {_gen} (current = {_gen_now})")
-                else:
-                    _dlog(f"[paste] restore scheduled generation = {_gen}")
-                    try:
-                        if prev_bytes:
-                            _sp.run(["pbcopy"], input=prev_bytes, timeout=2)
-                        else:
-                            # Previous clipboard was empty — clear it
-                            from AppKit import NSPasteboard
-                            NSPasteboard.generalPasteboard().clearContents()
-                        _dlog(f"[paste] restore completed = generation {_gen}")
-                        log_event("paste", "restored previous clipboard")
-                    except Exception:
-                        pass
+            # _should_restore is always False — we never restore the previous
+            # clipboard.  Dictated text stays on the clipboard after paste so
+            # the user can paste again manually if needed.
+            _dlog("[paste] leaving dictated text on clipboard")
+            log_event("paste", "leaving dictated text on clipboard")
 
 # ── Mojibake / mangled-whitespace repair ─────────────────────────────────────
 # macOS sometimes encodes non-breaking spaces and smart punctuation as UTF-8
@@ -2712,6 +2695,7 @@ def _rr(parent, bg_col, radius=10, padx=0, pady=0):
     outer.pack(fill="x", padx=padx, pady=pady)
     c = tk.Canvas(outer, bg=parent_bg, highlightthickness=0, bd=0)
     c.pack(fill="x", expand=True)
+    c._is_card_canvas = True   # ping-filter marker — scroll canvases are never marked
     inner = tk.Frame(c, bg=bg_col)
     win_id = c.create_window(INSET, INSET, window=inner, anchor="nw")
     def _redraw(event=None):
@@ -2736,6 +2720,7 @@ def _rr(parent, bg_col, radius=10, padx=0, pady=0):
         c.create_rectangle(R, 0, w-R, h, fill=bg_col, outline="", tags="rr")
         c.create_rectangle(0, R, w, h-R, fill=bg_col, outline="", tags="rr")
         c.tag_lower("rr")
+        c.tag_raise(win_id)   # ensure content frame is always above background
     inner.bind("<Configure>", _redraw)
     c.bind("<Configure>",     _redraw)
     return inner
@@ -3993,16 +3978,55 @@ def _reinsert_last():
 
 # _open_add_correction_dialog removed — use app.open_settings(navigate_to="Vocabulary") instead
 
+def _bind_drag(window, widgets):
+    """Bind window-drag to a list of safe header widgets (no close/input widgets)."""
+    def _start(e):
+        window._drag_x = e.x_root - window.winfo_x()
+        window._drag_y = e.y_root - window.winfo_y()
+    def _move(e):
+        if hasattr(window, "_drag_x"):
+            window.geometry(f"+{e.x_root - window._drag_x}+{e.y_root - window._drag_y}")
+    for w in widgets:
+        if w is not None:
+            w.bind("<ButtonPress-1>", _start)
+            w.bind("<B1-Motion>",     _move)
+
 
 def _show_history():
         hwin = tk.Toplevel(app.root)
-        hwin.title("Dictation History")
-        hwin.geometry("850x600") # Larger window to prevent cutting off text
-        hwin.configure(bg="#1a1a1a")
+        hwin.overrideredirect(True)    # remove native title bar — frameless card
+        W_H, H_H = 850, 600
+        hwin.geometry(f"{W_H}x{H_H}")
+        sw_h, sh_h = hwin.winfo_screenwidth(), hwin.winfo_screenheight()
+        hwin.geometry(f"{W_H}x{H_H}+{sw_h//2 - W_H//2}+{sh_h//2 - H_H//2}")
+        hwin.configure(bg="#141414")
         hwin.attributes("-topmost", True)
-        # Keep History visually consistent with Settings and Snippets.
-        # This was accidentally lost during the v6 menu-bar stability pass.
-        hwin.attributes("-alpha", 0.97)
+        hwin.attributes("-alpha", 1.0)
+        hwin.update_idletasks()
+        # Frameless card look — transparent NSWindow + shadow + rounded corners
+        def _hwin_card_look():
+            try:
+                from AppKit import NSApplication, NSColor
+                hwin.update_idletasks()
+                tx, ty = hwin.winfo_rootx(), hwin.winfo_rooty()
+                mac_y = hwin.winfo_screenheight() - ty - H_H
+                for nsw in NSApplication.sharedApplication().windows():
+                    try:
+                        fr = nsw.frame()
+                        if abs(fr.origin.x - tx) <= 20 and abs(fr.origin.y - mac_y) <= 20:
+                            nsw.setOpaque_(False)
+                            nsw.setBackgroundColor_(NSColor.clearColor())
+                            nsw.setHasShadow_(True)
+                            cv = nsw.contentView()
+                            cv.setWantsLayer_(True)
+                            cv.layer().setCornerRadius_(12.0)
+                            cv.layer().setMasksToBounds_(True)
+                            break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        hwin.after(80, _hwin_card_look)
         globals()["_suppress_caps_lock"] = True
         def _hwin_close():
             hwin.destroy()
@@ -4010,10 +4034,9 @@ def _show_history():
                 app.root.after(300, _release_caps_suppress)
             except Exception:
                 _release_caps_suppress()
-        hwin.protocol("WM_DELETE_WINDOW", _hwin_close)
         hwin.bind("<Escape>", lambda e: _hwin_close())
 
-        # --- Sidebar (exact colours from Settings/Snippets) ---
+        # ── Colours ───────────────────────────────────────────────────────────
         BG      = "#141414"
         SIDEBAR = "#1e1e1e"
         SEP     = "#2e2e2e"
@@ -4021,13 +4044,15 @@ def _show_history():
         DIM     = "#6a6a6a"
         ACC     = "#0a84ff"
         FONT    = "Helvetica Neue"
+        BG_CARD = "#242424"
+        BG_MAIN = BG
         hwin.configure(bg=BG)
+
+        # Sidebar — header inside sidebar preserves the card look
         sidebar = tk.Frame(hwin, bg=SIDEBAR, width=210)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
-        # Vertical separator between sidebar and content — matches Settings
-        tk.Frame(hwin, bg=SEP, width=1).pack(side="left", fill="y")
-        # Header — exact same pattern as Snippets window
+        # Sidebar header
         hdr = tk.Frame(sidebar, bg=SIDEBAR, height=60)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
@@ -4038,15 +4063,16 @@ def _show_history():
                 getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.argv[0]))),
                 "dictate_icon.png"
             )
-            _hist_pil = Image.open(_hist_path).convert("RGBA").resize((22, 22), Image.LANCZOS)
+            _hist_pil = Image.open(_hist_path).convert("RGBA").resize((28, 28), Image.LANCZOS)
             _hist_icon = ImageTk.PhotoImage(_hist_pil)
             hwin._hist_icon = _hist_icon
         except Exception:
             _hist_icon = None
         if _hist_icon:
-            tk.Label(hdr, image=_hist_icon, bg=SIDEBAR).place(x=14, rely=0.5, anchor="w")
+            _hlbl_icon = tk.Label(hdr, image=_hist_icon, bg=SIDEBAR)
+            _hlbl_icon.place(x=14, rely=0.5, anchor="w")
             tk.Label(hdr, text="History", bg=SIDEBAR, fg=FG,
-                     font=(FONT, 14, "bold")).place(x=42, rely=0.5, anchor="w")
+                     font=(FONT, 14, "bold")).place(x=50, rely=0.5, anchor="w")
         else:
             tk.Label(hdr, text="🎙", bg=SIDEBAR, fg=FG,
                      font=(FONT, 18)).place(x=14, rely=0.5, anchor="w")
@@ -4055,16 +4081,45 @@ def _show_history():
         close_btn_h = tk.Label(hdr, text="✕", bg=SIDEBAR, fg=DIM,
                                font=(FONT, 12), cursor="hand2")
         close_btn_h.place(relx=1.0, x=-14, rely=0.5, anchor="e")
-        close_btn_h.bind("<Button-1>", lambda e: hwin.destroy())
+        close_btn_h.bind("<Button-1>", lambda e: _hwin_close())
         close_btn_h.bind("<Enter>", lambda e: close_btn_h.configure(fg=FG))
         close_btn_h.bind("<Leave>", lambda e: close_btn_h.configure(fg=DIM))
-        tk.Frame(sidebar, bg="#2e2e2e", height=1).pack(fill="x")
+        tk.Frame(sidebar, bg=SEP, height=1).pack(fill="x")
+        # Version footer — lower-left of sidebar
+        tk.Frame(sidebar, bg=SEP, height=1).pack(side="bottom", fill="x")
+        _hfooter = tk.Frame(sidebar, bg=SIDEBAR, height=36)
+        _hfooter.pack(side="bottom", fill="x")
+        _hfooter.pack_propagate(False)
+        tk.Label(_hfooter, text=BUILD_ID, bg=SIDEBAR, fg=ACC,
+                 font=(FONT, 12)).place(x=14, rely=0.5, anchor="w")
+        # Full-width drag via hwin binding + y/type filter (no visible bar)
+        def _full_drag_start_h(e):
+            try:
+                click_y = e.y_root - hwin.winfo_rooty()
+            except Exception:
+                return
+            if click_y >= 60: return
+            if e.widget is close_btn_h: return
+            if not isinstance(e.widget, (tk.Frame, tk.Label)): return
+            hwin._drag_x = e.x_root - hwin.winfo_x()
+            hwin._drag_y = e.y_root - hwin.winfo_y()
+        def _full_drag_move_h(e):
+            if hasattr(hwin, "_drag_x"):
+                hwin.geometry(f"+{e.x_root - hwin._drag_x}+{e.y_root - hwin._drag_y}")
+        def _full_drag_end_h(e):
+            try:
+                del hwin._drag_x
+                del hwin._drag_y
+            except AttributeError:
+                pass
+        hwin.bind("<ButtonPress-1>",   _full_drag_start_h, add="+")
+        hwin.bind("<B1-Motion>",       _full_drag_move_h,  add="+")
+        hwin.bind("<ButtonRelease-1>", _full_drag_end_h,   add="+")
+        # Vertical separator between sidebar and content
+        tk.Frame(hwin, bg=SEP, width=1).pack(side="left", fill="y")
 
-        BG_CARD = "#242424"
-        BG_MAIN = BG
-
-        # --- Close button packed first so it anchors to bottom ---
-        tk.Frame(hwin, bg="#2e2e2e", height=1).pack(side="bottom", fill="x")
+        # Button bar at bottom of hwin
+        tk.Frame(hwin, bg=SEP, height=1).pack(side="bottom", fill="x")
         btn_bar = tk.Frame(hwin, bg=BG_MAIN, height=60)
         btn_bar.pack(side="bottom", fill="x")
         btn_bar.pack_propagate(False)
@@ -4115,14 +4170,9 @@ def _show_history():
         h_frame = tk.Frame(content, bg=BG_MAIN)
         h_frame.pack(fill="both", expand=True)
 
-        h_scroll = tk.Scrollbar(h_frame, orient="vertical", bg=BG_MAIN,
-                                troughcolor=BG_MAIN, width=10, bd=0)
-        h_scroll.pack(side="right", fill="y")
-
-        list_canvas = tk.Canvas(h_frame, bg=BG_MAIN, highlightthickness=0,
-                                yscrollcommand=h_scroll.set)
-        list_canvas.pack(side="left", fill="both", expand=True)
-        h_scroll.config(command=list_canvas.yview)
+        # No visible scrollbar — mousewheel scrolling is bound to hwin below
+        list_canvas = tk.Canvas(h_frame, bg=BG_MAIN, highlightthickness=0)
+        list_canvas.pack(fill="both", expand=True)
 
         inner = tk.Frame(list_canvas, bg=BG_MAIN)
         inner.bind("<Configure>",
@@ -4583,7 +4633,7 @@ def _app_launch_name() -> str:
     target = _get_app_launch_target()
     if target.endswith('.app'):
         return os.path.basename(target[:-4])
-    return "Jarvis Dictation"
+    return "Quill"
 
 
 def _launch_at_login_enabled() -> bool:
@@ -4681,7 +4731,7 @@ def _show_about_window() -> None:
             badge = tk.Label(w, text="J", bg=ACC, fg="#ffffff", width=3, height=1,
                              font=("Helvetica Neue", 26, "bold"))
             badge.pack(pady=(26, 6))
-        tk.Label(w, text="Jarvis Dictation", bg=BG, fg=FG,
+        tk.Label(w, text="Quill", bg=BG, fg=FG,
                  font=("Helvetica Neue", 22, "bold")).pack()
         tk.Label(w, text=APP_VERSION, bg=BG, fg=DIM,
                  font=("Helvetica Neue", 12)).pack(pady=(4, 2))
@@ -5261,35 +5311,50 @@ class DictationApp:
         FONT    = "Helvetica Neue"
 
         swin = tk.Toplevel(self.root)
-        swin.title("Snippets")
+        swin.overrideredirect(True)    # remove native title bar — frameless card
         swin.configure(bg=BG)
         swin.attributes("-topmost", True)
         swin.attributes("-alpha", 1.0)
-        swin.resizable(False, False)
         # Center on screen
         W, H = 720, 520
         sw, sh = swin.winfo_screenwidth(), swin.winfo_screenheight()
         swin.geometry(f"{W}x{H}+{sw//2 - W//2}+{sh//2 - H//2}")
         swin.update_idletasks()
+        # Frameless card look — transparent NSWindow + shadow + rounded corners
+        def _swin_card_look():
+            try:
+                from AppKit import NSApplication, NSColor
+                swin.update_idletasks()
+                tx, ty = swin.winfo_rootx(), swin.winfo_rooty()
+                mac_y = swin.winfo_screenheight() - ty - H
+                for nsw in NSApplication.sharedApplication().windows():
+                    try:
+                        fr = nsw.frame()
+                        if abs(fr.origin.x - tx) <= 20 and abs(fr.origin.y - mac_y) <= 20:
+                            nsw.setOpaque_(False)
+                            nsw.setBackgroundColor_(NSColor.clearColor())
+                            nsw.setHasShadow_(True)
+                            cv = nsw.contentView()
+                            cv.setWantsLayer_(True)
+                            cv.layer().setCornerRadius_(12.0)
+                            cv.layer().setMasksToBounds_(True)
+                            break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        swin.after(80, _swin_card_look)
         globals()["_suppress_caps_lock"] = True
         def _swin_close():
             swin.destroy()
             app.root.after(300, _release_caps_suppress)
-        swin.protocol("WM_DELETE_WINDOW", _swin_close)
         # Close on Escape
         swin.bind("<Escape>", lambda e: _swin_close())
-        # Drag — bound to sidebar/header only after those frames are created below
-        def _drag_start(e): swin._dx, swin._dy = e.x_root - swin.winfo_x(), e.y_root - swin.winfo_y()
-        def _drag_move(e):
-            if hasattr(swin, "_dx"):
-                swin.geometry(f"+{e.x_root - swin._dx}+{e.y_root - swin._dy}")
 
-        # ── Sidebar ───────────────────────────────────────────────────────────
+        # Sidebar — header inside sidebar preserves the card look
         sidebar = tk.Frame(swin, bg=SIDEBAR, width=210)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
-
-        # Sidebar header
         hdr = tk.Frame(sidebar, bg=SIDEBAR, height=60)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
@@ -5300,7 +5365,7 @@ class DictationApp:
                 getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.argv[0]))),
                 "dictate_icon.png"
             )
-            _sn_pil = Image.open(_sn_path).convert("RGBA").resize((22, 22), Image.LANCZOS)
+            _sn_pil = Image.open(_sn_path).convert("RGBA").resize((28, 28), Image.LANCZOS)
             _sn_icon = ImageTk.PhotoImage(_sn_pil)
             self._snippets_icon = _sn_icon
         except Exception:
@@ -5308,7 +5373,7 @@ class DictationApp:
         if _sn_icon:
             tk.Label(hdr, image=_sn_icon, bg=SIDEBAR).place(x=14, rely=0.5, anchor="w")
             tk.Label(hdr, text="Snippets", bg=SIDEBAR, fg=FG,
-                     font=(FONT, 14, "bold")).place(x=42, rely=0.5, anchor="w")
+                     font=(FONT, 14, "bold")).place(x=50, rely=0.5, anchor="w")
         else:
             tk.Label(hdr, text="🎙", bg=SIDEBAR, fg=FG,
                      font=(FONT, 18)).place(x=14, rely=0.5, anchor="w")
@@ -5317,14 +5382,32 @@ class DictationApp:
         close_btn = tk.Label(hdr, text="✕", bg=SIDEBAR, fg=DIM,
                              font=(FONT, 12), cursor="hand2")
         close_btn.place(relx=1.0, x=-14, rely=0.5, anchor="e")
-        close_btn.bind("<Button-1>", lambda e: swin.destroy())
+        close_btn.bind("<Button-1>", lambda e: _swin_close())
         close_btn.bind("<Enter>", lambda e: close_btn.configure(fg=FG))
         close_btn.bind("<Leave>", lambda e: close_btn.configure(fg=DIM))
-
-        # Scope drag to sidebar header so Entry/Text focus is never stolen
-        for _sw in (sidebar, hdr):
-            _sw.bind("<ButtonPress-1>", _drag_start)
-            _sw.bind("<B1-Motion>",     _drag_move)
+        # Full-width drag via swin binding + y/type filter (no visible bar)
+        def _full_drag_start_s(e):
+            try:
+                click_y = e.y_root - swin.winfo_rooty()
+            except Exception:
+                return
+            if click_y >= 60: return
+            if e.widget is close_btn: return
+            if not isinstance(e.widget, (tk.Frame, tk.Label)): return
+            swin._drag_x = e.x_root - swin.winfo_x()
+            swin._drag_y = e.y_root - swin.winfo_y()
+        def _full_drag_move_s(e):
+            if hasattr(swin, "_drag_x"):
+                swin.geometry(f"+{e.x_root - swin._drag_x}+{e.y_root - swin._drag_y}")
+        def _full_drag_end_s(e):
+            try:
+                del swin._drag_x
+                del swin._drag_y
+            except AttributeError:
+                pass
+        swin.bind("<ButtonPress-1>",   _full_drag_start_s, add="+")
+        swin.bind("<B1-Motion>",       _full_drag_move_s,  add="+")
+        swin.bind("<ButtonRelease-1>", _full_drag_end_s,   add="+")
 
         # Search box  (no separator — matches settings sidebar style)
         search_frame = tk.Frame(sidebar, bg=SIDEBAR, height=44)
@@ -5364,6 +5447,13 @@ class DictationApp:
         new_btn = tk.Label(sidebar, text="+ New snippet", bg=SIDEBAR, fg=ACC,
                            font=(FONT, 12), cursor="hand2", pady=10)
         new_btn.pack(side="bottom", fill="x", padx=16)
+        # Version footer — lower-left of sidebar
+        tk.Frame(sidebar, bg=SEP, height=1).pack(side="bottom", fill="x")
+        _sfooter = tk.Frame(sidebar, bg=SIDEBAR, height=36)
+        _sfooter.pack(side="bottom", fill="x")
+        _sfooter.pack_propagate(False)
+        tk.Label(_sfooter, text=BUILD_ID, bg=SIDEBAR, fg=ACC,
+                 font=(FONT, 12)).place(x=14, rely=0.5, anchor="w")
 
         # ── Vertical divider ──────────────────────────────────────────────────
         tk.Frame(swin, bg=SEP, width=1).pack(side="left", fill="y")
@@ -5392,7 +5482,7 @@ class DictationApp:
         body.pack(fill="both", expand=True, padx=20, pady=16)
 
         tk.Label(body, text="TRIGGER PHRASE  —  what you say to activate this snippet",
-                 bg=BG, fg=DIM, font=(FONT, 9, "bold")).pack(anchor="w")
+                 bg=BG, fg=DIM, font=(FONT, 11, "bold")).pack(anchor="w")
         trigger_var = tk.StringVar()
 
         # Rounded input frames
@@ -5405,7 +5495,7 @@ class DictationApp:
         _bind_copy_paste(trigger_entry)
 
         tk.Label(body, text="EXPANSION  —  the full text that gets typed when triggered",
-                 bg=BG, fg=DIM, font=(FONT, 9, "bold")).pack(anchor="w")
+                 bg=BG, fg=DIM, font=(FONT, 11, "bold")).pack(anchor="w")
         # content_f is a large expand=True text editor — flat surface intentional
         content_f = tk.Frame(body, bg=CARD, highlightthickness=0)
         content_f.pack(fill="both", expand=True, pady=(4, 8))
@@ -5603,8 +5693,9 @@ class DictationApp:
         _win.attributes("-topmost", True)
         _win.attributes("-alpha", 1.0)
         _win.resizable(False, False)
-        W, H = 900, 700
         sw, sh = _win.winfo_screenwidth(), _win.winfo_screenheight()
+        # Fixed window size — no user resizing (prevents collapse / button clipping)
+        W, H = 1180, 760
         _sx = settings.get("settings_win_x")
         _sy = settings.get("settings_win_y")
         if _sx is not None and _sy is not None:
@@ -5615,27 +5706,63 @@ class DictationApp:
         _win.geometry(f"{W}x{H}+{win_x}+{win_y}")
         _win.update_idletasks()
 
-        # Rounded card look via PyObjC — transparent background + shadow.
-        # Do NOT call setMasksToBounds_ — it breaks tab-switch redraws.
-        def _apply_card_look():
+        # Rounded card look via PyObjC — transparent background + drop shadow.
+        # We store the NSWindow ref so show_page() can force a CA-layer redraw
+        # after pack_forget()/pack() tab switches (setMasksToBounds clips lazily).
+        _nsw_ref = [None]
+        def _apply_card_look(attempt=0):
+            # ROOT-CAUSE FIX: use orderedWindows() instead of windows().
+            # NSApplication.windows() includes ALL NSWindows — even hidden ones
+            # left over from a previous _win.destroy() call (orderOut: hides the
+            # window but keeps the NSWindow object alive until the autorelease
+            # pool drains).  orderedWindows() returns ONLY windows that are
+            # currently on screen in z-order, so the stale hidden NSWindow is
+            # never in the list and can never be matched first.
             try:
                 from AppKit import NSApplication, NSColor
                 _win.update_idletasks()
-                tx, ty = _win.winfo_rootx(), _win.winfo_rooty()
-                mac_y = _win.winfo_screenheight() - ty - H
-                for nsw in NSApplication.sharedApplication().windows():
+                tw = _win.winfo_width()
+                th = _win.winfo_height()
+                if tw <= 1:
+                    if attempt < 12:
+                        _win.after(50, lambda: _apply_card_look(attempt + 1))
+                    return
+                found = False
+                for nsw in NSApplication.sharedApplication().orderedWindows():
                     try:
                         fr = nsw.frame()
-                        if abs(fr.origin.x - tx) <= 20 and abs(fr.origin.y - mac_y) <= 20:
+                        # Match by size — orderedWindows() already guarantees
+                        # the window is on screen.  The Settings window is
+                        # large enough (~900×700) that a 40-px tolerance is
+                        # sufficient to distinguish it from the HUD (~200×50).
+                        size_ok = (abs(fr.size.width  - tw) <= 40 and
+                                   abs(fr.size.height - th) <= 40)
+                        if size_ok:
                             nsw.setOpaque_(False)
                             nsw.setBackgroundColor_(NSColor.clearColor())
                             nsw.setHasShadow_(True)
+                            cv = nsw.contentView()
+                            cv.setWantsLayer_(True)
+                            cv.layer().setCornerRadius_(12.0)
+                            # NOTE: Do NOT call setMasksToBounds_(True) here —
+                            # it clips the Tk content view after page switches,
+                            # making page content invisible. Rounded corners
+                            # render correctly via the transparent window + CA
+                            # layer cornerRadius without needing mask clipping.
+                            _nsw_ref[0] = nsw
+                            cv.setNeedsDisplay_(True)
+                            found = True
                             break
                     except Exception:
                         pass
+                if not found and attempt < 12:
+                    _win.after(60, lambda: _apply_card_look(attempt + 1))
             except Exception:
                 pass
+        # First pass: shortly after window appears
         _win.after(80, _apply_card_look)
+        # Second pass: belt-and-suspenders after Tk finishes its initial layout
+        _win.after(300, lambda: _apply_card_look(0))
         # Treat Settings like the other utility windows so modifier state is
         # flushed correctly while changing record keys. This keeps Right Option
         # stable after switching away and back.
@@ -5647,13 +5774,6 @@ class DictationApp:
             _win.destroy()
 
         _win.bind("<Escape>", lambda e: _close_settings())
-
-        # Drag bound only to sidebar (not content area) so Entry/Text widgets
-        # still receive clicks and keyboard focus correctly.
-        def _drag_start(e): _win._dx, _win._dy = e.x_root - _win.winfo_x(), e.y_root - _win.winfo_y()
-        def _drag_move(e):
-            if hasattr(_win, "_dx"):
-                _win.geometry(f"+{e.x_root - _win._dx}+{e.y_root - _win._dy}")
 
         # ── Variables ─────────────────────────────────────────────────────────
         model_var   = tk.StringVar(value=settings["model"])
@@ -5699,14 +5819,14 @@ class DictationApp:
         wake_max_var = tk.StringVar(value=str(settings.get("wake_dictation_max_seconds", WAKE_DICTATION_MAX_SECONDS)))
 
         # ── Sidebar nav ───────────────────────────────────────────────────────
-        sidebar = tk.Frame(_win, bg=SIDEBAR, width=172)
+        sidebar = tk.Frame(_win, bg=SIDEBAR, width=228)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
+        # Sidebar header — icon + title + close (inside sidebar, preserves card look)
         shdr = tk.Frame(sidebar, bg=SIDEBAR, height=60)
         shdr.pack(fill="x")
         shdr.pack_propagate(False)
-        # App icon from provided PNG
         _icon_path = os.path.join(
             getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.argv[0]))),
             "dictate_icon.png"
@@ -5714,30 +5834,60 @@ class DictationApp:
         _icon_img = None
         try:
             from PIL import Image, ImageTk
-            _pil = Image.open(_icon_path).convert("RGBA").resize((22, 22), Image.LANCZOS)
+            _pil = Image.open(_icon_path).convert("RGBA").resize((28, 28), Image.LANCZOS)
             _icon_img = ImageTk.PhotoImage(_pil)
-            self._settings_icon = _icon_img   # keep reference alive
+            self._settings_icon = _icon_img
         except Exception:
             _icon_img = None
         if _icon_img:
-            tk.Label(shdr, image=_icon_img, bg=SIDEBAR).place(x=14, rely=0.5, anchor="w")
-            tk.Label(shdr, text="Dictation", bg=SIDEBAR, fg=FG,
-                     font=(FONT, 14, "bold")).place(x=42, rely=0.5, anchor="w")
+            _lbl_icon = tk.Label(shdr, image=_icon_img, bg=SIDEBAR)
+            _lbl_icon.place(x=14, rely=0.5, anchor="w")
+            _lbl_title = tk.Label(shdr, text="Quill", bg=SIDEBAR, fg=FG,
+                                  font=(FONT, 14, "bold"))
+            _lbl_title.place(x=50, rely=0.5, anchor="w")
         else:
-            tk.Label(shdr, text="🎙", bg=SIDEBAR, fg=FG,
-                     font=(FONT, 18)).place(x=14, rely=0.5, anchor="w")
-            tk.Label(shdr, text="Dictation", bg=SIDEBAR, fg=FG,
-                     font=(FONT, 14, "bold")).place(x=40, rely=0.5, anchor="w")
-        # Close button top-right
+            _lbl_icon = tk.Label(shdr, text="🪶", bg=SIDEBAR, fg=FG, font=(FONT, 18))
+            _lbl_icon.place(x=14, rely=0.5, anchor="w")
+            _lbl_title = tk.Label(shdr, text="Quill", bg=SIDEBAR, fg=FG,
+                                  font=(FONT, 14, "bold"))
+            _lbl_title.place(x=40, rely=0.5, anchor="w")
         close_lbl = tk.Label(shdr, text="✕", bg=SIDEBAR, fg=DIM,
                              font=(FONT, 12), cursor="hand2")
         close_lbl.place(relx=1.0, x=-14, rely=0.5, anchor="e")
         close_lbl.bind("<Button-1>", lambda e: _close_settings())
         close_lbl.bind("<Enter>", lambda e: close_lbl.configure(fg=FG))
         close_lbl.bind("<Leave>", lambda e: close_lbl.configure(fg=DIM))
-        # Drag bound to header strip only — sidebar body children block events
-        shdr.bind("<ButtonPress-1>", _drag_start)
-        shdr.bind("<B1-Motion>",     _drag_move)
+
+        # Full-width drag — _win.bind fires for any click that propagates up
+        # through bindtags. y-check limits drag to the top 60px header zone;
+        # widget-type check skips interactive controls (Entry, Combobox, etc.).
+        def _full_drag_start(e):
+            try:
+                click_y = e.y_root - _win.winfo_rooty()
+            except Exception:
+                return
+            if click_y >= 60:
+                return
+            if e.widget is close_lbl:
+                return
+            if not isinstance(e.widget, (tk.Frame, tk.Label)):
+                return
+            _win._drag_x = e.x_root - _win.winfo_x()
+            _win._drag_y = e.y_root - _win.winfo_y()
+        def _full_drag_move(e):
+            if hasattr(_win, "_drag_x"):
+                _win.geometry(f"+{e.x_root - _win._drag_x}+{e.y_root - _win._drag_y}")
+        def _full_drag_end(e):
+            # Always clear drag state on release — stale _drag_x causes the window
+            # to jump when the user later clicks the resize grip or any other widget.
+            try:
+                del _win._drag_x
+                del _win._drag_y
+            except AttributeError:
+                pass
+        _win.bind("<ButtonPress-1>",  _full_drag_start, add="+")
+        _win.bind("<B1-Motion>",      _full_drag_move,  add="+")
+        _win.bind("<ButtonRelease-1>", _full_drag_end,  add="+")
 
         tk.Frame(sidebar, bg=SEP, height=1).pack(fill="x")
 
@@ -5751,6 +5901,7 @@ class DictationApp:
             "Custom Commands",
             "Contacts",
             "Vocabulary",
+            "Snippets",
             "Cloud",
             "Workflows",
             "Help",
@@ -5758,7 +5909,7 @@ class DictationApp:
         nav_btns = {}
         active_page = [None]
 
-        # Pack separator THEN content — correct left-to-right layout order
+        # Vertical separator then content — directly on _win
         tk.Frame(_win, bg=SEP, width=1).pack(side="left", fill="y")
         content_host = tk.Frame(_win, bg=BG)
         content_host.pack(side="left", fill="both", expand=True)
@@ -5771,40 +5922,246 @@ class DictationApp:
         footer.pack(side="bottom", fill="x")
         footer.pack_propagate(False)
         tk.Label(footer, text=f"{BUILD_ID}  ·  ⌃, to open", bg=SIDEBAR, fg=ACC,
-                 font=(FONT, 9)).place(x=14, rely=0.5, anchor="w")
+                 font=(FONT, 12)).place(x=14, rely=0.5, anchor="w")
 
         def show_page(name):
             active_page[0] = name
-            for n, (f, l, bar) in nav_btns.items():
+            for n, (f, l, bar, ic) in nav_btns.items():
                 is_active = (n == name)
                 bar.configure(bg=ACC if is_active else SIDEBAR)
                 l.configure(fg=FG if is_active else DIM,
-                            font=(FONT, 12, "bold") if is_active else (FONT, 12))
+                            font=(FONT, 14, "bold") if is_active else (FONT, 13))
+                try:
+                    _draw_nav_icon(ic, n, is_active)
+                except Exception:
+                    pass
             for n, pg in pages.items():
                 pg.pack_forget()
             if name in pages:
                 pages[name].pack(fill="both", expand=True)
+                # Force Tk to realise widget geometries so canvas-hosted inner
+                # frames report correct winfo_reqheight() on first show.
+                _win.update_idletasks()
+                # DIAGNOSTIC: _ping_canvases disabled to isolate whether it
+                # is the cause of content disappearing after tab switches.
+                # Do not re-enable until the failure path is confirmed.
+                pass
+            # Refresh Snippets list each time user navigates to that page so
+            # edits from an external session are picked up immediately.
+            if name == "Snippets":
+                try:
+                    _snip_refresh_rows()
+                except NameError:
+                    pass  # Page not yet built (first call before page code runs)
+
+        # ── Sidebar drawing helpers ───────────────────────────────────────────
+        import math as _math
+
+        # Rounded selection pill — drawn on a placed Canvas behind the icon/label.
+        # "active": filled blue-tinted pill + blue 1px outline
+        # "hover" : subtly lighter pill + blue 1px outline
+        # "none"  : empty (transparent)
+        def _draw_sel_bg(c, state):
+            try:
+                c._sel_state = state        # remember for <Configure> redraws
+            except Exception:
+                pass
+            c.delete("all")
+            w = c.winfo_width()
+            h = c.winfo_height()
+            if w <= 2 or h <= 2:
+                c.after(30, lambda: _draw_sel_bg(c, state))
+                return
+            if state == "none":
+                return
+            R  = 6          # corner radius — matches UI_RADIUS_BUTTON
+            x1, y1, x2, y2 = 1, 1, w - 1, h - 1
+            fill = "#0d2540" if state == "active" else "#1a1e28"
+            line = ACC      if state == "active" else "#2a5a8f"
+            # Filled rounded rect
+            c.create_arc(x1,      y1,      x1+2*R, y1+2*R, start=90,  extent=90,
+                         fill=fill, outline=fill)
+            c.create_arc(x2-2*R,  y1,      x2,     y1+2*R, start=0,   extent=90,
+                         fill=fill, outline=fill)
+            c.create_arc(x1,      y2-2*R,  x1+2*R, y2,     start=180, extent=90,
+                         fill=fill, outline=fill)
+            c.create_arc(x2-2*R,  y2-2*R,  x2,     y2,     start=270, extent=90,
+                         fill=fill, outline=fill)
+            c.create_rectangle(x1+R, y1,   x2-R, y2,   fill=fill, outline="")
+            c.create_rectangle(x1,   y1+R, x2,   y2-R, fill=fill, outline="")
+            # 1 px outline arcs
+            c.create_arc(x1,      y1,      x1+2*R, y1+2*R, start=90,  extent=90,
+                         outline=line, style="arc")
+            c.create_arc(x2-2*R,  y1,      x2,     y1+2*R, start=0,   extent=90,
+                         outline=line, style="arc")
+            c.create_arc(x1,      y2-2*R,  x1+2*R, y2,     start=180, extent=90,
+                         outline=line, style="arc")
+            c.create_arc(x2-2*R,  y2-2*R,  x2,     y2,     start=270, extent=90,
+                         outline=line, style="arc")
+            # 1 px outline straight edges
+            c.create_line(x1+R,   y1,   x2-R,   y1,   fill=line)
+            c.create_line(x1+R,   y2-1, x2-R,   y2-1, fill=line)
+            c.create_line(x1,     y1+R, x1,     y2-R, fill=line)
+            c.create_line(x2-1,   y1+R, x2-1,   y2-R, fill=line)
+
+        # Refined SF-Symbols-style monochrome icons — thin 1.5 px strokes,
+        # minimal geometry, consistent 22×22 canvas (14×14 drawing area).
+        def _draw_nav_icon(c, name, active):
+            c.delete("all")
+            COL = ACC if active else "#8a8a95"
+            W   = 1.45
+            BG  = c.cget("bg")  # canvas background for knob fills
+
+            if name == "Setup":
+                # SlidersHorizontal: 3 horizontal tracks + circle knobs
+                for y, kx in [(5.5, 6.5), (10.5, 13.0), (15.5, 8.0)]:
+                    c.create_line(3, y, 17, y,
+                                  fill=COL, width=W, capstyle="round")
+                    c.create_oval(kx-2.5, y-2.5, kx+2.5, y+2.5,
+                                  outline=COL, fill=BG, width=W)
+
+            elif name == "Dictation":
+                # Mic: rounded capsule + stand arc + stem + base
+                c.create_arc(7, 2, 13, 8,  start=0,   extent=180,
+                             outline=COL, width=W, style="arc")
+                c.create_line(7,  5, 7,  11, fill=COL, width=W, capstyle="round")
+                c.create_line(13, 5, 13, 11, fill=COL, width=W, capstyle="round")
+                c.create_arc(7, 8, 13, 14, start=180, extent=180,
+                             outline=COL, width=W, style="arc")
+                # stand arc (smile/cup shape beneath capsule)
+                c.create_arc(4.5, 9, 15.5, 17, start=180, extent=180,
+                             outline=COL, width=W, style="arc")
+                c.create_line(10, 17, 10,  19.5, fill=COL, width=W, capstyle="round")
+                c.create_line(7,  19.5, 13, 19.5, fill=COL, width=W, capstyle="round")
+
+            elif name == "Audio & Language":
+                # Globe2: outer circle + equator + two longitude arcs
+                c.create_oval(3, 3, 17, 17, outline=COL, width=W)
+                c.create_line(3, 10, 17, 10, fill=COL, width=1.25, capstyle="round")
+                c.create_arc(6.5, 3, 13.5, 17, start=90, extent=-180,
+                             outline=COL, width=1.25, style="arc")
+                c.create_arc(6.5, 3, 13.5, 17, start=90, extent=180,
+                             outline=COL, width=1.25, style="arc")
+
+            elif name == "AI Cleanup":
+                # Wand2: diagonal stick + 4-line asterisk sparkle at tip
+                c.create_line(4, 17, 14, 4.5, fill=COL, width=W, capstyle="round")
+                sx, sy = 15.5, 3.5
+                for ang in [0, 45, 90, 135]:
+                    r = _math.radians(ang)
+                    c.create_line(sx + 2.2*_math.cos(r), sy - 2.2*_math.sin(r),
+                                  sx - 2.2*_math.cos(r), sy + 2.2*_math.sin(r),
+                                  fill=COL, width=1.25, capstyle="round")
+
+            elif name == "Writing Profiles":
+                # FileText: document outline + fold crease + 3 text lines
+                c.create_line(4,  2,  13, 2,  fill=COL, width=W, capstyle="round")
+                c.create_line(13, 2,  17, 6,  fill=COL, width=W,
+                              joinstyle="round", capstyle="round")
+                c.create_line(17, 6,  17, 19, fill=COL, width=W, capstyle="round")
+                c.create_line(17, 19,  4, 19, fill=COL, width=W, capstyle="round")
+                c.create_line(4,  19,  4,  2, fill=COL, width=W, capstyle="round")
+                c.create_line(13, 2,  13, 6,  fill=COL, width=1.25, capstyle="round")
+                c.create_line(13, 6,  17, 6,  fill=COL, width=1.25, capstyle="round")
+                for yl in [9.5, 12.5, 15.5]:
+                    c.create_line(7, yl, 14 if yl < 15 else 11, yl,
+                                  fill=COL, width=1.25, capstyle="round")
+
+            elif name == "Jarvis":
+                # Bot: square head + antenna + filled eyes + mouth + ear tabs
+                c.create_rectangle(4, 7, 16, 17, outline=COL, width=W)
+                c.create_line(10, 7, 10, 4, fill=COL, width=W, capstyle="round")
+                c.create_oval(8.5, 2.5, 11.5, 5.5, outline=COL, fill=BG, width=1.25)
+                c.create_oval(6.5, 10, 8.5,  12,   fill=COL, outline="")
+                c.create_oval(11.5, 10, 13.5, 12,  fill=COL, outline="")
+                c.create_line(7.5, 14.5, 12.5, 14.5,
+                              fill=COL, width=W, capstyle="round")
+                c.create_line(2,  11, 4,  11, fill=COL, width=W, capstyle="round")
+                c.create_line(16, 11, 18, 11, fill=COL, width=W, capstyle="round")
+
+            elif name == "Custom Commands":
+                # Terminal: outer box + chevron '>' + cursor underscore
+                c.create_rectangle(2, 3, 18, 17, outline=COL, width=W)
+                c.create_line(5.5, 8, 9.5, 11, 5.5, 14,
+                              fill=COL, width=W, joinstyle="round", capstyle="round")
+                c.create_line(11, 14, 15.5, 14, fill=COL, width=W, capstyle="round")
+
+            elif name == "Contacts":
+                # UserRound: head circle + shoulder arch
+                c.create_oval(6, 3, 14, 11, outline=COL, width=W)
+                c.create_arc(2, 12, 18, 22, start=0, extent=180,
+                             outline=COL, width=W, style="arc")
+
+            elif name == "Vocabulary":
+                # BookOpen: center spine + left page + right page
+                c.create_line(10, 4, 10, 18, fill=COL, width=W, capstyle="round")
+                c.create_line(10, 4,  3,  6, fill=COL, width=W, capstyle="round")
+                c.create_line(3,  6,  3, 18, fill=COL, width=W, capstyle="round")
+                c.create_line(3,  18, 10, 18, fill=COL, width=W, capstyle="round")
+                c.create_line(10, 4,  17,  6, fill=COL, width=W, capstyle="round")
+                c.create_line(17, 6,  17, 18, fill=COL, width=W, capstyle="round")
+                c.create_line(17, 18, 10, 18, fill=COL, width=W, capstyle="round")
+
+            elif name == "Snippets":
+                # TextCursorInput: 3 ragged text lines + I-beam cursor
+                c.create_line(3, 7,  13, 7,  fill=COL, width=W, capstyle="round")
+                c.create_line(3, 11, 11, 11, fill=COL, width=W, capstyle="round")
+                c.create_line(3, 15,  8, 15, fill=COL, width=W, capstyle="round")
+                c.create_line(16, 7,  16, 17, fill=COL, width=W, capstyle="round")
+                c.create_line(14, 7,  18,  7, fill=COL, width=1.25, capstyle="round")
+                c.create_line(14, 17, 18, 17, fill=COL, width=1.25, capstyle="round")
+
+            elif name == "Cloud":
+                # Cloud: three overlapping top-half arcs + flat bottom
+                c.create_arc(4,  8, 14, 17, start=0, extent=180,
+                             outline=COL, width=W, style="arc")
+                c.create_arc(9,  6, 18, 14, start=0, extent=180,
+                             outline=COL, width=W, style="arc")
+                c.create_arc(6,  5, 15, 13, start=0, extent=180,
+                             outline=COL, width=W, style="arc")
+                c.create_line(4,  12.5, 4,  17, fill=COL, width=W, capstyle="round")
+                c.create_line(18, 10,  18,  17, fill=COL, width=W, capstyle="round")
+                c.create_line(4,  17,  18,  17, fill=COL, width=W, capstyle="round")
+
+            elif name == "Workflows":
+                # Zap: lightning bolt zigzag
+                c.create_line(13, 2, 7, 11, 12, 11, 7, 19,
+                              fill=COL, width=W, joinstyle="round", capstyle="round")
+
+            elif name == "Help":
+                # CircleHelp: outer circle + question-mark arc + stem + dot
+                c.create_oval(3, 3, 17, 17, outline=COL, width=W)
+                c.create_arc(7.5, 5.5, 12.5, 11.5, start=30, extent=210,
+                             outline=COL, width=W, style="arc")
+                c.create_line(10, 11.5, 10, 13.0, fill=COL, width=W, capstyle="round")
+                c.create_oval(9.2, 14.0, 10.8, 15.6, fill=COL, outline="")
 
         for nav_name in nav_items:
-            nf = tk.Frame(sidebar, bg=SIDEBAR, cursor="hand2", height=40)
+            nf = tk.Frame(sidebar, bg=SIDEBAR, cursor="hand2", height=48)
             nf.pack(fill="x")
             nf.pack_propagate(False)
-            # Left accent bar (shown when active)
+            # Left accent bar — blue when active, transparent when idle
             accent_bar = tk.Frame(nf, bg=SIDEBAR, width=3)
             accent_bar.pack(side="left", fill="y")
-            nl = tk.Label(nf, text=f"  {nav_name}", bg=SIDEBAR, fg=DIM,
-                          font=(FONT, 12), anchor="w", padx=8)
+            # Icon canvas — pack-managed only, no place() mixing
+            icon_c = tk.Canvas(nf, width=20, height=20, bg=SIDEBAR,
+                               highlightthickness=0)
+            icon_c.pack(side="left", padx=(16, 10))
+            try:
+                _draw_nav_icon(icon_c, nav_name, False)
+            except Exception:
+                pass
+            nl = tk.Label(nf, text=nav_name, bg=SIDEBAR, fg=DIM,
+                          font=(FONT, 13), anchor="w", padx=0)
             nl.pack(side="left", fill="x", expand=True)
-            nav_btns[nav_name] = (nf, nl, accent_bar)
-            for w in (nf, nl):
+            nav_btns[nav_name] = (nf, nl, accent_bar, icon_c)
+            for w in (nf, nl, icon_c):
                 w.bind("<Button-1>", lambda e, n=nav_name: show_page(n))
-                w.bind("<Enter>", lambda e, f=nf, l=nl, n=nav_name: (
-                    l.configure(fg=FG if active_page[0] != n else FG)
-                    if active_page[0] != n else None
+                w.bind("<Enter>", lambda e, l=nl, n=nav_name, ic=icon_c: (
+                    l.configure(fg=FG) if active_page[0] != n else None
                 ))
-                w.bind("<Leave>", lambda e, f=nf, l=nl, n=nav_name: (
-                    l.configure(fg=DIM if active_page[0] != n else FG)
-                    if active_page[0] != n else None
+                w.bind("<Leave>", lambda e, l=nl, n=nav_name, ic=icon_c: (
+                    l.configure(fg=DIM) if active_page[0] != n else None
                 ))
 
         # ── Shared helpers ────────────────────────────────────────────────────
@@ -5818,8 +6175,11 @@ class DictationApp:
             inner._scroll_canvas = canvas   # expose so callers can scroll programmatically
             win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
             # Lock inner frame width to canvas width — prevents horizontal overflow.
+            # Use canvas.winfo_width() rather than e.width so that synthetic
+            # Configure events fired by _ping_canvases (which carry e.width=0)
+            # do not reset the inner frame to zero/natural width and blank the page.
             canvas.bind("<Configure>",
-                lambda e: canvas.itemconfig(win_id, width=e.width))
+                lambda e, _c=canvas, _id=win_id: _c.itemconfig(_id, width=_c.winfo_width()))
             canvas.pack(fill="both", expand=True)
             def _on_mousewheel(e):
                 canvas.yview_scroll(int(-1 * e.delta), "units")
@@ -5837,70 +6197,70 @@ class DictationApp:
         def ph(parent, text):
             """Page heading."""
             tk.Label(parent, text=text, bg=BG, fg=FG,
-                     font=(FONT, 17, "bold")).pack(anchor="w", padx=24, pady=(24, 4))
+                     font=(FONT, 22, "bold")).pack(anchor="w", padx=24, pady=(24, 4))
             tk.Label(parent, text="", bg=BG, height=0).pack()  # spacer
 
         def lbl(parent, text):
             tk.Label(parent, text=text, bg=BG, fg=DIM,
-                     font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(14, 3))
+                     font=(FONT, 11, "bold")).pack(anchor="w", padx=24, pady=(14, 3))
 
         def combo(parent, var, values, width=26):
             """
-            Fully dark drop-down — uses tk.OptionMenu so every part
-            (button, popup, items) inherits our dark colours.
-            Corner radius via a Canvas rounded-rect underneath.
+            Fully custom dark dropdown — pure Canvas pill + tk.Menu popup.
+            No native macOS OptionMenu chrome so the button always renders
+            dark, matching the Entry-field aesthetic in the rest of the UI.
             """
-            R = UI_RADIUS_INPUT   # corner radius px
-            PX = 12               # horizontal padding inside pill
-            PY = 6         # vertical padding
-
-            # Measure approximate pixel width from char width
-            char_w  = 8    # ~8px per char in Helvetica Neue 13
-            pill_w  = width * char_w + PX * 2 + 28   # +28 for arrow
-            pill_h  = 32
+            R      = UI_RADIUS_INPUT
+            PX     = 12
+            pill_h = 34          # same height as text-entry inputs
+            char_w = 8
+            pill_w = width * char_w + PX * 2 + 28   # +28 for chevron
 
             outer = tk.Frame(parent, bg=BG)
             outer.pack(anchor="w", padx=24, pady=4)
 
             c = tk.Canvas(outer, width=pill_w, height=pill_h,
-                          bg=BG, highlightthickness=0)
+                          bg=BG, highlightthickness=1, highlightbackground=BG, cursor="hand2")
             c.pack()
 
-            def _draw_bg(hover=False):
-                c.delete("bg")
-                fill = "#2e2e2e" if hover else CARD
-                # Rounded rect via 8 points (two arcs + two sides)
-                c.create_arc(0, 0, R*2, R*2, start=90,  extent=90,  fill=fill, outline=fill, tags="bg")
-                c.create_arc(pill_w-R*2, 0, pill_w, R*2, start=0,   extent=90,  fill=fill, outline=fill, tags="bg")
-                c.create_arc(0, pill_h-R*2, R*2, pill_h, start=180, extent=90,  fill=fill, outline=fill, tags="bg")
-                c.create_arc(pill_w-R*2, pill_h-R*2, pill_w, pill_h, start=270, extent=90, fill=fill, outline=fill, tags="bg")
-                c.create_rectangle(R, 0, pill_w-R, pill_h, fill=fill, outline="", tags="bg")
-                c.create_rectangle(0, R, pill_w, pill_h-R, fill=fill, outline="", tags="bg")
+            def _draw(hover=False):
+                c.delete("all")
+                fill = "#2a2a2a" if hover else CARD
+                # Rounded-rect background
+                c.create_arc(0,          0,          R*2,      R*2,      start=90,  extent=90,  fill=fill, outline=fill)
+                c.create_arc(pill_w-R*2, 0,          pill_w,   R*2,      start=0,   extent=90,  fill=fill, outline=fill)
+                c.create_arc(0,          pill_h-R*2, R*2,      pill_h,   start=180, extent=90,  fill=fill, outline=fill)
+                c.create_arc(pill_w-R*2, pill_h-R*2, pill_w,   pill_h,   start=270, extent=90,  fill=fill, outline=fill)
+                c.create_rectangle(R,  0,  pill_w-R, pill_h, fill=fill, outline="")
+                c.create_rectangle(0,  R,  pill_w,   pill_h-R, fill=fill, outline="")
+                # Current value
+                c.create_text(PX, pill_h // 2, text=var.get(),
+                              anchor="w", fill=FG, font=(FONT, 12))
+                # Down-chevron indicator
+                c.create_text(pill_w - 16, pill_h // 2 + 1, text="⌄",
+                              anchor="center", fill=DIM, font=(FONT, 12))
 
-            _draw_bg()
+            _draw()
+            var.trace_add("write", lambda *_: _draw())
 
-            # OptionMenu placed over the canvas
-            menu_btn = tk.OptionMenu(outer, var, *values)
-            menu_btn.configure(
-                bg=CARD, fg=FG, activebackground="#2e2e2e", activeforeground=FG,
-                highlightthickness=0, relief="flat", bd=0,
-                font=(FONT, 12), anchor="w", padx=PX, pady=0,
-                indicatoron=True, width=width - 2,
-                cursor="hand2",
-            )
-            # Theme the popup
-            menu_btn["menu"].configure(
-                bg=CARD, fg=FG,
-                activebackground=ACC, activeforeground="#ffffff",
-                bd=0, relief="flat", font=(FONT, 12),
-            )
-            # Overlay the OptionMenu on the canvas
-            c.create_window(0, 0, anchor="nw", window=menu_btn,
-                            width=pill_w, height=pill_h, tags="menu")
+            # Dark popup menu — no native OptionMenu chrome
+            menu = tk.Menu(outer, tearoff=0,
+                           bg=CARD, fg=FG,
+                           activebackground=ACC, activeforeground="#ffffff",
+                           bd=0, relief="flat", font=(FONT, 12))
+            for v in values:
+                menu.add_command(label=v, command=lambda val=v: var.set(val))
 
-            menu_btn.bind("<Enter>", lambda e: _draw_bg(True))
-            menu_btn.bind("<Leave>", lambda e: _draw_bg(False))
-            return menu_btn
+            def _popup(e):
+                try:
+                    menu.tk_popup(c.winfo_rootx(), c.winfo_rooty() + pill_h)
+                finally:
+                    menu.grab_release()
+
+            c.bind("<Button-1>", _popup)
+            c.bind("<Enter>",    lambda e: (_draw(True),  c.configure(highlightbackground=ACC)))
+            c.bind("<Leave>",    lambda e: (_draw(False), c.configure(highlightbackground=BG)))
+            return c
 
         def toggle_row(parent, var, label, desc=""):
             row = tk.Frame(parent, bg=BG)
@@ -5909,7 +6269,7 @@ class DictationApp:
             txt.pack(side="left", fill="x", expand=True)
             tk.Label(txt, text=label, bg=BG, fg=FG, font=(FONT, 13), anchor="w").pack(anchor="w")
             if desc:
-                tk.Label(txt, text=desc, bg=BG, fg=HINT, font=(FONT, 10), anchor="w").pack(anchor="w")
+                tk.Label(txt, text=desc, bg=BG, fg=HINT, font=(FONT, 12), anchor="w").pack(anchor="w")
             # Custom toggle pill
             pill_w, pill_h = 40, 22
             pill_c = tk.Canvas(row, width=pill_w, height=pill_h, bg=BG,
@@ -5972,7 +6332,7 @@ class DictationApp:
         # ── Shared polish helpers ────────────────────────────────────────────
         def helper_text(parent, text):
             tk.Label(parent, text=text, bg=BG, fg=HINT,
-                     font=(FONT, 10), justify="left", wraplength=430
+                     font=(FONT, 12), justify="left", wraplength=430
             ).pack(anchor="w", padx=24, pady=(4, 8))
 
         def _rounded_card_canvas(parent, bg_col, radius, padx, pady):
@@ -5989,6 +6349,7 @@ class DictationApp:
 
             c = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0)
             c.pack(fill="x", expand=True)
+            c._is_card_canvas = True   # ping-filter marker — scroll canvases are never marked
 
             inner = tk.Frame(c, bg=bg_col)
             win_id = c.create_window(INSET, INSET, window=inner, anchor="nw")
@@ -6011,6 +6372,7 @@ class DictationApp:
                 c.create_rectangle(R, 0, w-R, h,         fill=fill, outline="",  tags="rr")
                 c.create_rectangle(0, R, w, h-R,         fill=fill, outline="",  tags="rr")
                 c.tag_lower("rr")
+                c.tag_raise(win_id)   # ensure content frame is always above background
 
             inner.bind("<Configure>", _redraw)
             c.bind("<Configure>",     _redraw)
@@ -6022,23 +6384,24 @@ class DictationApp:
             tk.Label(inner, text=title, bg="#191919", fg=FG,
                      font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
             tk.Label(inner, text=text, bg="#191919", fg=HINT,
-                     font=(FONT, 10), justify="left", wraplength=410
+                     font=(FONT, 12), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 10))
 
-        def restart_card(parent, title, body, restart_fn=None):
-            """Card with descriptive text and Restart Now / Later buttons.
+        def restart_card(parent, title, body, restart_fn=None,
+                         btn_label="Restart Now", later_label="Later"):
+            """Card with descriptive text and primary / Later buttons.
 
-            restart_fn — callable invoked when the user clicks "Restart Now".
+            restart_fn — callable invoked when the user clicks the primary button.
             Defaults to the module-level _restart_app() if not provided.
-            Callers that need to flush Settings state first should pass their
-            own function; the default is kept for any other use-site.
+            btn_label  — label for the primary action button (default "Restart Now").
+            later_label — label for the dismiss button (default "Later").
             """
             inner = _rounded_card_canvas(parent, "#191919", radius=UI_RADIUS_CARD,
                                          padx=24, pady=(10, 8))
             tk.Label(inner, text=title, bg="#191919", fg=FG,
                      font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
             tk.Label(inner, text=body, bg="#191919", fg=HINT,
-                     font=(FONT, 10), justify="left", wraplength=410
+                     font=(FONT, 12), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 8))
             btn_row = tk.Frame(inner, bg="#191919")
             btn_row.pack(anchor="w", padx=12, pady=(0, 10))
@@ -6065,17 +6428,35 @@ class DictationApp:
                 c.bind("<Leave>",    lambda e, d=_draw, b2=bg: d(b2))
                 c.bind("<Button-1>", lambda e: cmd())
             _effective_restart = restart_fn if restart_fn is not None else _restart_app
-            _make_btn(btn_row, "Restart Now", _effective_restart, accent=True)
-            _make_btn(btn_row, "Later",       _win.destroy,       accent=False)
+            _make_btn(btn_row, btn_label,   _effective_restart, accent=True)
+            _make_btn(btn_row, later_label, _win.destroy,       accent=False)
 
         def small_button(parent, text, cmd, accent=False):
-            btn = tk.Label(parent, text=text, bg=ACC if accent else CARD, fg="#ffffff" if accent else FG,
-                           font=(FONT, 11, "bold"), padx=14, pady=8, cursor="hand2")
-            btn.pack(anchor="w", padx=24, pady=(8, 4))
-            btn.bind("<Button-1>", lambda e: cmd())
-            btn.bind("<Enter>", lambda e: btn.configure(bg="#1a6fd4" if accent else CARD_HI))
-            btn.bind("<Leave>", lambda e: btn.configure(bg=ACC if accent else CARD))
-            return btn
+            """Canvas-drawn rounded button — consistent with the rest of the UI."""
+            BTN_H   = 38
+            bg_col  = ACC if accent else CARD
+            hov_col = "#1a6fd4" if accent else CARD_HI
+            fg_col  = "#ffffff" if accent else FG
+            R       = UI_RADIUS_BUTTON
+            w_est   = max(140, len(text) * 9 + 32)
+            c = tk.Canvas(parent, width=w_est, height=BTN_H,
+                          bg=BG, highlightthickness=1, highlightbackground=BG, cursor="hand2")
+            c.pack(anchor="w", padx=24, pady=(8, 4))
+            def _draw(col):
+                c.delete("all")
+                c.create_arc(0,          0,          R*2,       R*2,       start=90,  extent=90, fill=col, outline=col)
+                c.create_arc(w_est-R*2,  0,          w_est,     R*2,       start=0,   extent=90, fill=col, outline=col)
+                c.create_arc(0,          BTN_H-R*2,  R*2,       BTN_H,     start=180, extent=90, fill=col, outline=col)
+                c.create_arc(w_est-R*2,  BTN_H-R*2,  w_est,     BTN_H,     start=270, extent=90, fill=col, outline=col)
+                c.create_rectangle(R,  0,  w_est-R,  BTN_H,    fill=col, outline="")
+                c.create_rectangle(0,  R,  w_est,    BTN_H-R,  fill=col, outline="")
+                c.create_text(w_est // 2, BTN_H // 2, text=text,
+                              fill=fg_col, font=(FONT, 11, "bold"))
+            _draw(bg_col)
+            c.bind("<Enter>",    lambda e: (_draw(hov_col), c.configure(highlightbackground=ACC)))
+            c.bind("<Leave>",    lambda e: (_draw(bg_col),  c.configure(highlightbackground=BG)))
+            c.bind("<Button-1>", lambda e: cmd())
+            return c
 
         def _wide_btn(parent, text, cmd, accent=True, padx=24, pady=(10, 4)):
             """Full-width Canvas-drawn rounded button — proper rounding guaranteed."""
@@ -6109,7 +6490,7 @@ class DictationApp:
             tk.Label(inner, text=title, bg=CARD, fg=FG,
                      font=(FONT, 12, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 3))
             tk.Label(inner, text=body, bg=CARD, fg=HINT,
-                     font=(FONT, 10), justify="left", wraplength=410
+                     font=(FONT, 12), justify="left", wraplength=410
             ).pack(anchor="w", padx=12, pady=(0, 10))
             return inner
 
@@ -6163,7 +6544,7 @@ class DictationApp:
             self.show_message("Setup marked complete", self.GREEN)
 
         # ── Page: Setup ──────────────────────────────────────────────────────
-        p = page("Setup")
+        p = page("Setup", scrollable=True)
         ph(p, "Professional Setup")
         info_card(p, "Offline-first",
                   "Jarvis works offline for dictation, local cleanup, reminders, contacts, system controls, and translation after the required models are installed.\n\n"
@@ -6223,18 +6604,27 @@ class DictationApp:
         _restart_anchor.pack(fill="x")
         _restart_wrapper = tk.Frame(p, bg=BG)
 
-        # "Restart Now" must save the current UI state FIRST so the relaunched
-        # instance picks up the new model/language from disk.  _save() is defined
-        # later in the same function scope; Python's late-binding closure means
-        # the name is resolved at call-time (button click), not at definition-time,
-        # so this works correctly even though _save() appears after this point.
-        def _save_and_restart():
-            _save()        # flush model_var / lang_var → settings dict → disk
-            _restart_app() # detached shell relaunch + quit
+        # "Apply Changes" decides at click-time whether a full restart is needed.
+        # Mic changes require restarting the audio subsystem — restart the whole
+        # process.  Model or language changes hot-swap via reload_model() without
+        # closing the app; _save() already handles that path when it detects that
+        # settings["model"] differs from the currently loaded MODEL.
+        # Python's late-binding closures mean _save() / _initials / _restart_app
+        # are all resolved at call-time (button click), not at definition-time.
+        def _save_and_apply():
+            mic_changed = (mic_var.get() != _initials["mic"])
+            if mic_changed:
+                _save()        # flush + write to disk + destroy window
+                _restart_app() # detached shell relaunch + quit (mic needs full restart)
+            else:
+                _save()  # flush + write to disk + destroy window + hot-reload if model changed
 
-        restart_card(_restart_wrapper, "Restart recommended for audio changes",
-                     "If you changed the microphone, Speech model, or Spoken Language, restart Jarvis so the new setting is fully applied.",
-                     restart_fn=_save_and_restart)
+        restart_card(_restart_wrapper,
+                     "Changes pending",
+                     "Microphone changes require a full restart.\n"
+                     "Model and language changes apply instantly — no restart needed.",
+                     restart_fn=_save_and_apply,
+                     btn_label="Apply Changes")
         _restart_wrapper.pack_forget()   # hidden until a change is made
 
         lbl(p, "I'M SPEAKING")
@@ -6366,7 +6756,7 @@ class DictationApp:
         tk.Label(p,
                  text="Local AI Cleanup currently improves English dictation. "
                       "For other spoken languages, Jarvis skips cleanup automatically to avoid accidental translation.",
-                 bg=BG, fg=HINT, font=(FONT, 10), justify="left", wraplength=430
+                 bg=BG, fg=HINT, font=(FONT, 12), justify="left", wraplength=430
         ).pack(anchor="w", padx=24, pady=(2, 6))
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(4, 10))
 
@@ -6409,7 +6799,7 @@ class DictationApp:
         status_icon_lbl.pack(anchor="w", padx=14, pady=(10, 2))
 
         status_detail_lbl = tk.Label(status_frame, text="", bg=CARD, fg=DIM,
-                                     font=(FONT, 10), wraplength=420, justify="left")
+                                     font=(FONT, 12), wraplength=420, justify="left")
         status_detail_lbl.pack(anchor="w", padx=14, pady=(0, 10))
 
         fallback_lbl = tk.Label(p, text="Dictation still works without Local AI Cleanup.",
@@ -6618,7 +7008,7 @@ class DictationApp:
         _TW, _TH, _TR = 84, 34, UI_RADIUS_INPUT   # timing input canvas dimensions
         for label, var, _wc in (("Grace", wake_grace_var, 6), ("Silence", wake_silence_var, 6), ("Max", wake_max_var, 6)):
             cell = tk.Frame(row, bg=BG); cell.pack(side="left", padx=(0, 14))
-            tk.Label(cell, text=label + " sec", bg=BG, fg=HINT, font=(FONT, 10)).pack(anchor="w")
+            tk.Label(cell, text=label + " sec", bg=BG, fg=HINT, font=(FONT, 12)).pack(anchor="w")
             # Canvas draws the rounded background; Entry is placed as a canvas window inside it.
             ic = tk.Canvas(cell, width=_TW, height=_TH, bg=BG, highlightthickness=0)
             ic.pack(anchor="w")
@@ -6642,7 +7032,7 @@ class DictationApp:
         p = page("Custom Commands", scrollable=True)
         ph(p, "Custom Commands")
         tk.Label(p, text="Say your trigger phrase after 'Jarvis' to run the command.\nTrigger must be at least two words. Custom commands run before built-ins.\nChanges save automatically — no save button needed.",
-                 bg=BG, fg=HINT, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
+                 bg=BG, fg=HINT, font=(FONT, 12), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
 
         # ── Command list ──────────────────────────────────────────────────
         list_outer = tk.Frame(p, bg=BG)
@@ -6657,7 +7047,7 @@ class DictationApp:
             cmds = load_custom_commands()
             if not cmds:
                 tk.Label(list_outer, text="No custom commands yet. Add one below.",
-                         bg=BG, fg=HINT, font=(FONT, 10)).pack(anchor="w", pady=(0, 8))
+                         bg=BG, fg=HINT, font=(FONT, 12)).pack(anchor="w", pady=(0, 8))
                 return
             for i, cmd in enumerate(cmds):
                 row = _rounded_card_canvas(list_outer, CARD, radius=UI_RADIUS_CARD, padx=0, pady=(0, 4))
@@ -6701,7 +7091,7 @@ class DictationApp:
                          bg=CARD, fg=FG, font=(FONT, 11, "bold"),
                          anchor="w").pack(anchor="w")
                 tk.Label(info, text=cmd.get("target", ""),
-                         bg=CARD, fg=DIM, font=(FONT, 10),
+                         bg=CARD, fg=DIM, font=(FONT, 12),
                          anchor="w", wraplength=360, justify="left").pack(anchor="w")
 
         _refresh_list()
@@ -6715,7 +7105,7 @@ class DictationApp:
 
         def _field(parent, label_text):
             tk.Label(parent, text=label_text, bg=BG, fg=DIM,
-                     font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
+                     font=(FONT, 11, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
             f = _rounded_card_canvas(parent, CARD, radius=UI_RADIUS_INPUT, padx=24, pady=(0, 0))
             e = tk.Entry(f, bg=CARD, fg=FG, font=(FONT, 13), relief="flat",
                          insertbackground=FG, bd=0, highlightthickness=0)
@@ -6737,7 +7127,7 @@ class DictationApp:
 
         # Action — row of three toggle-style buttons
         tk.Label(p, text="ACTION", bg=BG, fg=DIM,
-                 font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
+                 font=(FONT, 11, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
         act_row = tk.Frame(p, bg=BG)
         act_row.pack(anchor="w", padx=24)
         _ACT_W, _ACT_H, _ACT_R = 104, 34, UI_RADIUS_BUTTON
@@ -6775,7 +7165,7 @@ class DictationApp:
 
         tgt_entry = _field(p, "TARGET  —  URL / app name / text to type")
 
-        err_lbl = tk.Label(p, text="", bg=BG, fg="#ff3b30", font=(FONT, 10))
+        err_lbl = tk.Label(p, text="", bg=BG, fg="#ff3b30", font=(FONT, 12))
         err_lbl.pack(anchor="w", padx=24, pady=(6, 0))
 
         def _add_command():
@@ -6820,7 +7210,7 @@ class DictationApp:
             "Jarvis looks up contacts here when you say an email command.\n"
             "Say a name or alias and Jarvis resolves it to the email address.\n"
             "Changes save automatically."
-        ), bg=BG, fg=HINT, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
+        ), bg=BG, fg=HINT, font=(FONT, 12), justify="left").pack(anchor="w", padx=24, pady=(0, 12))
 
         contacts_list_outer = tk.Frame(p, bg=BG)
         contacts_list_outer.pack(fill="x", padx=24)
@@ -6832,7 +7222,7 @@ class DictationApp:
             if not ctcts:
                 tk.Label(contacts_list_outer,
                          text="No contacts yet. Add one below.",
-                         bg=BG, fg=HINT, font=(FONT, 10)).pack(anchor="w", pady=(0, 8))
+                         bg=BG, fg=HINT, font=(FONT, 12)).pack(anchor="w", pady=(0, 8))
                 return
             for i, ct in enumerate(ctcts):
                 row = _rounded_card_canvas(contacts_list_outer, CARD, radius=UI_RADIUS_CARD, padx=0, pady=(0, 4))
@@ -6856,7 +7246,7 @@ class DictationApp:
                 aliases = ct.get("aliases", "").strip()
                 if aliases:
                     tk.Label(info, text="Aliases: " + aliases, bg=CARD, fg=DIM,
-                             font=(FONT, 10), anchor="w").pack(anchor="w")
+                             font=(FONT, 12), anchor="w").pack(anchor="w")
 
         _refresh_contacts()
 
@@ -6865,7 +7255,7 @@ class DictationApp:
 
         def _contact_field(label_text, placeholder=""):
             tk.Label(p, text=label_text, bg=BG, fg=DIM,
-                     font=(FONT, 9, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
+                     font=(FONT, 11, "bold")).pack(anchor="w", padx=24, pady=(8, 2))
             f = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_INPUT, padx=24, pady=(0, 0))
             e = tk.Entry(f, bg=CARD, fg=FG, font=(FONT, 13), relief="flat",
                          insertbackground=FG, bd=0, highlightthickness=0)
@@ -6883,7 +7273,7 @@ class DictationApp:
         ct_email_e   = _contact_field("EMAIL",   "e.g. val@example.com")
         ct_aliases_e = _contact_field("ALIASES (optional, comma-separated)", "e.g. Valerie, Val S")
 
-        ct_err = tk.Label(p, text="", bg=BG, fg="#ff3b30", font=(FONT, 10))
+        ct_err = tk.Label(p, text="", bg=BG, fg="#ff3b30", font=(FONT, 12))
         ct_err.pack(anchor="w", padx=24, pady=(4, 0))
 
         def _add_contact():
@@ -6921,7 +7311,7 @@ class DictationApp:
         ph(p, "Custom Vocabulary")
         lbl(p, "USER DICTIONARY")
         tk.Label(p, text="Type words or names you want Whisper to recognize better.\nSeparate them with commas or new lines.",
-                 bg=BG, fg=HINT, font=(FONT, 10), justify="left").pack(anchor="w", padx=24, pady=(0, 10))
+                 bg=BG, fg=HINT, font=(FONT, 12), justify="left").pack(anchor="w", padx=24, pady=(0, 10))
 
         v_outer = tk.Frame(p, bg=BG)
         v_outer.pack(fill="x", padx=24, pady=(0, 10))
@@ -6951,7 +7341,7 @@ class DictationApp:
         lbl(p, "PERSONAL CORRECTIONS")
         tk.Label(p,
                  text="Add words or phrases Jarvis often hears incorrectly.",
-                 bg=BG, fg=HINT, font=(FONT, 10), justify="left", wraplength=380
+                 bg=BG, fg=HINT, font=(FONT, 12), justify="left", wraplength=380
         ).pack(anchor="w", padx=24, pady=(0, 8))
 
         # ── Input card ───────────────────────────────────────────────────────
@@ -6960,17 +7350,17 @@ class DictationApp:
         # Last dictation reference ────────────────────────────────────────────
         _last_dict_text = (last_text or "").strip()
         tk.Label(corr_card, text="Last dictation:", bg=CARD, fg=DIM,
-                 font=(FONT, 9, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
+                 font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
         _last_dict_display = f'"{_last_dict_text}"' if _last_dict_text else "No recent dictation available."
         _last_dict_fg = HINT if _last_dict_text else DIM
         tk.Label(corr_card, text=_last_dict_display, bg=CARD, fg=_last_dict_fg,
-                 font=(FONT, 10), wraplength=400, justify="left", anchor="w"
+                 font=(FONT, 12), wraplength=400, justify="left", anchor="w"
         ).pack(anchor="w", padx=12, pady=(0, 8))
 
         tk.Frame(corr_card, bg=SEP, height=1).pack(fill="x", padx=12, pady=(0, 8))
 
         tk.Label(corr_card, text="Word or phrase Jarvis heard incorrectly:", bg=CARD, fg=HINT,
-                 font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(0, 2))
+                 font=(FONT, 12), anchor="w").pack(anchor="w", padx=12, pady=(0, 2))
         wrong_var = tk.StringVar(value="")
         wrong_entry = tk.Entry(corr_card, textvariable=wrong_var, bg="#2a2a2a", fg=FG,
                                font=(FONT, 12), relief="flat", insertbackground=FG,
@@ -6980,7 +7370,7 @@ class DictationApp:
         wrong_entry.bind("<KeyPress>", pause_on_any_key)
 
         tk.Label(corr_card, text="Replace it with:", bg=CARD, fg=HINT,
-                 font=(FONT, 10), anchor="w").pack(anchor="w", padx=12, pady=(8, 2))
+                 font=(FONT, 12), anchor="w").pack(anchor="w", padx=12, pady=(8, 2))
         right_var = tk.StringVar()
         right_entry = tk.Entry(corr_card, textvariable=right_var, bg="#2a2a2a", fg=FG,
                                font=(FONT, 12), relief="flat", insertbackground=FG,
@@ -6997,12 +7387,12 @@ class DictationApp:
         ex_card = tk.Frame(corr_card, bg=_ex_bg)
         ex_card.pack(fill="x", padx=12, pady=(6, 0))
         tk.Label(ex_card, text="Examples:", bg=_ex_bg, fg=DIM,
-                 font=(FONT, 9, "bold"), anchor="w").pack(anchor="w", padx=10, pady=(6, 2))
+                 font=(FONT, 11, "bold"), anchor="w").pack(anchor="w", padx=10, pady=(6, 2))
         for _ex in ['"a ten a"  →  "Aetna"',
                     '"mutual lava maha"  →  "Mutual of Omaha"',
                     '"user interface"  →  "UI"']:
             tk.Label(ex_card, text=_ex, bg=_ex_bg, fg="#8ab4f8",
-                     font=(FONT, 10), anchor="w").pack(anchor="w", padx=10)
+                     font=(FONT, 12), anchor="w").pack(anchor="w", padx=10)
         tk.Frame(ex_card, bg=_ex_bg, height=6).pack()
 
         # Canvas-drawn rounded Save Correction button inside the card
@@ -7035,14 +7425,14 @@ class DictationApp:
             corrs = vocab.get("corrections", {})
             if not corrs:
                 tk.Label(list_card, text="No corrections yet.", bg=CARD, fg=DIM,
-                         font=(FONT, 10)).pack(anchor="w", padx=12, pady=(10, 10))
+                         font=(FONT, 12)).pack(anchor="w", padx=12, pady=(10, 10))
                 return
             for wrong, right in sorted(corrs.items()):
                 row = tk.Frame(list_card, bg=CARD)
                 row.pack(fill="x", padx=12, pady=(8, 0))
                 tk.Label(row, text=f'"{wrong}"', bg=CARD, fg=FG,
-                         font=(FONT, 10), anchor="w").pack(side="left")
-                tk.Label(row, text=" → ", bg=CARD, fg=DIM, font=(FONT, 10)).pack(side="left")
+                         font=(FONT, 12), anchor="w").pack(side="left")
+                tk.Label(row, text=" → ", bg=CARD, fg=DIM, font=(FONT, 12)).pack(side="left")
                 tk.Label(row, text=right, bg=CARD, fg=ACC,
                          font=(FONT, 10, "bold")).pack(side="left")
 
@@ -7053,7 +7443,7 @@ class DictationApp:
                     _rebuild_corrections_list()
 
                 del_btn = tk.Label(row, text="Delete", bg=CARD, fg="#ff453a",
-                                   font=(FONT, 9, "bold"), cursor="hand2")
+                                   font=(FONT, 11, "bold"), cursor="hand2")
                 del_btn.pack(side="right")
                 del_btn.bind("<Button-1>", lambda e, fn=_delete: fn())
                 del_btn.bind("<Enter>", lambda e, b=del_btn: b.configure(fg="#ff6961"))
@@ -7100,7 +7490,216 @@ class DictationApp:
 
         tk.Frame(p, bg=BG, height=12).pack()
         save_btn_row(p, lambda: _save())
-        
+
+        # ── Page: Snippets ────────────────────────────────────────────────────
+        # Single-column scrollable layout — same style as Custom Commands.
+        # No nested mini-sidebar; list of cards + add/edit form below.
+        p = page("Snippets", scrollable=True)
+        ph(p, "Snippets")
+        tk.Label(p,
+                 text="Say a trigger phrase while dictating — Jarvis replaces it with the full expansion automatically.",
+                 bg=BG, fg=HINT, font=(FONT, 12), justify="left"
+        ).pack(anchor="w", padx=24, pady=(0, 12))
+
+        # ── Snippet list ──────────────────────────────────────────────────────
+        _snip_list_outer = tk.Frame(p, bg=BG)
+        _snip_list_outer.pack(fill="x", padx=24)
+
+        _snip_selected  = [None]           # currently selected trigger key
+        _snip_trigger_var = tk.StringVar() # bound to trigger entry field
+
+        def _snip_refresh_rows():
+            for w in _snip_list_outer.winfo_children():
+                w.destroy()
+            snips = load_snippets()
+            if not snips:
+                tk.Label(_snip_list_outer, text="No snippets yet. Add one below.",
+                         bg=BG, fg=HINT, font=(FONT, 12)).pack(anchor="w", pady=(0, 8))
+                return
+            for t, c in snips.items():
+                row = _rounded_card_canvas(_snip_list_outer, CARD, radius=UI_RADIUS_CARD,
+                                          padx=0, pady=(0, 4))
+                # ✕ delete — pack before info so it stays right-aligned
+                def _del(trigger=t):
+                    s = load_snippets()
+                    s.pop(trigger, None)
+                    with open(SNIPPETS_FILE, "w") as _sf:
+                        json.dump(s, _sf, indent=2)
+                    _invalidate_snippets_cache()
+                    if _snip_selected[0] == trigger:
+                        _snip_selected[0] = None
+                        _snip_trigger_var.set("")
+                        _snip_content_text.delete("1.0", tk.END)
+                        _snip_form_lbl.configure(text="New snippet")
+                        _snip_status_lbl.configure(text="")
+                    _snip_refresh_rows()
+                del_wrap = tk.Frame(row, bg=CARD)
+                del_wrap.pack(side="right", fill="y")
+                del_btn = tk.Label(del_wrap, text="✕", bg=CARD, fg=DIM,
+                                   font=(FONT, 12), cursor="hand2", padx=12)
+                del_btn.pack(anchor="n", pady=(8, 0))
+                del_btn.bind("<Button-1>", lambda e, d=_del: d())
+                del_btn.bind("<Enter>", lambda e, b=del_btn: b.configure(fg="#ff3b30"))
+                del_btn.bind("<Leave>", lambda e, b=del_btn: b.configure(fg=DIM))
+
+                # "SNIP" badge
+                _BW, _BH, _BR = 54, 26, UI_RADIUS_BADGE
+                bc = tk.Canvas(row, width=_BW, height=_BH, bg=CARD, highlightthickness=0)
+                bc.pack(side="left", padx=(10, 0), pady=10)
+                _bb = "#0a5a8f"
+                bc.create_arc(0, 0, 2*_BR, 2*_BR, start=90, extent=90, fill=_bb, outline=_bb)
+                bc.create_arc(_BW-2*_BR, 0, _BW, 2*_BR, start=0, extent=90, fill=_bb, outline=_bb)
+                bc.create_arc(0, _BH-2*_BR, 2*_BR, _BH, start=180, extent=90, fill=_bb, outline=_bb)
+                bc.create_arc(_BW-2*_BR, _BH-2*_BR, _BW, _BH, start=270, extent=90, fill=_bb, outline=_bb)
+                bc.create_rectangle(_BR, 0, _BW-_BR, _BH, fill=_bb, outline=_bb)
+                bc.create_rectangle(0, _BR, _BW, _BH-_BR, fill=_bb, outline=_bb)
+                bc.create_text(_BW//2, _BH//2, text="SNIP", fill="#ffffff", font=(FONT, 8, "bold"))
+
+                # Trigger + expansion preview
+                info = tk.Frame(row, bg=CARD)
+                info.pack(side="left", fill="x", expand=True, padx=10, pady=6)
+                tk.Label(info, text=f'"{t}"', bg=CARD, fg=FG,
+                         font=(FONT, 11, "bold"), anchor="w").pack(anchor="w")
+                preview = c.replace("\n", " ")
+                preview = preview[:64] + ("…" if len(preview) > 64 else "")
+                tk.Label(info, text=preview, bg=CARD, fg=DIM, font=(FONT, 12),
+                         anchor="w", wraplength=380, justify="left").pack(anchor="w")
+
+                # Click row → populate form
+                def _edit(trigger=t, content=c):
+                    _snip_selected[0] = trigger
+                    _snip_trigger_var.set(trigger)
+                    _snip_content_text.delete("1.0", tk.END)
+                    _snip_content_text.insert("1.0", content)
+                    _snip_form_lbl.configure(text=f"Edit  ›  {trigger[:32]}")
+                    _snip_status_lbl.configure(text="")
+                    try:
+                        sc = p._scroll_canvas
+                        sc.update_idletasks()
+                        sc.yview_moveto(1.0)
+                    except Exception:
+                        pass
+                for widget in (row, info):
+                    widget.bind("<Button-1>", lambda e, ed=_edit: ed())
+                    widget.bind("<Enter>", lambda e, r=row: r.configure(bg=CARD_HI))
+                    widget.bind("<Leave>", lambda e, r=row: r.configure(bg=CARD))
+
+        _snip_refresh_rows()
+
+        # ── Add / Edit form ───────────────────────────────────────────────────
+        tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(14, 12))
+        lbl(p, "ADD / EDIT SNIPPET")
+
+        _snip_form_lbl = tk.Label(p, text="New snippet", bg=BG, fg=DIM,
+                                  font=(FONT, 10, "italic"))
+        _snip_form_lbl.pack(anchor="w", padx=24, pady=(0, 6))
+
+        tk.Label(p, text="TRIGGER PHRASE  —  what you say to activate this snippet",
+                 bg=BG, fg=DIM, font=(FONT, 11, "bold")).pack(anchor="w", padx=24, pady=(4, 2))
+        _snip_trig_f = _rounded_card_canvas(p, CARD, radius=UI_RADIUS_INPUT, padx=24, pady=(0, 0))
+        _snip_trigger_entry = tk.Entry(_snip_trig_f, textvariable=_snip_trigger_var,
+                                       bg=CARD, fg=FG, font=(FONT, 13),
+                                       relief="flat", insertbackground=FG,
+                                       bd=0, highlightthickness=0)
+        _snip_trigger_entry.pack(fill="x", ipady=9, padx=10)
+        _bind_copy_paste(_snip_trigger_entry)
+
+        tk.Label(p, text="EXPANSION  —  the full text that gets typed when triggered",
+                 bg=BG, fg=DIM, font=(FONT, 11, "bold")).pack(anchor="w", padx=24, pady=(10, 2))
+        _snip_cont_wrap = tk.Frame(p, bg=CARD)
+        _snip_cont_wrap.pack(fill="x", padx=24)
+        _snip_content_text = tk.Text(_snip_cont_wrap, bg=CARD, fg=FG, font=(FONT, 13),
+                                     relief="flat", insertbackground=FG, wrap="word",
+                                     padx=10, pady=10, bd=0, highlightthickness=0, height=5)
+        _snip_content_text.pack(fill="x")
+        _bind_copy_paste(_snip_content_text)
+
+        tk.Label(p,
+                 text="Tip: trigger phrases match inside dictated sentences — no need to say them in isolation.",
+                 bg=BG, fg=DIM, font=(FONT, 9), justify="left", wraplength=450
+        ).pack(anchor="w", padx=24, pady=(4, 0))
+
+        _snip_status_lbl = tk.Label(p, text="", bg=BG, fg="#30d158", font=(FONT, 12))
+        _snip_status_lbl.pack(anchor="w", padx=24, pady=(6, 0))
+
+        # ── Form action buttons ───────────────────────────────────────────────
+        _snip_form_row = tk.Frame(p, bg=BG)
+        _snip_form_row.pack(anchor="w", padx=24, pady=(10, 24))
+
+        def _snip_form_btn(parent, text, cmd, accent=False, danger=False):
+            BTN_H = 36; R = UI_RADIUS_BUTTON
+            bg_col   = ACC if accent else CARD
+            hov_col  = "#1a6fd4" if accent else CARD_HI
+            text_col = "#ffffff" if accent else ("#ff453a" if danger else DIM)
+            w_est    = max(100, len(text) * 9 + 28)
+            c = tk.Canvas(parent, width=w_est, height=BTN_H,
+                          bg=BG, highlightthickness=0, cursor="hand2")
+            c.pack(side="left", padx=(0, 10))
+            def _draw(col=bg_col, tc=text_col):
+                c.delete("all")
+                c.create_arc(0,      0,      2*R, 2*R,           start=90,  extent=90, fill=col, outline=col)
+                c.create_arc(w_est-2*R, 0,   w_est, 2*R,         start=0,   extent=90, fill=col, outline=col)
+                c.create_arc(0,      BTN_H-2*R, 2*R, BTN_H,      start=180, extent=90, fill=col, outline=col)
+                c.create_arc(w_est-2*R, BTN_H-2*R, w_est, BTN_H, start=270, extent=90, fill=col, outline=col)
+                c.create_rectangle(R, 0, w_est-R, BTN_H, fill=col, outline=col)
+                c.create_rectangle(0, R, w_est,   BTN_H-R, fill=col, outline=col)
+                c.create_text(w_est//2, BTN_H//2, text=text,
+                              font=(FONT, 11, "bold") if accent else (FONT, 11),
+                              fill=tc, anchor="center")
+            _draw()
+            hov_tc = "#ffffff" if accent else ("#ff453a" if danger else FG)
+            c.bind("<Enter>",    lambda e: _draw(hov_col, hov_tc))
+            c.bind("<Leave>",    lambda e: _draw())
+            c.bind("<Button-1>", lambda e: cmd())
+            return c
+
+        def _snip_save_form():
+            t = _snip_trigger_var.get().strip().lower()
+            c = _snip_content_text.get("1.0", tk.END).strip()
+            if not t:
+                _snip_status_lbl.configure(text="Trigger phrase is required.", fg="#ff3b30"); return
+            if not c:
+                _snip_status_lbl.configure(text="Expansion text is required.", fg="#ff3b30"); return
+            s = load_snippets()
+            if _snip_selected[0] and _snip_selected[0] != t:
+                s.pop(_snip_selected[0], None)
+            s[t] = c
+            with open(SNIPPETS_FILE, "w") as _sf:
+                json.dump(s, _sf, indent=2)
+            _invalidate_snippets_cache()
+            _snip_selected[0] = t
+            _snip_refresh_rows()
+            _snip_status_lbl.configure(text=f"Saved '{t}'", fg="#30d158")
+            self.show_message(f"Saved '{t}'", self.GREEN)
+
+        def _snip_delete_form():
+            t = _snip_selected[0]
+            if not t:
+                _snip_status_lbl.configure(text="Select a snippet to delete.", fg="#ff9f0a"); return
+            s = load_snippets()
+            s.pop(t, None)
+            with open(SNIPPETS_FILE, "w") as _sf:
+                json.dump(s, _sf, indent=2)
+            _invalidate_snippets_cache()
+            _snip_selected[0] = None
+            _snip_trigger_var.set("")
+            _snip_content_text.delete("1.0", tk.END)
+            _snip_form_lbl.configure(text="New snippet")
+            _snip_refresh_rows()
+            _snip_status_lbl.configure(text="Deleted.", fg="#ff9f0a")
+
+        def _snip_new_form():
+            _snip_selected[0] = None
+            _snip_trigger_var.set("")
+            _snip_content_text.delete("1.0", tk.END)
+            _snip_form_lbl.configure(text="New snippet")
+            _snip_status_lbl.configure(text="")
+            _snip_trigger_entry.focus_set()
+
+        _snip_form_btn(_snip_form_row, "Save changes", _snip_save_form,   accent=True)
+        _snip_form_btn(_snip_form_row, "Delete",       _snip_delete_form, danger=True)
+        _snip_form_btn(_snip_form_row, "New snippet",  _snip_new_form)
+
         # ── Page: Cloud ──────────────────────────────────────────────────────
         p = page("Cloud")
         ph(p, "Cloud transcription")
@@ -7115,7 +7714,7 @@ class DictationApp:
         section_note(p, "Privacy",
                      "Local mode keeps transcription on your Mac. Cloud mode sends audio to OpenAI Whisper only when enabled and an API key is saved.")
         tk.Label(p, text="The API key is stored in macOS Keychain when possible.",
-                 bg=BG, fg=HINT, font=(FONT, 10)).pack(anchor="w", padx=24, pady=(4,0))
+                 bg=BG, fg=HINT, font=(FONT, 12)).pack(anchor="w", padx=24, pady=(4,0))
         save_btn_row(p, lambda: _save())
 
         # ── Page: Help ───────────────────────────────────────────────────────
@@ -7132,7 +7731,7 @@ class DictationApp:
                      font=(FONT, 12, "bold"), anchor="w").pack(anchor="w", padx=12, pady=(10, 4))
             if body:
                 tk.Label(inner, text=body, bg=CARD, fg=HINT,
-                         font=(FONT, 10), justify="left", wraplength=420
+                         font=(FONT, 12), justify="left", wraplength=420
                 ).pack(anchor="w", padx=12, pady=(0, 4))
             if examples:
                 ex_bg = "#191919"
@@ -7140,16 +7739,16 @@ class DictationApp:
                 ex_frame.pack(fill="x", padx=12, pady=(2, 4))
                 for ex in examples:
                     tk.Label(ex_frame, text=ex, bg=ex_bg, fg="#8ab4f8",
-                             font=(FONT, 10), anchor="w", justify="left", wraplength=390
+                             font=(FONT, 12), anchor="w", justify="left", wraplength=390
                     ).pack(anchor="w", padx=10, pady=(4, 0))
                 tk.Frame(ex_frame, bg=ex_bg, height=6).pack()
             if note_label and note_text:
                 note_frame = tk.Frame(inner, bg=CARD)
                 note_frame.pack(fill="x", padx=12, pady=(2, 4))
                 tk.Label(note_frame, text=note_label, bg=CARD, fg=HINT,
-                         font=(FONT, 9, "bold"), anchor="w").pack(anchor="w")
+                         font=(FONT, 11, "bold"), anchor="w").pack(anchor="w")
                 tk.Label(note_frame, text=note_text, bg=CARD, fg=HINT,
-                         font=(FONT, 10), justify="left", wraplength=400, anchor="w"
+                         font=(FONT, 12), justify="left", wraplength=400, anchor="w"
                 ).pack(anchor="w")
             if examples:
                 copy_text = "\n".join(examples)
@@ -7276,7 +7875,7 @@ class DictationApp:
         def copy_support_summary():
             summary = (
                 f"Jarvis is offline-first after setup. Your dictation stays on your Mac unless you enable Cloud mode.\n\n"
-                f"Dictation app {APP_VERSION}\n"
+                f"Quill {APP_VERSION}\n"
                 f"Hotkey: {hotkey_var.get()}\n"
                 f"Whisper model: {model_var.get()}\n"
                 f"Mic: {mic_var.get()}\n"
@@ -7300,7 +7899,7 @@ class DictationApp:
         tk.Frame(p, bg=SEP, height=1).pack(fill="x", padx=24, pady=(16, 4))
         lbl(p, "STORAGE & CLEANUP")
         tk.Label(p, text="Manage local text history, learned vocabulary, and diagnostic logs.\nAudio recordings are not saved.",
-                 bg=BG, fg=HINT, font=(FONT, 10), anchor="w", justify="left").pack(anchor="w", padx=28, pady=(2, 6))
+                 bg=BG, fg=HINT, font=(FONT, 12), anchor="w", justify="left").pack(anchor="w", padx=28, pady=(2, 6))
 
         def _fmt_kb(path):
             try:
@@ -7338,7 +7937,7 @@ class DictationApp:
             tk.Label(row, text=label, bg=CARD, fg=FG,
                      font=(FONT, 11, "bold"), anchor="w").pack(side="left")
             val_lbl = tk.Label(row, text=value_fn(), bg=CARD, fg=DIM,
-                               font=(FONT, 10), anchor="e")
+                               font=(FONT, 12), anchor="e")
             val_lbl.pack(side="left", padx=(8, 0))
 
             def _do_clear(vl=val_lbl, vfn=value_fn):
@@ -7656,7 +8255,7 @@ def start_backend(stream):
     global whisper, MODEL, JARVIS_ENABLED, WAKE_ENABLED
     JARVIS_ENABLED = settings.get("jarvis_enabled", True)
     WAKE_ENABLED = settings.get("wake_enabled", True)
-    log_event("boot", f"Dictation v{APP_VERSION} — WAKE_ENABLED={WAKE_ENABLED} JARVIS_ENABLED={JARVIS_ENABLED}")
+    log_event("boot", f"Quill v{APP_VERSION} — WAKE_ENABLED={WAKE_ENABLED} JARVIS_ENABLED={JARVIS_ENABLED}")
     time.sleep(1.5)
     try:
         print(f"[model] loading {MODEL} on {DEVICE}/{COMPUTE}...")
@@ -7978,7 +8577,7 @@ def _drain_input_events():
                 if menubar: menubar._refresh_menu_state()
                 app.show_message(("Launch at login " + ("enabled" if new_val else "disabled")) if ok else "Could not update Login Items", "#30d158" if ok else "#ff9f0a")
             elif action == "menu_show_snippets":
-                app._show_snippets()
+                app.open_settings(navigate_to="Snippets")
             elif action == "menu_show_history":
                 _show_history()
             elif action == "menu_show_about":

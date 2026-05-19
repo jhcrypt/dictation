@@ -171,17 +171,15 @@ coll = COLLECT(
 
 app = BUNDLE(
     coll,
-    # Bundle display name uses a space so macOS Finder shows "Jarvis Dictation".
-    # The executable inside remains JarvisDictation (no space).
-    name='Jarvis Dictation.app',
+    name='Quill.app',
     icon=os.path.join(spec_dir, 'assets', 'jarvis_dictation.icns'),
-    bundle_identifier='com.jhcrypt.jarvis-dictation',
+    bundle_identifier='com.jhcrypt.quill',
     info_plist={
         # ── Identity ──────────────────────────────────────────────────────────
-        'CFBundleName':             'Jarvis Dictation',
-        'CFBundleDisplayName':      'Jarvis Dictation',
+        'CFBundleName':             'Quill',
+        'CFBundleDisplayName':      'Quill',
         'CFBundleExecutable':       'JarvisDictation',
-        'CFBundleIdentifier':       'com.jhcrypt.jarvis-dictation',
+        'CFBundleIdentifier':       'com.jhcrypt.quill',
         'CFBundleShortVersionString': '6.1.19',
         'CFBundleVersion':          '6.1.19',
         'CFBundlePackageType':      'APPL',
@@ -189,17 +187,13 @@ app = BUNDLE(
         # ── Menu-bar agent (no Dock icon) ─────────────────────────────────────
         'LSUIElement': True,
         # ── TCC privacy usage descriptions ────────────────────────────────────
-        # These strings appear in System Settings permission prompts.
         'NSMicrophoneUsageDescription':
-            'Jarvis Dictation uses the microphone to transcribe your voice.',
+            'Quill uses the microphone to transcribe your voice.',
         'NSAppleEventsUsageDescription':
-            'Jarvis Dictation sends keystrokes to type transcribed text into other apps.',
+            'Quill uses Apple Events to send keystrokes to other apps.',
         'NSSpeechRecognitionUsageDescription':
-            'Jarvis Dictation transcribes speech locally using Whisper.',
+            'Quill transcribes speech locally using Whisper.',
         'NSInputMonitoringUsageDescription':
-            'Jarvis Dictation monitors the keyboard to detect the recording hotkey.',
-        # ── Apple Events target allowlist ─────────────────────────────────────
-        'NSAppleEventsUsageDescription':
-            'Jarvis Dictation uses Apple Events to send keystrokes to other apps.',
+            'Quill monitors the keyboard to detect the recording hotkey.',
     },
 )

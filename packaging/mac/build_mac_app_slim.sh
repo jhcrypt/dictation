@@ -15,7 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-APP_NAME="Jarvis Dictation"
+APP_NAME="Quill"
 APP_PATH="$SCRIPT_DIR/dist/${APP_NAME}.app"
 
 echo ""
