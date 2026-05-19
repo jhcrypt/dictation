@@ -212,11 +212,12 @@ export default function HudApp() {
 
   return (
     <div
-      className="w-full h-full flex items-center gap-3 px-5"
+      className="w-full h-full flex items-center gap-3"
       style={{
+        padding:      "0 18px",
         background:   "rgba(28, 28, 30, 0.96)",
         border:       "1px solid rgba(255,255,255,0.10)",
-        borderRadius: "20px",
+        borderRadius: "18px",
         cursor:       "grab",
         overflow:     "hidden",
         backdropFilter: "blur(20px)",
