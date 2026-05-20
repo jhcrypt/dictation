@@ -8,6 +8,7 @@
 import React from "react";
 import Card from "../components/ui/Card";
 import Toggle from "../components/ui/Toggle";
+import NumericStepper from "../components/ui/NumericStepper";
 import SaveButton from "../components/ui/SaveButton";
 import { useSettings } from "../context/SettingsContext";
 
@@ -46,14 +47,10 @@ export default function JarvisPage() {
             <div className="text-sm font-medium text-jarvis-text">Grace period</div>
             <div className="text-xs text-jarvis-hint mt-0.5">Seconds to wait after wake word before recording starts</div>
           </div>
-          <input
-            type="number"
-            min={0.5}
-            max={10}
-            step={0.5}
+          <NumericStepper
             value={settings.wake_dictation_grace_seconds}
-            onChange={(e) => updateSetting("wake_dictation_grace_seconds", parseFloat(e.target.value))}
-            className="w-20 bg-jarvis-surface border border-jarvis-border rounded-lg px-3 py-1.5 text-sm text-jarvis-text text-center focus:outline-none focus:border-jarvis-accent"
+            min={0.5} max={10} step={0.5}
+            onChange={(v) => updateSetting("wake_dictation_grace_seconds", v)}
           />
         </div>
         <div className="border-t border-jarvis-border my-1" />
@@ -62,14 +59,10 @@ export default function JarvisPage() {
             <div className="text-sm font-medium text-jarvis-text">Silence cutoff</div>
             <div className="text-xs text-jarvis-hint mt-0.5">Seconds of silence before recording auto-stops</div>
           </div>
-          <input
-            type="number"
-            min={0.5}
-            max={15}
-            step={0.5}
+          <NumericStepper
             value={settings.wake_dictation_silence_seconds}
-            onChange={(e) => updateSetting("wake_dictation_silence_seconds", parseFloat(e.target.value))}
-            className="w-20 bg-jarvis-surface border border-jarvis-border rounded-lg px-3 py-1.5 text-sm text-jarvis-text text-center focus:outline-none focus:border-jarvis-accent"
+            min={0.5} max={15} step={0.5}
+            onChange={(v) => updateSetting("wake_dictation_silence_seconds", v)}
           />
         </div>
         <div className="border-t border-jarvis-border my-1" />
@@ -78,14 +71,10 @@ export default function JarvisPage() {
             <div className="text-sm font-medium text-jarvis-text">Max recording length</div>
             <div className="text-xs text-jarvis-hint mt-0.5">Hard cap in seconds for a single wake dictation</div>
           </div>
-          <input
-            type="number"
-            min={10}
-            max={300}
-            step={5}
+          <NumericStepper
             value={settings.wake_dictation_max_seconds}
-            onChange={(e) => updateSetting("wake_dictation_max_seconds", parseFloat(e.target.value))}
-            className="w-20 bg-jarvis-surface border border-jarvis-border rounded-lg px-3 py-1.5 text-sm text-jarvis-text text-center focus:outline-none focus:border-jarvis-accent"
+            min={10} max={300} step={5}
+            onChange={(v) => updateSetting("wake_dictation_max_seconds", v)}
           />
         </div>
       </Card>
