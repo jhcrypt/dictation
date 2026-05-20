@@ -1,19 +1,81 @@
-// FUTURE SIDECAR FEATURE GAP
-// Jarvis settings (wake_enabled, jarvis_enabled, timing values) are saved to
-// ~/.dictation_settings.json and are readable by the stable Python Quill app.
-// However, the Tauri sidecar (jarvis_sidecar.py) does NOT yet implement
-// continuous wake-word listening or voice command dispatch.
-// Until the sidecar gains a "start_wake_listen" / "stop_wake_listen" action,
-// these settings have no effect on Tauri dictation behavior.
-import React from "react";
+import React, { useState, useEffect } from "react";
 import Card from "../components/ui/Card";
 import Toggle from "../components/ui/Toggle";
 import NumericStepper from "../components/ui/NumericStepper";
 import SaveButton from "../components/ui/SaveButton";
 import { useSettings } from "../context/SettingsContext";
 
+type WakeStatus = "idle" | "checking" | "listening" | "error";
+
 export default function JarvisPage() {
   const { settings, updateSetting, saveSettings, saved } = useSettings();
+
+  const [wakeStatus, setWakeStatus] = useState<WakeStatus>("idle");
+  const [wakeError,  setWakeError]  = useState("");
+
+  // On mount: reflect real sidecar state if wake_enabled is saved as true.
+  // The sidecar auto-starts the listener on app launch when wake_enabled=true,
+  // but the UI needs to show the correct status badge.
+  useEffect(() => {
+    if (settings.wake_enabled) {
+      setWakeStatus("listening");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount
+
+  // ── Wake toggle ─────────────────────────────────────────────────────────────
+
+  const handleWakeToggle = async (enabled: boolean) => {
+    updateSetting("wake_enabled", enabled);
+    setWakeError("");
+
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+
+      if (enabled) {
+        setWakeStatus("checking");
+        const raw  = await invoke<string>("sidecar_start_wake_listen");
+        const resp = JSON.parse(raw) as { ok: boolean; status?: string; error?: string };
+        if (resp.ok) {
+          setWakeStatus("listening");
+        } else {
+          const msg = resp.error ?? "Failed to start wake listener";
+          setWakeError(msg);
+          setWakeStatus("error");
+          updateSetting("wake_enabled", false); // revert toggle
+        }
+      } else {
+        setWakeStatus("idle");
+        await invoke("sidecar_stop_wake_listen");
+      }
+    } catch (e) {
+      const msg = String(e);
+      setWakeError(msg);
+      setWakeStatus("error");
+      if (enabled) updateSetting("wake_enabled", false); // revert toggle
+    }
+  };
+
+  // ── Status badge ─────────────────────────────────────────────────────────────
+
+  const statusBadge = () => {
+    if (wakeStatus === "checking")  return (
+      <span className="flex items-center gap-1.5 text-xs text-jarvis-transcribing">
+        <span className="w-2 h-2 rounded-full bg-jarvis-transcribing animate-pulse inline-block" />
+        Starting…
+      </span>
+    );
+    if (wakeStatus === "listening") return (
+      <span className="flex items-center gap-1.5 text-xs text-jarvis-success">
+        <span className="w-2 h-2 rounded-full bg-jarvis-success inline-block" />
+        Listening
+      </span>
+    );
+    if (wakeStatus === "error") return (
+      <span className="text-xs text-red-400">Error</span>
+    );
+    return null;
+  };
 
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
@@ -23,18 +85,41 @@ export default function JarvisPage() {
       </div>
 
       <Card title="Wake Word">
-        <Toggle
-          checked={settings.wake_enabled}
-          onChange={(v) => updateSetting("wake_enabled", v)}
-          label="Wake word"
-          description="Say 'Hey Jarvis' to start recording"
-        />
+        {/* Wake word toggle + live status */}
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <Toggle
+              checked={settings.wake_enabled}
+              onChange={handleWakeToggle}
+              label="Wake word"
+              description="Say 'Hey Jarvis' to start recording"
+            />
+          </div>
+          <div className="ml-4 shrink-0">{statusBadge()}</div>
+        </div>
+
+        {/* Inline error */}
+        {wakeStatus === "error" && wakeError && (
+          <div className="mt-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30">
+            <p className="text-xs text-red-400 leading-relaxed font-mono break-all">{wakeError}</p>
+            {wakeError.includes("openwakeword") && (
+              <p className="text-xs text-jarvis-muted mt-1">
+                Install with:{" "}
+                <code className="text-jarvis-text">pip install openwakeword</code>
+                {" "}in the dictation environment.
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="border-t border-jarvis-border my-1" />
+
+        {/* Jarvis commands toggle (future feature — no sidecar hook yet) */}
         <Toggle
           checked={settings.jarvis_enabled}
           onChange={(v) => updateSetting("jarvis_enabled", v)}
           label="Jarvis commands"
-          description="Recognize and execute voice commands like 'open Safari'"
+          description="Recognize and execute voice commands — coming in a future update"
         />
       </Card>
 

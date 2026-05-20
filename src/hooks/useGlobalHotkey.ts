@@ -112,6 +112,14 @@ export function useGlobalHotkey() {
    */
   const cycleIdRef = useRef<number>(0);
 
+  /**
+   * isWakeRecordingRef: set when recording was triggered by the wake word.
+   * Causes ropt-up to always stop+transcribe (no short-tap cancel) so the
+   * user can press ⌥ once to stop, regardless of hold/toggle setting.
+   * Cleared when recording ends (stop, cancel, or error).
+   */
+  const isWakeRecordingRef = useRef<boolean>(false);
+
   // ── Timing checkpoints (wall-clock ms) ──────────────────────────────────────
   const t_keyDown    = useRef<number>(0); // hotkey pressed
   const t_stopCalled = useRef<number>(0); // key-up / stop requested
@@ -161,21 +169,29 @@ export function useGlobalHotkey() {
 
     // ── Recording flow ────────────────────────────────────────────────────────
 
-    const startRecording = async () => {
+    const startRecording = async (source: "hotkey" | "button" | "tray" | "wake" = "hotkey") => {
       if (stateRef.current !== "idle") {
-        console.log("[recording] startRecording ignored — state =", stateRef.current);
+        console.log("[recording] startRecording ignored — state =", stateRef.current, "source =", source);
         return;
       }
 
-      console.log("[recording] → starting");
+      console.log("[recording] → starting  source =", source);
       stateRef.current  = "starting";
       pendingStopRef.current = false;
       recordStartRef.current = Date.now();
       t_keyDown.current = recordStartRef.current;
       cycleIdRef.current += 1; // invalidate any previous in-flight stopAndTranscribe
 
-      const toggleMode = settingsRef.current.toggle_mode;
-      hudEmit({ state: "recording", toggleMode });
+      // Wake-triggered recordings use the wake_recording HUD state and
+      // always stop on a single ⌥ press (no short-tap cancel).
+      isWakeRecordingRef.current = source === "wake";
+
+      if (source === "wake") {
+        hudEmit({ state: "wake_recording" });
+      } else {
+        const toggleMode = settingsRef.current.toggle_mode;
+        hudEmit({ state: "recording", toggleMode });
+      }
 
       // Safety auto-stop: if still recording after 90 s, force a stop
       timeoutRef.current = setTimeout(() => {
@@ -191,6 +207,7 @@ export function useGlobalHotkey() {
         console.error("[sidecar] start_recording FAILED:", e);
         clearRecordingTimeout();
         pendingStopRef.current = false;
+        isWakeRecordingRef.current = false;
         stateRef.current = "idle";
         setError(String(e));
         return;
@@ -200,6 +217,7 @@ export function useGlobalHotkey() {
       if (pendingStopRef.current) {
         console.log("[recording] pendingStop set — cancelling immediately after start");
         pendingStopRef.current = false;
+        isWakeRecordingRef.current = false;
         clearRecordingTimeout();
         stateRef.current = "idle";
         hudEmit({ state: "tap_ignored" });
@@ -228,6 +246,7 @@ export function useGlobalHotkey() {
 
       console.log("[recording] → stopping  cycle=", myCycle);
       clearRecordingTimeout();
+      isWakeRecordingRef.current = false;
       stateRef.current = "stopping";
       t_stopCalled.current = Date.now();
       hudEmit({ state: "transcribing" });
@@ -438,6 +457,7 @@ export function useGlobalHotkey() {
       const st = stateRef.current;
       console.log("[recording] cancel — state was", st);
       clearRecordingTimeout();
+      isWakeRecordingRef.current = false;
 
       if (st === "starting") {
         pendingStopRef.current = true; // let startRecording clean up
@@ -481,9 +501,17 @@ export function useGlobalHotkey() {
       listen("hotkey-ropt-up", () => {
         const tm  = settingsRef.current.toggle_mode;
         const st  = stateRef.current;
-        console.log("[hotkey] ropt-up  toggle_mode=", tm, " state=", st);
+        console.log("[hotkey] ropt-up  toggle_mode=", tm, " state=", st,
+                    " isWake=", isWakeRecordingRef.current);
 
         if (tm) return; // toggle mode: release is always ignored
+
+        // Wake-triggered recordings: a single ⌥ press always stops.
+        // Skip short-tap logic so the user doesn't accidentally cancel.
+        if (isWakeRecordingRef.current && st === "recording") {
+          stopAndTranscribe();
+          return;
+        }
 
         // Hold mode: up = stop (unless it was a short tap)
         const elapsed = Date.now() - recordStartRef.current;
@@ -525,18 +553,25 @@ export function useGlobalHotkey() {
         else cancelRecording();
       }).then(f => unlisteners.push(f));
 
-      // UI start (button / future Jarvis wake) → same guarded path as hotkey
+      // UI start (button) → same guarded path as hotkey
       listen("ui-start-recording", () => {
         console.log("[ui] ui-start-recording  state=", stateRef.current);
-        startRecording();
+        startRecording("button");
       }).then(f => unlisteners.push(f));
 
-      // UI stop (button / future Jarvis stop) → same guarded path as hotkey
+      // UI stop (button) → same guarded path as hotkey
       listen("ui-stop-recording", () => {
         const st = stateRef.current;
         console.log("[ui] ui-stop-recording  state=", st);
         if (st === "recording") stopAndTranscribe();
         else cancelRecording();
+      }).then(f => unlisteners.push(f));
+
+      // Jarvis wake-word detected → same guarded startRecording path
+      // Uses wake_recording HUD state + single-press stop behavior
+      listen("wake-detected", () => {
+        console.log("[wake] wake-detected  state=", stateRef.current);
+        startRecording("wake");
       }).then(f => unlisteners.push(f));
 
     }).catch(() => {});

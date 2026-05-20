@@ -5,12 +5,13 @@ mod hotkey;
 mod settings;
 mod sidecar;
 mod tray;
+mod wake;
 
 use commands::*;
 use focus::LastTargetApp;
 use hotkey::HotkeyConfig;
 use sidecar::SidecarState;
-use tauri::{Manager, WebviewWindowBuilder, WebviewUrl};
+use tauri::{Emitter, Manager, WebviewWindowBuilder, WebviewUrl};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -54,7 +55,28 @@ pub fn run() {
                 Ok(proc) => { *guard = Some(proc); }
                 Err(e) => { eprintln!("[jarvis] sidecar auto-start failed: {}", e); }
             }
+
+            // If wake_enabled, send start_wake_listen to the sidecar now.
+            if init_settings.wake_enabled {
+                if let Some(proc) = guard.as_mut() {
+                    match proc.send("start_wake_listen") {
+                        Ok(v) => eprintln!("[jarvis] wake auto-start: {}", v),
+                        Err(e) => eprintln!("[jarvis] wake auto-start failed: {}", e),
+                    }
+                }
+            }
             drop(guard);
+
+            // Start the wake-word poll thread (runs for process lifetime;
+            // harmless when wake is disabled — sidecar returns detected:false).
+            // Pre-build the emit closure so the thread doesn't capture AppHandle<R>
+            // (Wry runtime contains Rc and is !Send — same pattern as hotkey.rs).
+            let sidecar_arc = app.handle().state::<SidecarState>().0.clone();
+            let wake_app = app.handle().clone();
+            let emit_fn: Box<dyn Fn() + Send + 'static> = Box::new(move || {
+                let _ = wake_app.emit("wake-detected", ());
+            });
+            wake::start_wake_poll_thread(emit_fn, sidecar_arc);
 
             // Create floating HUD window — always on top, no decorations.
             let hud = WebviewWindowBuilder::new(app, "hud", WebviewUrl::App("index.html".into()))
@@ -140,6 +162,10 @@ pub fn run() {
             sidecar_list_microphones,
             sidecar_test_microphone,
             sidecar_cancel_recording,
+            // Wake-word
+            sidecar_start_wake_listen,
+            sidecar_stop_wake_listen,
+            sidecar_get_wake_status,
             // HUD
             save_hud_position,
             get_target_app_icon,

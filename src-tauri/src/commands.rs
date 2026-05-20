@@ -368,6 +368,37 @@ pub fn save_history_entry(entry: data::HistoryEntry) -> Result<(), String> {
     data::append_history(&entry).map_err(|e| e.to_string())
 }
 
+// ── Wake-word commands ────────────────────────────────────────────────────────
+
+/// Start the Python wake listener (opens 16 kHz mic stream + openwakeword thread).
+/// Returns the raw sidecar JSON as a string so the frontend can inspect ok/error.
+#[tauri::command]
+pub fn sidecar_start_wake_listen(state: State<SidecarState>) -> Result<String, String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    let proc = guard.as_mut().ok_or("Sidecar not running")?;
+    let resp = proc.send("start_wake_listen").map_err(|e| e.to_string())?;
+    Ok(resp.to_string())
+}
+
+/// Stop the Python wake listener (closes stream, stops detection thread).
+#[tauri::command]
+pub fn sidecar_stop_wake_listen(state: State<SidecarState>) -> Result<String, String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    let proc = guard.as_mut().ok_or("Sidecar not running")?;
+    let resp = proc.send("stop_wake_listen").map_err(|e| e.to_string())?;
+    Ok(resp.to_string())
+}
+
+/// Poll wake status — called by the Rust wake-poll thread every 300 ms.
+/// Returns {"ok":true,"listening":bool,"detected":bool}.
+/// "detected" is a one-shot flag: reading it clears it in the sidecar.
+#[tauri::command]
+pub fn sidecar_get_wake_status(state: State<SidecarState>) -> Result<serde_json::Value, String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    let proc = guard.as_mut().ok_or("Sidecar not running")?;
+    proc.send("get_wake_status").map_err(|e| e.to_string())
+}
+
 // ── Cancel recording ──────────────────────────────────────────────────────────
 
 #[tauri::command]

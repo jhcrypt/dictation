@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SidecarCommand {
@@ -63,11 +63,13 @@ impl SidecarProcess {
     }
 }
 
-pub struct SidecarState(pub Mutex<Option<SidecarProcess>>);
+/// Shared, cloneable mutex so the wake-poll thread can hold a reference
+/// without going through Tauri's state system from another thread.
+pub struct SidecarState(pub Arc<Mutex<Option<SidecarProcess>>>);
 
 impl SidecarState {
     pub fn new() -> Self {
-        SidecarState(Mutex::new(None))
+        SidecarState(Arc::new(Mutex::new(None)))
     }
 }
 

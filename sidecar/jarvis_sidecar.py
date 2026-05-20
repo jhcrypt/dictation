@@ -432,10 +432,26 @@ def strip_ollama_preamble(text: str) -> str:
 _recording     = False
 _audio_frames: list = []
 _audio_lock    = threading.Lock()
-_stream        = None
+_stream        = None        # recording InputStream (user sample_rate)
 _last_result: dict | None = None
 
 CHUNK = 1024
+
+# ── Wake-word state ───────────────────────────────────────────────────────────
+# Architecture: one mic stream at a time.
+#   _wake_stream  — 16 kHz InputStream, only open when wake listening AND not recording
+#   _stream       — recording InputStream, only open during active recording
+# cmd_start_recording closes _wake_stream; cmd_stop/cancel_recording re-opens it.
+_wake_listening    = False        # True while wake listener is active
+_wake_stream       = None         # 16 kHz sounddevice InputStream
+_wake_frames: list = []
+_wake_lock         = threading.Lock()
+_wake_detected     = False        # set by wake thread, consumed atomically by get_wake_status
+_wake_thread: threading.Thread | None = None
+_wake_thread_stop  = threading.Event()
+
+WAKE_SAMPLE_RATE   = 16000        # openwakeword requires 16 kHz input
+WAKE_THRESHOLD     = 0.5          # detection score threshold (0–1)
 
 # ── Whisper model (lazy loaded) ───────────────────────────────────────────────
 _model      = None
@@ -449,6 +465,105 @@ def _get_model(model_name: str):
         _model = WhisperModel(model_name, device="cpu", compute_type="int8")
         _model_name = model_name
     return _model
+
+# ── Wake-word helpers ─────────────────────────────────────────────────────────
+
+def _wake_audio_callback(indata, frames, time_info, status):
+    """Callback for the wake-word InputStream — feeds _wake_frames only."""
+    if _wake_listening and not _recording:
+        with _wake_lock:
+            _wake_frames.append(indata.copy())
+
+
+def _resume_wake_stream():
+    """Re-open the wake stream after recording ends (if wake_listening is still active).
+    Called from cmd_stop_recording and cmd_cancel_recording."""
+    global _wake_stream
+    if not _wake_listening:
+        return
+    settings   = load_settings()
+    mic_device = settings.get("mic_device", None)
+    try:
+        import sounddevice as sd
+        device, _ = _resolve_input_device(mic_device, WAKE_SAMPLE_RATE)
+        _wake_stream = sd.InputStream(
+            samplerate=WAKE_SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            device=device,
+            blocksize=CHUNK,
+            callback=_wake_audio_callback,
+        )
+        _wake_stream.start()
+        _log(f"Wake stream resumed: device={device}")
+    except Exception as e:
+        _log(f"Wake stream resume error (non-fatal): {e}")
+
+
+def _wake_loop():
+    """Background thread: feed 16 kHz audio to openwakeword, set _wake_detected on hit.
+    Runs for the lifetime of the wake listener — stopped via _wake_thread_stop event."""
+    global _wake_detected
+    _log("Wake loop: starting")
+
+    # Load openwakeword — suppress its stdout chatter so it doesn't corrupt our protocol.
+    try:
+        import io, contextlib
+        import numpy as np
+        _oww_buf = io.StringIO()
+        with contextlib.redirect_stdout(_oww_buf):
+            from openwakeword.model import Model as _WakeModel
+            oww = _WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+        _log("Wake loop: openwakeword model loaded")
+    except ImportError:
+        _log("Wake loop: openwakeword not available — thread exiting")
+        return
+    except Exception as e:
+        _log(f"Wake loop: model load failed: {e}")
+        return
+
+    buf: list = []        # accumulates int16 samples between poll cycles
+    CHUNK_SAMPLES = 1280  # 80 ms at 16 kHz — openwakeword's expected frame size
+
+    while not _wake_thread_stop.is_set():
+        # Grab all pending frames
+        with _wake_lock:
+            frames = list(_wake_frames)
+            _wake_frames.clear()
+
+        if frames:
+            audio = np.concatenate(frames, axis=0).flatten()
+            # Convert float32 → int16 (openwakeword expects int16 PCM at 16 kHz)
+            audio_i16 = (audio * 32767).clip(-32768, 32767).astype(np.int16)
+            buf.extend(audio_i16.tolist())
+
+            # Process 80 ms chunks
+            while len(buf) >= CHUNK_SAMPLES and not _wake_thread_stop.is_set():
+                chunk = np.array(buf[:CHUNK_SAMPLES], dtype=np.int16)
+                buf = buf[CHUNK_SAMPLES:]
+                try:
+                    scores = oww.predict(chunk)
+                    # Model key may be "hey_jarvis" or "hey_jarvis_v0.1" depending on version
+                    score = max(
+                        float(scores.get("hey_jarvis",      0)),
+                        float(scores.get("hey_jarvis_v0.1", 0)),
+                    )
+                    if score >= WAKE_THRESHOLD:
+                        _log(f"Wake word detected — score={score:.3f}")
+                        _wake_detected = True
+                        buf.clear()
+                        # 1.5 s cooldown so a single wake phrase doesn't trigger twice
+                        _wake_thread_stop.wait(1.5)
+                        break
+                except Exception as e:
+                    _log(f"Wake predict error: {e}")
+                    break
+        else:
+            # No new audio — sleep briefly
+            _wake_thread_stop.wait(0.05)
+
+    _log("Wake loop: stopped")
+
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
@@ -484,9 +599,22 @@ def _resolve_input_device(mic_device, sample_rate):
 
 
 def cmd_start_recording(_cmd: dict) -> dict:
-    global _recording, _audio_frames, _stream
+    global _recording, _audio_frames, _stream, _wake_stream
     if _recording:
         return {"ok": False, "error": "already recording"}
+
+    # Close wake stream so the mic is free for recording.
+    # _wake_listening stays True — the stream is re-opened by _resume_wake_stream()
+    # after recording ends.
+    if _wake_stream is not None:
+        try:
+            _wake_stream.stop()
+            _wake_stream.close()
+        except Exception:
+            pass
+        _wake_stream = None
+        _log("Wake stream paused for recording")
+
     with _audio_lock:
         _audio_frames = []
     _recording = True
@@ -532,6 +660,7 @@ def cmd_stop_recording(_cmd: dict) -> dict:
             pass
         _stream = None
     _log("Recording stopped")
+    _resume_wake_stream()   # re-open wake stream if still enabled
     return {"ok": True, "status": "stopped"}
 
 
@@ -727,6 +856,7 @@ def cmd_cancel_recording(_cmd: dict) -> dict:
     with _audio_lock:
         _audio_frames = []
     _log("Recording cancelled and buffer cleared")
+    _resume_wake_stream()   # re-open wake stream if still enabled
     return {"ok": True, "status": "cancelled"}
 
 
@@ -779,6 +909,97 @@ def cmd_test_microphone(_cmd: dict) -> dict:
         return {"ok": False, "error": str(e), "device": mic_device, "sample_rate": sample_rate}
 
 
+# ── Wake-word commands ────────────────────────────────────────────────────────
+
+def cmd_start_wake_listen(_cmd: dict) -> dict:
+    global _wake_listening, _wake_frames, _wake_stream, _wake_thread, _wake_thread_stop, _wake_detected
+
+    # Idempotent — no-op if already listening
+    if _wake_listening and _wake_thread and _wake_thread.is_alive():
+        return {"ok": True, "status": "already_listening"}
+
+    # Fail fast if openwakeword is not installed
+    try:
+        import openwakeword  # noqa: F401
+    except ImportError:
+        msg = "openwakeword not installed — run: pip install openwakeword"
+        _log(f"start_wake_listen: {msg}")
+        return {"ok": False, "error": msg}
+
+    settings   = load_settings()
+    mic_device = settings.get("mic_device", None)
+
+    # Reset state
+    with _wake_lock:
+        _wake_frames = []
+    _wake_detected  = False
+    _wake_listening = True
+
+    # Open wake stream only if not currently recording (else it opens after recording ends)
+    if not _recording:
+        try:
+            import sounddevice as sd
+            device, _ = _resolve_input_device(mic_device, WAKE_SAMPLE_RATE)
+            _wake_stream = sd.InputStream(
+                samplerate=WAKE_SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                device=device,
+                blocksize=CHUNK,
+                callback=_wake_audio_callback,
+            )
+            _wake_stream.start()
+            _log(f"Wake stream opened: device={device} rate={WAKE_SAMPLE_RATE}")
+        except Exception as e:
+            _wake_listening = False
+            _log(f"Wake stream open error: {e}")
+            return {"ok": False, "error": str(e)}
+
+    # (Re)start wake detection thread
+    _wake_thread_stop.clear()
+    _wake_thread = threading.Thread(target=_wake_loop, daemon=True, name="wake-loop")
+    _wake_thread.start()
+    _log("Wake listener started")
+    return {"ok": True, "status": "listening"}
+
+
+def cmd_stop_wake_listen(_cmd: dict) -> dict:
+    global _wake_listening, _wake_stream, _wake_detected
+
+    _wake_listening = False
+    _wake_detected  = False
+
+    # Close wake stream
+    if _wake_stream is not None:
+        try:
+            _wake_stream.stop()
+            _wake_stream.close()
+        except Exception:
+            pass
+        _wake_stream = None
+
+    # Signal wake thread to exit cleanly (daemon, so process exit cleans up anyway)
+    _wake_thread_stop.set()
+
+    with _wake_lock:
+        _wake_frames.clear()
+
+    _log("Wake listener stopped")
+    return {"ok": True, "status": "stopped"}
+
+
+def cmd_get_wake_status(_cmd: dict) -> dict:
+    global _wake_detected
+    # Atomically consume the detected flag (one-shot per detection)
+    detected       = _wake_detected
+    _wake_detected = False
+    return {
+        "ok":        True,
+        "listening": _wake_listening,
+        "detected":  detected,
+    }
+
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 HANDLERS = {
     "ping":              cmd_ping,
@@ -789,6 +1010,10 @@ HANDLERS = {
     "transcribe_last":   cmd_transcribe_last,
     "list_microphones":  cmd_list_microphones,
     "test_microphone":   cmd_test_microphone,
+    # Wake-word
+    "start_wake_listen": cmd_start_wake_listen,
+    "stop_wake_listen":  cmd_stop_wake_listen,
+    "get_wake_status":   cmd_get_wake_status,
 }
 
 def main():
