@@ -15,10 +15,22 @@
  *   key-down when recording = stop + transcribe
  *   key-up is IGNORED
  *
- * Tap detection (hold mode only):
- *   If Right Option is released within MIN_TAP_MS (300 ms) of being pressed,
- *   the recording is cancelled and HUD shows "Tap ignored — hold a little longer"
- *   for 2.5 s, matching the Python app's MIN_RECORD_SECONDS = 0.30 guard.
+ * State machine
+ * ─────────────
+ *   idle  ──start──►  starting  ──sidecar OK──►  recording  ──stop──►  stopping  ──►  transcribing  ──►  idle
+ *                         │                          │
+ *                    cancel/tap                cancel/esc/tap
+ *                         │                          │
+ *                        idle ◄──────────────────── idle
+ *
+ * Rules:
+ *   • startRecording   only from "idle"
+ *   • stopAndTranscribe only from "recording"
+ *   • cancel / handleShortTap from "starting" OR "recording"
+ *   • all other states → ignore the incoming event
+ *   • pendingStop flag: set when key is released while still "starting";
+ *     startRecording checks it after sidecar_start_recording resolves and
+ *     immediately cancels (the user released before start finished).
  *
  * Also listens for:
  *   tray-start-dictation / tray-stop-dictation → tray menu actions
@@ -28,17 +40,30 @@ import { useEffect, useRef } from "react";
 import { useSettings } from "../context/SettingsContext";
 import type { HudPayload } from "../HudApp";
 
-type RecState = "idle" | "recording" | "transcribing";
+type RecState =
+  | "idle"         // nothing happening
+  | "starting"     // sidecar_start_recording in-flight
+  | "recording"    // mic is live
+  | "stopping"     // sidecar_stop_recording in-flight
+  | "transcribing" // sidecar_transcribe_last in-flight
+  | "error";       // transient — resets to idle after timeout
 
 /** Minimum hold time before a release is treated as a real recording (ms). */
 const MIN_TAP_MS = 300;
 
 export function useGlobalHotkey() {
   const { settings } = useSettings();
-  const stateRef       = useRef<RecState>("idle");
-  const settingsRef    = useRef(settings);
-  const timeoutRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const recordStartRef = useRef<number>(0);  // timestamp when recording began
+  const stateRef      = useRef<RecState>("idle");
+  const settingsRef   = useRef(settings);
+  const timeoutRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recordStartRef = useRef<number>(0);
+  /**
+   * pendingStop: set in hold mode when the key is released while state is
+   * still "starting" (sidecar_start_recording hasn't returned yet).
+   * startRecording checks this flag after the call resolves and immediately
+   * cancels instead of advancing to "recording".
+   */
+  const pendingStopRef = useRef<boolean>(false);
 
   useEffect(() => { settingsRef.current = settings; }, [settings]);
 
@@ -68,28 +93,40 @@ export function useGlobalHotkey() {
       if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
     };
 
+    // ── State helpers ─────────────────────────────────────────────────────────
+
+    const isActive = () =>
+      stateRef.current === "starting" || stateRef.current === "recording";
+
+    const setError = (msg: string) => {
+      stateRef.current = "error";
+      hudEmit({ state: "error", subtext: msg });
+      setTimeout(() => {
+        if (stateRef.current === "error") stateRef.current = "idle";
+        hudEmit({ state: "idle" });
+      }, 4000);
+    };
+
     // ── Recording flow ────────────────────────────────────────────────────────
 
     const startRecording = async () => {
       if (stateRef.current !== "idle") {
-        console.log("[recording] startRecording called but state =", stateRef.current, "— ignored");
+        console.log("[recording] startRecording ignored — state =", stateRef.current);
         return;
       }
-      console.log("[recording] start requested");
-      stateRef.current = "recording";
+
+      console.log("[recording] → starting");
+      stateRef.current  = "starting";
+      pendingStopRef.current = false;
       recordStartRef.current = Date.now();
 
       const toggleMode = settingsRef.current.toggle_mode;
-      hudEmit({
-        state:      "recording",
-        toggleMode,
-        // subtext is derived in HudApp from toggleMode flag
-      });
+      hudEmit({ state: "recording", toggleMode });
 
-      // Safety auto-stop after 90 s
+      // Safety auto-stop: if still recording after 90 s, force a stop
       timeoutRef.current = setTimeout(() => {
-        console.warn("[recording] 90-second safety timeout — forcing stop");
-        stopAndTranscribe();
+        console.warn("[recording] 90 s safety timeout — forcing stop");
+        if (stateRef.current === "recording") stopAndTranscribe();
       }, 90_000);
 
       try {
@@ -99,27 +136,58 @@ export function useGlobalHotkey() {
       } catch (e) {
         console.error("[sidecar] start_recording FAILED:", e);
         clearRecordingTimeout();
+        pendingStopRef.current = false;
         stateRef.current = "idle";
-        hudEmit({ state: "error", subtext: String(e) });
-        setTimeout(() => hudEmit({ state: "idle" }), 4000);
+        setError(String(e));
+        return;
       }
+
+      // Check if a stop/cancel was requested while the start was in-flight
+      if (pendingStopRef.current) {
+        console.log("[recording] pendingStop set — cancelling immediately after start");
+        pendingStopRef.current = false;
+        clearRecordingTimeout();
+        stateRef.current = "idle";
+        hudEmit({ state: "tap_ignored" });
+        setTimeout(() => hudEmit({ state: "idle" }), 2500);
+        try {
+          await invokeWithTimeout("sidecar_cancel_recording", undefined, 5_000);
+        } catch (e) {
+          console.warn("[sidecar] cancel_recording error (ignored):", e);
+        }
+        return;
+      }
+
+      // Advance to live-recording state
+      console.log("[recording] → recording");
+      stateRef.current = "recording";
     };
 
     const stopAndTranscribe = async () => {
       if (stateRef.current !== "recording") {
-        console.log("[recording] stopAndTranscribe called but state =", stateRef.current, "— ignored");
+        console.log("[recording] stopAndTranscribe ignored — state =", stateRef.current);
         return;
       }
-      console.log("[recording] stop requested");
+
+      console.log("[recording] → stopping");
       clearRecordingTimeout();
-      stateRef.current = "transcribing";
+      stateRef.current = "stopping";
       hudEmit({ state: "transcribing" });
 
       try {
         console.log("[sidecar] stop_recording →");
         await invokeWithTimeout("sidecar_stop_recording", undefined, 8_000);
         console.log("[sidecar] stop_recording ✓");
+      } catch (e) {
+        console.error("[sidecar] stop_recording FAILED:", e);
+        stateRef.current = "idle";
+        setError(String(e));
+        return;
+      }
 
+      stateRef.current = "transcribing";
+
+      try {
         console.log("[sidecar] transcribe_last →");
         const result = await invokeWithTimeout<{
           ok: boolean; text: string;
@@ -135,13 +203,11 @@ export function useGlobalHotkey() {
         if (result.ok && result.text) {
           const s = settingsRef.current;
 
-          // Cleanup state: show briefly only when Ollama actually ran
           if (!result.skipped_cleanup && s.use_ollama && s.ai_cleanup_mode !== "off") {
             hudEmit({ state: "cleanup" });
             await new Promise((r) => setTimeout(r, 600));
           }
 
-          // Skipped cleanup: match Python messages by skip_reason
           if (result.skipped_cleanup && result.skip_reason) {
             hudEmit({ state: "skipped", subtext: result.skip_reason });
             await new Promise((r) => setTimeout(r, 1500));
@@ -160,9 +226,6 @@ export function useGlobalHotkey() {
           }
 
           const profile = result.profile ?? s.writing_profile ?? "General";
-          console.log("[hud] → inserted  status=", pasteStatus, "profile=", profile);
-
-          // "inserted" = Python's set_transcript — green check, text preview
           hudEmit({
             state:   "inserted",
             subtext: result.text.slice(0, 55),
@@ -183,7 +246,6 @@ export function useGlobalHotkey() {
             }, 5_000);
           } catch { /* non-critical */ }
 
-          // Return to idle after 1.5 s, matching Python's `time.sleep(1.5); app.set_state("idle")`
           setTimeout(() => hudEmit({ state: "idle" }), 1500);
         } else {
           const errMsg = result.error ?? "Transcription failed";
@@ -192,7 +254,7 @@ export function useGlobalHotkey() {
           setTimeout(() => hudEmit({ state: "idle" }), 4000);
         }
       } catch (e) {
-        console.error("[sidecar] stop/transcribe error:", e);
+        console.error("[sidecar] transcribe error:", e);
         hudEmit({ state: "error", subtext: String(e) });
         setTimeout(() => hudEmit({ state: "idle" }), 4000);
       }
@@ -201,32 +263,58 @@ export function useGlobalHotkey() {
     };
 
     /**
-     * Short-tap handler (hold mode only):
-     * If the key was released within MIN_TAP_MS of being pressed, cancel the
-     * recording and show "Tap ignored — hold a little longer" for 2.5 s.
-     * Matches Python's MIN_RECORD_SECONDS = 0.30 guard in _finish_short_recording().
+     * handleShortTap — hold mode only.
+     * Called when key is released within MIN_TAP_MS.
+     *
+     * If state is "starting": the sidecar call is still in-flight.
+     *   Set pendingStop so startRecording cancels after the call returns.
+     *
+     * If state is "recording": sidecar is live.
+     *   Cancel immediately.
      */
     const handleShortTap = async () => {
-      if (stateRef.current !== "recording") return;
-      console.log("[recording] short tap — cancelling, showing tap_ignored");
+      const st = stateRef.current;
+      if (st !== "starting" && st !== "recording") return;
+
+      console.log("[recording] short tap — state was", st);
       clearRecordingTimeout();
+
+      if (st === "starting") {
+        // Can't cancel mid-start safely — mark pending, startRecording will cancel
+        pendingStopRef.current = true;
+        hudEmit({ state: "tap_ignored" });
+        setTimeout(() => hudEmit({ state: "idle" }), 2500);
+        return;
+      }
+
+      // state === "recording" — cancel now
       stateRef.current = "idle";
       hudEmit({ state: "tap_ignored" });
       setTimeout(() => hudEmit({ state: "idle" }), 2500);
       try {
         await invokeWithTimeout("sidecar_cancel_recording", undefined, 5_000);
+        console.log("[sidecar] cancel_recording ✓");
       } catch (e) {
         console.warn("[sidecar] cancel_recording error (ignored):", e);
       }
     };
 
     const cancelRecording = async () => {
-      if (stateRef.current !== "recording") {
-        console.log("[recording] cancelRecording called but state =", stateRef.current);
+      if (!isActive()) {
+        console.log("[recording] cancelRecording ignored — state =", stateRef.current);
         return;
       }
-      console.log("[recording] cancel");
+
+      const st = stateRef.current;
+      console.log("[recording] cancel — state was", st);
       clearRecordingTimeout();
+
+      if (st === "starting") {
+        pendingStopRef.current = true; // let startRecording clean up
+        hudEmit({ state: "idle" });
+        return;
+      }
+
       stateRef.current = "idle";
       hudEmit({ state: "idle" });
       try {
@@ -245,35 +333,47 @@ export function useGlobalHotkey() {
 
       // Right Option DOWN
       listen("hotkey-ropt-down", () => {
-        const tm = settingsRef.current.toggle_mode;
-        console.log("[hotkey] right option down  toggle_mode=", tm, " state=", stateRef.current);
+        const tm  = settingsRef.current.toggle_mode;
+        const st  = stateRef.current;
+        console.log("[hotkey] ropt-down  toggle_mode=", tm, " state=", st);
+
         if (tm) {
-          if (stateRef.current === "idle")           startRecording();
-          else if (stateRef.current === "recording") stopAndTranscribe();
-          // transcribing → ignore
+          // Toggle mode: down toggles idle↔recording, all other states ignored
+          if (st === "idle")      startRecording();
+          else if (st === "recording") stopAndTranscribe();
         } else {
+          // Hold mode: down always means "start" — guard inside startRecording
           startRecording();
         }
       }).then(f => unlisteners.push(f));
 
       // Right Option UP
       listen("hotkey-ropt-up", () => {
-        const tm = settingsRef.current.toggle_mode;
-        console.log("[hotkey] right option up  toggle_mode=", tm, " state=", stateRef.current);
-        if (!tm) {
-          // Hold mode: check for short tap before committing to transcribe
-          const elapsed = Date.now() - recordStartRef.current;
-          console.log("[hotkey] hold duration =", elapsed, "ms  threshold =", MIN_TAP_MS, "ms");
+        const tm  = settingsRef.current.toggle_mode;
+        const st  = stateRef.current;
+        console.log("[hotkey] ropt-up  toggle_mode=", tm, " state=", st);
+
+        if (tm) return; // toggle mode: release is always ignored
+
+        // Hold mode: up = stop (unless it was a short tap)
+        const elapsed = Date.now() - recordStartRef.current;
+        console.log("[hotkey] hold duration =", elapsed, "ms  threshold =", MIN_TAP_MS, "ms");
+
+        if (st === "starting") {
+          // Start not yet complete — set pendingStop regardless of elapsed
+          // (the user lifted before the sidecar even started; always treat as short tap)
+          handleShortTap();
+        } else if (st === "recording") {
           if (elapsed < MIN_TAP_MS) {
             handleShortTap();
           } else {
             stopAndTranscribe();
           }
         }
-        // Toggle mode: release is intentionally ignored
+        // stopping/transcribing/error/idle → ignore
       }).then(f => unlisteners.push(f));
 
-      // Escape — cancel recording
+      // Escape — cancel
       listen("hotkey-esc", () => {
         console.log("[hotkey] esc  state=", stateRef.current);
         cancelRecording();
@@ -281,21 +381,23 @@ export function useGlobalHotkey() {
 
       // Tray — start dictation
       listen("tray-start-dictation", () => {
-        console.log("[tray] start-dictation");
+        console.log("[tray] start-dictation  state=", stateRef.current);
         startRecording();
       }).then(f => unlisteners.push(f));
 
-      // Tray/menu — stop or cancel
+      // Tray — stop/cancel dictation
       listen("tray-stop-dictation", () => {
-        console.log("[tray] stop-dictation  state=", stateRef.current);
-        if (stateRef.current === "recording") stopAndTranscribe();
+        const st = stateRef.current;
+        console.log("[tray] stop-dictation  state=", st);
+        if (st === "recording") stopAndTranscribe();
         else cancelRecording();
       }).then(f => unlisteners.push(f));
 
-      // DictationPage stop button (when hotkey started the session)
+      // DictationPage stop button (hotkey-initiated session)
       listen("ui-stop-recording", () => {
-        console.log("[ui] ui-stop-recording  state=", stateRef.current);
-        if (stateRef.current === "recording") stopAndTranscribe();
+        const st = stateRef.current;
+        console.log("[ui] ui-stop-recording  state=", st);
+        if (st === "recording") stopAndTranscribe();
         else cancelRecording();
       }).then(f => unlisteners.push(f));
 
