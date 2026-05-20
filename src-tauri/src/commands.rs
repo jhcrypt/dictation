@@ -215,11 +215,58 @@ pub fn sidecar_test_microphone(state: State<SidecarState>) -> Result<serde_json:
 
 // ── Text insertion ────────────────────────────────────────────────────────────
 
+/// Run `pbpaste` and return the clipboard text as a String, or None on failure.
+fn pbpaste() -> Option<String> {
+    let out = std::process::Command::new("pbpaste")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output().ok()?;
+    if !out.status.success() { return None; }
+    // pbpaste may append a trailing newline — strip it
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Run `pbcopy` with the given text. Returns Ok(()) on success.
+fn pbcopy(text: &str) -> Result<(), String> {
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("pbcopy spawn failed: {}", e))?;
+
+    use std::io::Write;
+    child.stdin.take()
+        .ok_or_else(|| "pbcopy stdin not available".to_string())?
+        .write_all(text.as_bytes())
+        .map_err(|e| format!("pbcopy write failed: {}", e))?;
+
+    let status = child.wait().map_err(|e| format!("pbcopy wait failed: {}", e))?;
+    if !status.success() {
+        return Err("pbcopy failed".to_string());
+    }
+    Ok(())
+}
+
 /// Activate the last-known non-Jarvis app, then paste text into it via Cmd+V.
 /// Restores the previous clipboard content after 600 ms.
+///
+/// Uses macOS pbcopy/pbpaste CLI tools for reliable clipboard access (matching
+/// the Python app's approach).  This avoids arboard's internal cache which can
+/// diverge from the real macOS NSPasteboard — especially on the first write of
+/// a process lifetime.
+///
+/// CRITICAL ORDER:
+///   1. Save previous clipboard via pbpaste
+///   2. Write dictated text via pbcopy
+///   3. Verify via pbpaste (real macOS pasteboard, not arboard cache)
+///   4. Send Cmd+V
+///   5. Restore previous clipboard in background thread after 600ms
 #[tauri::command]
 pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), String> {
-    eprintln!("[paste] {} chars", text.len());
+    eprintln!("[paste] requested text len={} preview={}", text.len(), &text[..text.len().min(40)]);
 
     // ── 1. Resolve target app ───────────────────────────────────────────────
     let app_info = {
@@ -238,14 +285,37 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
     // Wait for the window to come to front before writing to clipboard.
     std::thread::sleep(std::time::Duration::from_millis(250));
 
-    // ── 3. Write text to clipboard ──────────────────────────────────────────
-    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    let previous = cb.get_text().ok();
-    cb.set_text(text).map_err(|e| e.to_string())?;
-    // Brief pause so clipboard change settles before the keystroke.
-    std::thread::sleep(std::time::Duration::from_millis(80));
+    // ── 3. Save previous clipboard ─────────────────────────────────────────
+    let previous = pbpaste();
+    eprintln!("[paste] previous clipboard len={} preview={}",
+        previous.as_ref().map(|s| s.len()).unwrap_or(0),
+        previous.as_ref().map(|s| &s[..s.len().min(40)]).unwrap_or("(none)"));
 
-    // ── 4. Cmd+V ────────────────────────────────────────────────────────────
+    // ── 4. Write dictated text via pbcopy ──────────────────────────────────
+    // Append a trailing space to match Python behavior (ensures paste ends
+    // the word being typed rather than extending it).
+    let paste_content = format!("{} ", text);
+    pbcopy(&paste_content)?;
+    eprintln!("[paste] clipboard set via pbcopy");
+
+    // ── 5. Verify via pbpaste (real macOS pasteboard, NOT arboard cache) ───
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    let verify = pbpaste();
+    let expected = paste_content.trim();
+    if verify.as_deref() != Some(expected) {
+        eprintln!("[paste] verify FAILED (got {:?}), retrying…", verify.as_ref().map(|s| &s[..s.len().min(40)]));
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        pbcopy(&paste_content)?;
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let verify2 = pbpaste();
+        if verify2.as_deref() != Some(expected) {
+            eprintln!("[paste] verify FAILED after retry — aborting Cmd+V");
+            return Err("Clipboard write could not be verified — aborting paste".into());
+        }
+    }
+    eprintln!("[paste] clipboard verify OK via pbpaste");
+
+    // ── 6. Cmd+V ───────────────────────────────────────────────────────────
     let output = std::process::Command::new("osascript")
         .arg("-e")
         .arg(r#"tell application "System Events" to keystroke "v" using command down"#)
@@ -254,18 +324,19 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr).to_string();
-        eprintln!("[paste] failed: {}", err);
+        eprintln!("[paste] Cmd+V failed: {}", err);
         return Err(format!("Paste failed: {}", err));
     }
-    eprintln!("[paste] success into '{}'", app_info.name);
+    eprintln!("[paste] Cmd+V sent successfully into '{}'", app_info.name);
 
-    // ── 5. Restore previous clipboard (non-blocking) ────────────────────────
+    // ── 7. Restore previous clipboard (non-blocking, after paste completes) ─
+    // Use pbcopy for restore too, since arboard cache can diverge from real
+    // macOS pasteboard.  Wait longer so paste fully finishes before restoring.
     if let Some(prev) = previous {
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(600));
-            if let Ok(mut cb2) = arboard::Clipboard::new() {
-                let _ = cb2.set_text(prev);
-            }
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            let _ = pbcopy(&prev);
+            eprintln!("[paste] previous clipboard restored");
         });
     }
     Ok(())

@@ -319,6 +319,17 @@ export function useGlobalHotkey() {
         if (result.ok && result.text) {
           const s = settingsRef.current;
 
+          // ── SAFETY GUARD: never paste empty or whitespace-only text ────────
+          // This prevents pasting stale clipboard contents when transcription
+          // returns an empty result (e.g. audio too quiet, sidecar error).
+          const trimmed = result.text.trim();
+          if (trimmed.length === 0) {
+            console.log("[dictation] empty transcript — skipping paste");
+            hudEmit({ state: "error", subtext: "Empty transcription" });
+            setTimeout(() => hudEmit({ state: "idle" }), 3000);
+            return;
+          }
+
           // ── FAST PATH: paste FIRST, before any HUD/history/timing work ─────
           // Matches Python app: paste_text() happens before save_history() and
           // show_message().  No HUD animation or setTimeout blocks paste.
@@ -329,7 +340,7 @@ export function useGlobalHotkey() {
           if (!s.safe_mode) {
             try {
               console.log("[perf] paste_text sent");
-              await invokeWithTimeout("paste_text", { text: result.text }, 8_000);
+              await invokeWithTimeout("paste_text", { text: trimmed }, 8_000);
               t_pasteEnd = Date.now();
               pasteStatus = "pasted";
               console.log("[perf] paste_text returned  elapsed=", t_pasteEnd - t_pasteStart, "ms");
