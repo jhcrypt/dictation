@@ -8,7 +8,7 @@
  *
  * Hold mode  (toggle_mode = false):
  *   key-down = start recording
- *   key-up   = stop + transcribe  (or tap_ignored if < MIN_TAP_MS)
+ *   key-up   = stop + transcribe  (or tap_ignored if < hotkey_debounce_seconds)
  *
  * Toggle mode (toggle_mode = true):
  *   key-down when idle      = start recording
@@ -48,8 +48,11 @@ type RecState =
   | "transcribing" // sidecar_transcribe_last in-flight
   | "error";       // transient — resets to idle after timeout
 
-/** Minimum hold time before a release is treated as a real recording (ms). */
-const MIN_TAP_MS = 300;
+/**
+ * Default minimum hold time (ms). Matches Python HOTKEY_DEBOUNCE_SECONDS default.
+ * The live value is always read from settingsRef.current.hotkey_debounce_seconds.
+ */
+const DEFAULT_DEBOUNCE_MS = 180; // 0.18 s — same as Python default
 
 /**
  * Timing breakdown emitted after each dictation cycle.
@@ -337,7 +340,7 @@ export function useGlobalHotkey() {
 
     /**
      * handleShortTap — hold mode only.
-     * Called when key is released within MIN_TAP_MS.
+     * Called when key is released within hotkey_debounce_seconds.
      *
      * If state is "starting": the sidecar call is still in-flight.
      *   Set pendingStop so startRecording cancels after the call returns.
@@ -430,14 +433,16 @@ export function useGlobalHotkey() {
 
         // Hold mode: up = stop (unless it was a short tap)
         const elapsed = Date.now() - recordStartRef.current;
-        console.log("[hotkey] hold duration =", elapsed, "ms  threshold =", MIN_TAP_MS, "ms");
+        // Read threshold live from settings (matches Python _setting_float("hotkey_debounce_seconds"))
+        const debounceMs = (settingsRef.current.hotkey_debounce_seconds ?? DEFAULT_DEBOUNCE_MS / 1000) * 1000;
+        console.log("[hotkey] hold duration =", elapsed, "ms  threshold =", debounceMs, "ms");
 
         if (st === "starting") {
           // Start not yet complete — set pendingStop regardless of elapsed
           // (the user lifted before the sidecar even started; always treat as short tap)
           handleShortTap();
         } else if (st === "recording") {
-          if (elapsed < MIN_TAP_MS) {
+          if (elapsed < debounceMs) {
             handleShortTap();
           } else {
             stopAndTranscribe();
