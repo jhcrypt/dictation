@@ -312,12 +312,16 @@ export default function HudApp() {
     ? (iconColor ?? "rgba(10, 132, 255, 0.7)")
     : "transparent";
 
+  // Waveform states: flush-left (no left pad) and zero gap so bars touch the text
+  const isWaveform = state === "recording" || state === "wake_recording";
+
   return (
     <div
       className="w-full h-full flex items-center"
       style={{
-        padding:      "0 13px",           // 1px less each side to absorb border
-        gap:          10,
+        paddingLeft:  isWaveform ? 0 : 13,
+        paddingRight: 13,
+        gap:          isWaveform ? 0 : 10,
         background:   "rgba(36, 36, 36, 0.96)",
         borderRadius: "10px",
         border:       `1px solid ${borderColor}`,
