@@ -32,9 +32,19 @@
  *     startRecording checks it after sidecar_start_recording resolves and
  *     immediately cancels (the user released before start finished).
  *
- * Also listens for:
- *   tray-start-dictation / tray-stop-dictation → tray menu actions
- *   ui-stop-recording → DictationPage stop button when hotkey started session
+ * ── ONE RECORDING CONTROLLER ─────────────────────────────────────────────────
+ * All recording triggers MUST go through this hook. No UI page, tray handler,
+ * or future feature may call sidecar_start/stop/cancel/transcribe_last directly.
+ *
+ * Trigger → event → handler in this file:
+ *   Hotkey key-down/up  → hotkey-ropt-down / hotkey-ropt-up  (Rust CGEventTap)
+ *   Dictation button    → ui-start-recording / ui-stop-recording  (DictationPage)
+ *   Tray menu           → tray-start-dictation / tray-stop-dictation  (tray.rs)
+ *   Jarvis wake-word    → emit "ui-start-recording" from wake handler (future)
+ *
+ * Adding a new trigger: emit one of the four events above. Do not invoke
+ * sidecar_start_recording / sidecar_stop_recording / sidecar_transcribe_last
+ * from anywhere other than this file.
  */
 import { useEffect, useRef } from "react";
 import { useSettings } from "../context/SettingsContext";
@@ -515,13 +525,13 @@ export function useGlobalHotkey() {
         else cancelRecording();
       }).then(f => unlisteners.push(f));
 
-      // DictationPage start button → same path as hotkey / tray
+      // UI start (button / future Jarvis wake) → same guarded path as hotkey
       listen("ui-start-recording", () => {
         console.log("[ui] ui-start-recording  state=", stateRef.current);
         startRecording();
       }).then(f => unlisteners.push(f));
 
-      // DictationPage stop button → same path as hotkey / tray
+      // UI stop (button / future Jarvis stop) → same guarded path as hotkey
       listen("ui-stop-recording", () => {
         const st = stateRef.current;
         console.log("[ui] ui-stop-recording  state=", st);
