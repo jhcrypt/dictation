@@ -388,8 +388,8 @@ export default function HudApp() {
             height:     34,
             objectFit:  "contain",
             display:    "block",
-            borderRadius: appIcon ? 0 : 8,
-            opacity:    appIcon ? 1 : 0.55,
+            borderRadius: 0,
+            opacity:    1,
           }}
         />
       </div>
