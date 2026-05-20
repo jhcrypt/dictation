@@ -36,9 +36,14 @@ export default function CustomCommandsPage() {
     setTimeout(() => setStatus(""), 2500);
   };
 
-  const save = async (updated: CustomCommand[]) => {
+  const save = async (updated: CustomCommand[], hudMsg?: string) => {
     await invoke("save_custom_commands", { commands: updated });
     setCommands(updated);
+    if (hudMsg) {
+      // HUD — Python: self.show_message(f"Saved '{t}'", self.GREEN)
+      const { hudSaved } = await import("../utils/hudNotify");
+      hudSaved(hudMsg);
+    }
   };
 
   const addCommand = async () => {
@@ -52,13 +57,13 @@ export default function CustomCommandsPage() {
       return;
     }
     const newCmd: CustomCommand = { trigger: trigger.trim(), action, target: target.trim() };
-    await save([...commands, newCmd]);
+    await save([...commands, newCmd], `Saved '${trigger.trim()}'`);
     setTrigger(""); setTarget("");
     flash("Command added.");
   };
 
   const deleteCommand = async (i: number) => {
-    await save(commands.filter((_, idx) => idx !== i));
+    await save(commands.filter((_, idx) => idx !== i), "Saved.");
     flash("Deleted.");
   };
 

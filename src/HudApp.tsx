@@ -11,7 +11,8 @@ export type HudState =
   | "cleanup"        // Cleaning up… (Ollama running)
   | "skipped"        // Short phrase / already well-formed / unsafe rewrite
   | "inserted"       // Final: <text>  Status: …  Profile: …
-  | "command"        // Jarvis command executed
+  | "command"        // Jarvis command / blue info notification
+  | "saved"          // Settings saved — green check notification
   | "error";         // Error: <message>
 
 export interface HudPayload {
@@ -143,6 +144,13 @@ function getConfig(state: HudState, payload: HudPayload): StateConfig {
         labelColor: FG,
         subColor:   DIM,
       };
+    case "saved":
+      return {
+        icon:       <Check size={15} strokeWidth={2} style={{ color: GREEN }} className="flex-shrink-0" />,
+        label:      payload.subtext || "Saved.",
+        labelColor: FG,
+        subColor:   DIM,
+      };
     case "error":
       return {
         icon:       <AlertCircle size={15} strokeWidth={1.75} style={{ color: RED }} className="flex-shrink-0" />,
@@ -182,6 +190,7 @@ function getSubtext(state: HudState, payload: HudPayload): string {
       return parts.join("  ·  ");
     }
     case "command":  return "";
+    case "saved":    return "";
     case "error":    return payload.subtext ?? "";
   }
 }

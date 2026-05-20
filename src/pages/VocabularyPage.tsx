@@ -44,11 +44,15 @@ export default function VocabularyPage() {
 
   const addCorrection = async () => {
     if (!wrong.trim() || !right.trim()) return;
-    const updated = [...corrections, { wrong: wrong.trim(), right: right.trim() }];
+    const w = wrong.trim();
+    const updated = [...corrections, { wrong: w, right: right.trim() }];
     setCorrections(updated);
     setWrong(""); setRight("");
     await persistCorrections(updated);
     flash("Added.");
+    // HUD — Python: self.show_message(f"Saved '{t}'", self.GREEN)
+    const { hudSaved } = await import("../utils/hudNotify");
+    hudSaved(`Saved '${w}'`);
   };
 
   const deleteCorrection = async (i: number) => {
@@ -56,6 +60,8 @@ export default function VocabularyPage() {
     setCorrections(updated);
     await persistCorrections(updated);
     flash("Deleted.");
+    const { hudSaved } = await import("../utils/hudNotify");
+    hudSaved("Saved.");
   };
 
   return (

@@ -56,6 +56,9 @@ export default function SnippetsPage() {
     setSnippets(updated);
     setSelected(null); setTrigger(""); setExpansion("");
     flash("Saved.");
+    // HUD — Python: self.show_message(f"Saved '{t}'", self.GREEN)
+    const { hudSaved } = await import("../utils/hudNotify");
+    hudSaved(`Saved '${trigger.trim()}'`);
   };
 
   const deleteSelected = async () => {
@@ -69,11 +72,15 @@ export default function SnippetsPage() {
 
   const addNew = async () => {
     if (!newTrigger.trim() || !newExpansion.trim()) return;
-    const updated = [...snippets.filter((s) => s.trigger !== newTrigger.trim()), { trigger: newTrigger.trim(), expansion: newExpansion.trim() }];
+    const t = newTrigger.trim();
+    const updated = [...snippets.filter((s) => s.trigger !== t), { trigger: t, expansion: newExpansion.trim() }];
     await invoke("save_snippets", { snippets: toDict(updated) });
     setSnippets(updated);
     setNewTrigger(""); setNewExpansion("");
     flash("Snippet added.");
+    // HUD — Python: self.show_message(f"Saved '{t}'", self.GREEN)
+    const { hudSaved } = await import("../utils/hudNotify");
+    hudSaved(`Saved '${t}'`);
   };
 
   return (

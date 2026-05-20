@@ -162,18 +162,24 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 let mut s = crate::settings::load();
                 s.safe_mode = !s.safe_mode;
                 let _ = crate::settings::save(&s);
+                // Python: app.show_message("Safe Mode On/Off", BLUE)
+                hud_notify(app, if s.safe_mode { "Safe Mode On" } else { "Safe Mode Off" });
                 return;
             }
             if id == "wake" {
                 let mut s = crate::settings::load();
                 s.wake_enabled = !s.wake_enabled;
                 let _ = crate::settings::save(&s);
+                // Python: app.show_message("Wake word On/Off", BLUE)
+                hud_notify(app, if s.wake_enabled { "Wake word On" } else { "Wake word Off" });
                 return;
             }
             if id == "jarvis" {
                 let mut s = crate::settings::load();
                 s.jarvis_enabled = !s.jarvis_enabled;
                 let _ = crate::settings::save(&s);
+                // Python: app.show_message("Jarvis commands On/Off", BLUE)
+                hud_notify(app, if s.jarvis_enabled { "Jarvis commands On" } else { "Jarvis commands Off" });
                 return;
             }
 
@@ -208,6 +214,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 s.hotkey_label = k.to_string();
                 let _ = crate::settings::save(&s);
                 let _ = app.emit("settings-changed", ());
+                // Python: app.show_message("Record key: {key}", BLUE)
+                hud_notify(app, &format!("Record key: {}", k));
                 return;
             }
             if let Some(st) = id.strip_prefix("strength::") {
@@ -215,6 +223,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 s.correction_strength = st.to_string();
                 let _ = crate::settings::save(&s);
                 let _ = app.emit("settings-changed", ());
+                // Python: app.show_message("Correction: {strength}", BLUE)
+                hud_notify(app, &format!("Correction: {}", st));
                 return;
             }
             if let Some(p) = id.strip_prefix("profile::") {
@@ -222,6 +232,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 s.writing_profile = p.to_string();
                 let _ = crate::settings::save(&s);
                 let _ = app.emit("settings-changed", ());
+                // Python: app.show_message("Profile: {profile}", BLUE)
+                hud_notify(app, &format!("Profile: {}", p));
                 return;
             }
 
@@ -254,6 +266,20 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .build(app)?;
 
     Ok(())
+}
+
+/// Emit a HUD "command" (blue) notification and auto-clear to idle after 2500 ms.
+/// Mirrors Python's app.show_message(text, BLUE) for tray-menu changes.
+fn hud_notify<R: Runtime>(app: &AppHandle<R>, subtext: &str) {
+    let _ = app.emit("hud-state", json!({
+        "state":   "command",
+        "subtext": subtext,
+    }));
+    let a = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let _ = a.emit("hud-state", json!({ "state": "idle" }));
+    });
 }
 
 fn show_and_emit<R: Runtime>(app: &AppHandle<R>, event: &str) {

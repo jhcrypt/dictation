@@ -40,6 +40,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       await invoke("save_settings", { settings });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      // HUD notification — Python: self.show_message("Saved.", self.GREEN)
+      const { hudSaved } = await import("../utils/hudNotify");
+      await hudSaved("Saved.");
     } catch {
       // Not in Tauri
     }

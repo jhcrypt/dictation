@@ -32,10 +32,15 @@ export default function ContactsPage() {
     } catch { /* preview */ }
   }
 
-  async function saveContacts(updated: Contact[]) {
+  async function saveContacts(updated: Contact[], hudMsg?: string) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("save_contacts", { contacts: updated });
+      if (hudMsg) {
+        // HUD — Python: self.show_message("Saved.", self.GREEN)
+        const { hudSaved } = await import("../utils/hudNotify");
+        hudSaved(hudMsg);
+      }
     } catch { /* preview */ }
   }
 
@@ -46,7 +51,7 @@ export default function ContactsPage() {
     }
     const updated = [...contacts, { name: name.trim(), email: email.trim(), aliases: aliases.trim() }];
     setContacts(updated);
-    await saveContacts(updated);
+    await saveContacts(updated, `Saved '${name.trim()}'`);
     setName(""); setEmail(""); setAliases("");
     setStatus("Contact added.");
     setTimeout(() => setStatus(""), 2000);
@@ -55,7 +60,7 @@ export default function ContactsPage() {
   const deleteContact = async (i: number) => {
     const updated = contacts.filter((_, idx) => idx !== i);
     setContacts(updated);
-    await saveContacts(updated);
+    await saveContacts(updated, "Saved.");
   };
 
   return (
