@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Mic, Check, Zap, AlertCircle, Loader2, Sparkles, AlertTriangle } from "lucide-react";
+import quillAppIcon from "./assets/quill_app_icon.png";
 
 // ── HUD state type — mirrors Python DictationApp states + Tauri extras ────────
 export type HudState =
@@ -365,28 +366,33 @@ export default function HudApp() {
         )}
       </div>
 
-      {/* Right: target app icon */}
-      {appIcon && (
-        <div
+      {/* Right: target app icon (falls back to Quill icon when no app is focused) */}
+      <div
+        style={{
+          width:          40,
+          height:         40,
+          borderRadius:   10,
+          flexShrink:     0,
+          overflow:       "hidden",
+          display:        "flex",
+          alignItems:     "center",
+          justifyContent: "center",
+        }}
+      >
+        <img
+          src={appIcon ?? quillAppIcon}
+          alt=""
+          draggable={false}
           style={{
-            width:          40,
-            height:         40,
-            borderRadius:   10,
-            flexShrink:     0,
-            overflow:       "hidden",
-            display:        "flex",
-            alignItems:     "center",
-            justifyContent: "center",
+            width:      34,
+            height:     34,
+            objectFit:  "contain",
+            display:    "block",
+            borderRadius: appIcon ? 0 : 8,
+            opacity:    appIcon ? 1 : 0.55,
           }}
-        >
-          <img
-            src={appIcon}
-            alt=""
-            draggable={false}
-            style={{ width: 34, height: 34, objectFit: "contain", display: "block" }}
-          />
-        </div>
-      )}
+        />
+      </div>
     </div>
   );
 }

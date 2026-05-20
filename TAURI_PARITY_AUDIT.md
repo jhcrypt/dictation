@@ -1,5 +1,5 @@
 # Tauri Parity Audit
-_Generated: 2026-05-20 — compare against stable Python Quill app_
+_Generated: 2026-05-20 · Last updated: 2026-05-20_
 
 ---
 
@@ -90,7 +90,7 @@ _Generated: 2026-05-20 — compare against stable Python Quill app_
 | Wake word enable | Toggle | ✅ | ✅ matched | — | |
 | Jarvis commands enable | Toggle | ✅ | ✅ matched | — | |
 | Wake dictation timing | Grace / Silence cutoff / Max length steppers | ✅ NumericStepper (fixed this session) | ✅ matched | — | |
-| Continuous wake listening | Active mic monitor, background loop | ✗ Sidecar does not implement `start_wake_listen` | ⚪ intentional gap | later | Known gap — documented in file comment |
+| Continuous wake listening | Active mic monitor, background loop | ✗ Sidecar does not implement `start_wake_listen` | ⚪ intentional gap | later | **Confirmed intentional** (2026-05-20): UI/settings/tray fully correct. Missing piece is sidecar backend. Implement on separate branch post-stabilization. |
 
 ### Custom Commands
 | Area | Python behavior | Tauri behavior | Status | Priority | Notes |
@@ -237,7 +237,7 @@ _Generated: 2026-05-20 — compare against stable Python Quill app_
 
 | Feature | Python | Tauri | Priority | Notes |
 |---|---|---|---|---|
-| Continuous wake-word listening | Background mic monitor loop, `hey_jarvis` detection | ⚪ Sidecar does not implement `start_wake_listen` action | later | Filed as post-stabilization. `wake_enabled` saves to JSON correctly |
+| Continuous wake-word listening | Background mic monitor loop, `hey_jarvis` detection | ⚪ **Intentional backend gap** — UI/settings/tray parity confirmed complete; sidecar needs `start_wake_listen`, VAD loop, Jarvis command dispatch | later | Implement on separate branch. Not a UI parity blocker. |
 | Launch at Login | `launchd` plist via `SMAppService` Python binding | ⚪ Menu item present but disabled | later | Needs `tauri-plugin-autostart` |
 | "Add Correction" pre-fill | Tray item pre-fills Vocabulary form with last dictated text | ⚪ Navigates to page but no pre-fill | important | Last-text needs to be passed via event payload |
 | Cloud transcription routing | `cloud_mode=true` routes to `transcribe_cloud()` | ⚪ Setting saved but sidecar Tauri path doesn't check `cloud_mode` | important | Sidecar `transcribe_and_type` needs `cloud_mode` branch |
