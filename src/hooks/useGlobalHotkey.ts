@@ -95,6 +95,13 @@ export function useGlobalHotkey() {
    */
   const pendingStopRef = useRef<boolean>(false);
 
+  /**
+   * cycleIdRef: monotonically incremented each time startRecording begins.
+   * stopAndTranscribe captures the cycle ID at entry and silently drops
+   * any HUD updates or state mutations if the ID has changed (stale cycle).
+   */
+  const cycleIdRef = useRef<number>(0);
+
   // ── Timing checkpoints (wall-clock ms) ──────────────────────────────────────
   const t_keyDown    = useRef<number>(0); // hotkey pressed
   const t_stopCalled = useRef<number>(0); // key-up / stop requested
@@ -155,6 +162,7 @@ export function useGlobalHotkey() {
       pendingStopRef.current = false;
       recordStartRef.current = Date.now();
       t_keyDown.current = recordStartRef.current;
+      cycleIdRef.current += 1; // invalidate any previous in-flight stopAndTranscribe
 
       const toggleMode = settingsRef.current.toggle_mode;
       hudEmit({ state: "recording", toggleMode });
@@ -205,7 +213,10 @@ export function useGlobalHotkey() {
         return;
       }
 
-      console.log("[recording] → stopping");
+      // Capture cycle ID before first await — any change means this result is stale.
+      const myCycle = cycleIdRef.current;
+
+      console.log("[recording] → stopping  cycle=", myCycle);
       clearRecordingTimeout();
       stateRef.current = "stopping";
       t_stopCalled.current = Date.now();
@@ -216,9 +227,20 @@ export function useGlobalHotkey() {
         await invokeWithTimeout("sidecar_stop_recording", undefined, 8_000);
         console.log("[sidecar] stop_recording ✓");
       } catch (e) {
+        // Guard: a new cycle may have started while we awaited stop_recording
+        if (cycleIdRef.current !== myCycle) {
+          console.log("[recording] stop_recording error discarded — stale cycle", myCycle);
+          return;
+        }
         console.error("[sidecar] stop_recording FAILED:", e);
         stateRef.current = "idle";
         setError(String(e));
+        return;
+      }
+
+      // Guard: bail if a new recording cycle started while stop_recording was in-flight
+      if (cycleIdRef.current !== myCycle) {
+        console.log("[recording] stop_recording done — stale cycle", myCycle, "discarding");
         return;
       }
 
@@ -237,6 +259,12 @@ export function useGlobalHotkey() {
           skip_reason?: string;
         }>("sidecar_transcribe_last", undefined, 120_000);
         console.log("[sidecar] transcribe_last ✓  ok=", result.ok, "chars=", result.text?.length);
+
+        // Guard: bail if a new recording cycle started while transcribe_last was in-flight
+        if (cycleIdRef.current !== myCycle) {
+          console.log("[recording] transcribe_last result discarded — stale cycle", myCycle);
+          return;
+        }
 
         if (result.ok && result.text) {
           const s = settingsRef.current;
@@ -267,6 +295,12 @@ export function useGlobalHotkey() {
             }
           } else {
             t_pasteEnd = t_pasteStart; // safe mode: no paste
+          }
+
+          // Guard after paste: another cycle may have started during paste_text
+          if (cycleIdRef.current !== myCycle) {
+            console.log("[recording] paste done — stale cycle", myCycle, "discarding HUD update");
+            return;
           }
 
           const profile = result.profile ?? s.writing_profile ?? "General";
@@ -324,12 +358,22 @@ export function useGlobalHotkey() {
 
           setTimeout(() => hudEmit({ state: "idle" }), 1500);
         } else {
+          // Guard before showing error: don't clobber a new cycle's HUD
+          if (cycleIdRef.current !== myCycle) {
+            console.log("[recording] transcription failed result discarded — stale cycle", myCycle);
+            return;
+          }
           const errMsg = result.error ?? "Transcription failed";
           console.error("[sidecar] transcription failed:", errMsg);
           hudEmit({ state: "error", subtext: errMsg });
           setTimeout(() => hudEmit({ state: "idle" }), 4000);
         }
       } catch (e) {
+        // Guard before showing error: don't clobber a new cycle's HUD
+        if (cycleIdRef.current !== myCycle) {
+          console.log("[recording] transcribe_last exception discarded — stale cycle", myCycle);
+          return;
+        }
         console.error("[sidecar] transcribe error:", e);
         hudEmit({ state: "error", subtext: String(e) });
         setTimeout(() => hudEmit({ state: "idle" }), 4000);
