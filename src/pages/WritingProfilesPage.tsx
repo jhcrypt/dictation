@@ -42,7 +42,7 @@ export default function WritingProfilesPage() {
               className={`flex items-center justify-between px-4 py-2.5 rounded-lg border text-left transition-colors ${
                 settings.writing_profile === p
                   ? "bg-jarvis-accent/10 border-jarvis-accent"
-                  : "bg-jarvis-surface border-jarvis-border hover:border-jarvis-muted"
+                  : "bg-jarvis-sidebar border-jarvis-border hover:border-jarvis-muted"
               }`}
             >
               <span className={`text-sm font-medium ${settings.writing_profile === p ? "text-jarvis-text" : "text-jarvis-muted"}`}>

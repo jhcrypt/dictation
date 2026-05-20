@@ -302,7 +302,7 @@ export default function AiCleanupPage() {
               className={`flex-1 py-2 rounded-lg text-sm font-medium border capitalize transition-colors ${
                 settings.ai_cleanup_mode === mode
                   ? "bg-jarvis-accent border-jarvis-accent text-white"
-                  : "bg-jarvis-surface border-jarvis-border text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted"
+                  : "bg-jarvis-sidebar border-jarvis-border text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted"
               }`}
             >
               {mode}
@@ -337,7 +337,7 @@ export default function AiCleanupPage() {
               className={`flex items-center justify-between px-4 py-3 rounded-lg border text-left transition-colors ${
                 settings.correction_strength === s
                   ? "bg-jarvis-accent/10 border-jarvis-accent"
-                  : "bg-jarvis-surface border-jarvis-border hover:border-jarvis-muted"
+                  : "bg-jarvis-sidebar border-jarvis-border hover:border-jarvis-muted"
               }`}
             >
               <span className={`text-sm font-medium ${settings.correction_strength === s ? "text-jarvis-text" : "text-jarvis-muted"}`}>

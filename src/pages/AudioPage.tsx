@@ -89,7 +89,7 @@ export default function AudioPage() {
                 className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
                   active
                     ? "bg-jarvis-accent border-jarvis-accent text-white"
-                    : "bg-jarvis-surface border-jarvis-border text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted"
+                    : "bg-jarvis-sidebar border-jarvis-border text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted"
                 }`}
               >
                 {lang}
@@ -109,7 +109,7 @@ export default function AudioPage() {
               className={`flex items-center justify-between px-4 py-3 rounded-lg border text-left transition-colors ${
                 settings.dictation_quality === q
                   ? "bg-jarvis-accent/15 border-jarvis-accent"
-                  : "bg-jarvis-surface border-jarvis-border hover:border-jarvis-muted"
+                  : "bg-jarvis-sidebar border-jarvis-border hover:border-jarvis-muted"
               }`}
             >
               <span className={`text-sm font-medium ${settings.dictation_quality === q ? "text-jarvis-text" : "text-jarvis-muted"}`}>

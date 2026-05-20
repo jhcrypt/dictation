@@ -81,7 +81,7 @@ export default function SetupPage() {
               className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
                 settings.hotkey_label === key
                   ? "bg-jarvis-accent border-jarvis-accent text-white"
-                  : "bg-jarvis-surface border-jarvis-border text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted"
+                  : "bg-jarvis-sidebar border-jarvis-border text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted"
               }`}
             >
               {key}

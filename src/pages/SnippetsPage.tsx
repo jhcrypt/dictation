@@ -164,7 +164,7 @@ export default function SnippetsPage() {
                 className={`flex items-start justify-between px-3 py-2.5 rounded-lg border text-left transition-colors ${
                   selected === s.trigger
                     ? "bg-jarvis-accent/10 border-jarvis-accent"
-                    : "bg-jarvis-surface border-jarvis-border hover:border-jarvis-muted"
+                    : "bg-jarvis-sidebar border-jarvis-border hover:border-jarvis-muted"
                 }`}
               >
                 <div className="flex-1 min-w-0">
