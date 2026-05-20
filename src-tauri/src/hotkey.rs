@@ -14,6 +14,7 @@
 ///   "hotkey-ropt-up"    →  stop + transcribe + paste
 ///   "hotkey-esc"        →  cancel recording
 
+use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Runtime};
 
@@ -90,34 +91,49 @@ struct TapCtx {
 }
 
 // ── CGEventTap callback — reads key code + flags only, no HIToolbox ───────────
+//
+// SAFETY NOTE: This is an extern "C" fn — Rust panics CANNOT unwind through
+// the FFI boundary.  If a panic reaches here the runtime calls abort() and
+// the whole process dies (EXC_CRASH / SIGABRT).
+//
+// Two defences:
+//   1. Replace every `eprintln!` with `let _ = writeln!(stderr, ...)`.
+//      `eprintln!` panics when the stderr pipe is broken (e.g. after the dev
+//      server restarts and the binary is re-parented to launchd).
+//      `writeln!` returns a Result; discarding it with `let _ =` is safe.
+//   2. Wrap the entire body in `catch_unwind(AssertUnwindSafe(...))`.
+//      If anything inside still panics the error is silently swallowed rather
+//      than aborting the process.
 unsafe extern "C" fn tap_callback(
     _proxy:  *mut std::ffi::c_void,
     etype:   u32,
     event:   *mut std::ffi::c_void,
     refcon:  *mut std::ffi::c_void,
 ) -> *mut std::ffi::c_void {
-    let ctx = &*(refcon as *const TapCtx);
-    let kc  = CGEventGetIntegerValueField(event, CG_KEYBOARD_EVENT_KEYCODE);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &*(refcon as *const TapCtx);
+        let kc  = CGEventGetIntegerValueField(event, CG_KEYBOARD_EVENT_KEYCODE);
 
-    match etype {
-        // Right Option is a modifier key: generates FlagsChanged events.
-        // Distinguish press (Alternate flag set) from release (flag cleared).
-        CG_EVENT_FLAGS_CHANGED if kc == KEY_RIGHT_OPTION => {
-            let is_down = CGEventGetFlags(event) & CG_FLAG_ALTERNATE != 0;
-            if is_down && !ctx.held.swap(true, Ordering::SeqCst) {
-                eprintln!("[hotkey] right option DOWN");
-                (ctx.emit_down)();
-            } else if !is_down && ctx.held.swap(false, Ordering::SeqCst) {
-                eprintln!("[hotkey] right option UP");
-                (ctx.emit_up)();
+        match etype {
+            // Right Option is a modifier key: generates FlagsChanged events.
+            // Distinguish press (Alternate flag set) from release (flag cleared).
+            CG_EVENT_FLAGS_CHANGED if kc == KEY_RIGHT_OPTION => {
+                let is_down = CGEventGetFlags(event) & CG_FLAG_ALTERNATE != 0;
+                if is_down && !ctx.held.swap(true, Ordering::SeqCst) {
+                    let _ = writeln!(std::io::stderr(), "[hotkey] right option DOWN");
+                    (ctx.emit_down)();
+                } else if !is_down && ctx.held.swap(false, Ordering::SeqCst) {
+                    let _ = writeln!(std::io::stderr(), "[hotkey] right option UP");
+                    (ctx.emit_up)();
+                }
             }
+            CG_EVENT_KEY_DOWN if kc == KEY_ESCAPE => {
+                let _ = writeln!(std::io::stderr(), "[hotkey] ESC");
+                (ctx.emit_esc)();
+            }
+            _ => {}
         }
-        CG_EVENT_KEY_DOWN if kc == KEY_ESCAPE => {
-            eprintln!("[hotkey] ESC");
-            (ctx.emit_esc)();
-        }
-        _ => {}
-    }
+    }));
 
     event // listen-only: return event unmodified
 }
