@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from "react";
 import Sidebar, { Page } from "./components/Sidebar";
 import { SettingsProvider, useSettings } from "./context/SettingsContext";
 import { useGlobalHotkey } from "./hooks/useGlobalHotkey";
@@ -17,6 +17,54 @@ import WorkflowsPage from "./pages/WorkflowsPage";
 import HistoryPage from "./pages/HistoryPage";
 import HelpPage from "./pages/HelpPage";
 import quillIcon from "./assets/quill_header_icon.png";
+
+// ── Error boundary — catches React render crashes, shows error instead of blank window ──
+class AppErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[AppErrorBoundary] React tree crashed:", error, info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          display: "flex", flexDirection: "column", alignItems: "center",
+          justifyContent: "center", height: "100%", gap: 12,
+          background: "#141414", color: "#f0f0f0", padding: 32,
+        }}>
+          <span style={{ fontSize: 28 }}>⚠️</span>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>App crashed — React error</div>
+          <pre style={{
+            fontSize: 11, color: "#ff453a", background: "#1e1e1e",
+            padding: 12, borderRadius: 8, maxWidth: "100%",
+            overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all",
+          }}>
+            {this.state.error.message}
+          </pre>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{
+              padding: "6px 16px", borderRadius: 8, background: "#0a84ff",
+              color: "#fff", border: "none", cursor: "pointer", fontSize: 13,
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Tray nav-event → page id mapping
 const TRAY_NAV: Record<string, Page> = {
@@ -105,8 +153,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <SettingsProvider>
-      <AppContent />
-    </SettingsProvider>
+    <AppErrorBoundary>
+      <SettingsProvider>
+        <AppContent />
+      </SettingsProvider>
+    </AppErrorBoundary>
   );
 }

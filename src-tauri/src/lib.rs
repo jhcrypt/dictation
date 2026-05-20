@@ -85,6 +85,20 @@ pub fn run() {
 
             Ok(())
         })
+        // ── Intercept close on "main" — hide instead of destroy ──────────────
+        // Tauri's default is to destroy the window on close (red X / Cmd+W).
+        // Once destroyed, get_webview_window("main") returns None and the tray
+        // "Open Settings…" handler can never show it again.
+        // Fix: prevent the close event and hide the window instead; the tray
+        // handler's existing w.show() + set_focus() then works correctly.
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    window.hide().ok();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // Settings
             load_settings,
