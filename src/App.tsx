@@ -157,7 +157,7 @@ function AppContent() {
         <img
           src={quillIcon}
           alt="Quill"
-          style={{ width: 22, height: 22, objectFit: "contain", opacity: 0.9 }}
+          style={{ width: 30, height: 30, objectFit: "contain", opacity: 1 }}
           className="pointer-events-none"
         />
         <span className="text-[13px] font-semibold text-jarvis-muted pointer-events-none tracking-wide">
