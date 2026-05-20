@@ -306,10 +306,12 @@ export default function HudApp() {
   const subtext = getSubtext(state, payload);
   const label   = cfg.label.length > 58 ? cfg.label.slice(0, 58) + "…" : cfg.label;
 
-  // Show border only when HUD is active; colour from app icon, fallback blue
-  const isActive = state !== "idle" && state !== "tap_ignored";
-  const borderColor = isActive
-    ? (iconColor ?? "rgba(10, 132, 255, 0.7)")
+  // Border only during active dictation; colour from app icon at low opacity
+  const isDictating = state === "recording" || state === "wake_recording";
+  const borderColor = isDictating
+    ? (iconColor
+        ? iconColor.replace("rgb(", "rgba(").replace(")", ", 0.35)")
+        : "rgba(10, 132, 255, 0.3)")
     : "transparent";
 
   // Waveform states: flush-left (no left pad) and zero gap so bars touch the text
