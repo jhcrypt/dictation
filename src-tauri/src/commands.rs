@@ -274,10 +274,9 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
     pbcopy(&paste_content)?;
     eprintln!("[paste] clipboard set via pbcopy");
 
-    // Brief settle so NSPasteboard ownership propagates before Cmd+V.
-    std::thread::sleep(std::time::Duration::from_millis(30));
-
     // ── 4. Cmd+V ───────────────────────────────────────────────────────────
+    // pbcopy is synchronous — the process exits only after NSPasteboard ownership
+    // is registered.  No settle needed (unlike arboard which had internal cache).
     let output = std::process::Command::new("osascript")
         .arg("-e")
         .arg(r#"tell application "System Events" to keystroke "v" using command down"#)
