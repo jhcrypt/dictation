@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Card from "../components/ui/Card";
 import Toggle from "../components/ui/Toggle";
 import SaveButton from "../components/ui/SaveButton";
@@ -14,8 +14,11 @@ const STRENGTH_DESC: Record<CorrectionStrength, string> = {
 };
 
 const RECOMMENDED_MODEL = "qwen2.5:3b";
+const OLLAMA_API        = "http://localhost:11434/api/chat";
+// Sample phrase used by the Python app's _do_test_cleanup
+const TEST_SAMPLE = "this is a test of the local ai cleanup feature its working great";
 
-// ── Ollama status types ────────────────────────────────────────────────────────
+// ── Ollama status ─────────────────────────────────────────────────────────────
 type OllamaStatus =
   | "checking"
   | "ready"
@@ -45,32 +48,44 @@ const STATUS_COLOR: Record<OllamaStatus, string> = {
   install_error: "#ff3b30",
 };
 
+// Matches Python STATUS_DETAIL exactly
 const STATUS_DETAIL: Record<OllamaStatus, string> = {
   checking:
     "Checking Ollama availability…",
   ready:
-    `Ollama is installed, running, and ${RECOMMENDED_MODEL} is available. Dictated text will be polished automatically.`,
+    `Ollama is installed, running, and the recommended model (${RECOMMENDED_MODEL}) is available. `
+    + "Dictated text will be polished automatically.",
   not_installed:
-    "Ollama is not installed on this Mac. Dictation still works normally without it — you just won't get AI cleanup.",
+    "Ollama is not installed on this Mac. "
+    + "Dictation still works normally without it — you just won't get AI cleanup.",
   not_running:
-    "Ollama is installed but the server is not running. Start Ollama from your Applications folder, then click Check Again.",
+    "Ollama is installed but the server is not running. "
+    + "Start Ollama from your Applications folder, then click Check Again.",
   model_missing:
-    `Ollama is running but ${RECOMMENDED_MODEL} is not downloaded yet. Click Install Recommended Model below.`,
+    `Ollama is running but the recommended model (${RECOMMENDED_MODEL}) is not downloaded yet. `
+    + "Click Install Recommended Model below.",
   installing:
     "Do not close the app. The download runs in the background and may take a minute.",
   install_error:
     "Make sure Ollama is running and you have a network connection, then try again.",
 };
 
-// ── Ollama readiness card component ───────────────────────────────────────────
+// ── Test Cleanup state ────────────────────────────────────────────────────────
+type TestState = "idle" | "running" | "passed" | "failed";
+
+// ── Ollama readiness card ─────────────────────────────────────────────────────
 function OllamaReadinessCard() {
-  const [status,       setStatus]       = useState<OllamaStatus>("checking");
-  const [installError, setInstallError] = useState("");
+  const [status,        setStatus]        = useState<OllamaStatus>("checking");
+  const [installError,  setInstallError]  = useState("");
+  const [testState,     setTestState]     = useState<TestState>("idle");
+  const [testOutput,    setTestOutput]    = useState("");
+  const [testErrorMsg,  setTestErrorMsg]  = useState("");
 
-  useEffect(() => { runCheck(); }, []);
-
-  async function runCheck() {
+  const runCheck = useCallback(async () => {
     setStatus("checking");
+    setTestState("idle");
+    setTestOutput("");
+    setTestErrorMsg("");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const s = await invoke<string>("check_ollama_status");
@@ -78,7 +93,9 @@ function OllamaReadinessCard() {
     } catch {
       setStatus("not_installed");
     }
-  }
+  }, []);
+
+  useEffect(() => { runCheck(); }, [runCheck]);
 
   async function openDownload() {
     try {
@@ -95,7 +112,6 @@ function OllamaReadinessCard() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("install_ollama_model");
-      // Re-probe after pull completes
       await runCheck();
     } catch (e) {
       setInstallError(String(e));
@@ -103,38 +119,104 @@ function OllamaReadinessCard() {
     }
   }
 
-  const isBusy = status === "checking" || status === "installing";
+  // Test Cleanup — hits the Ollama HTTP API directly (same endpoint as the sidecar).
+  // Mirrors Python _do_test_cleanup: sends a sample phrase, shows cleaned output.
+  async function testCleanup() {
+    setTestState("running");
+    setTestOutput("");
+    setTestErrorMsg("");
+    try {
+      const resp = await fetch(OLLAMA_API, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model:  RECOMMENDED_MODEL,
+          messages: [
+            {
+              role:    "system",
+              content: "You are a dictation cleanup engine. Fix grammar, punctuation, and capitalisation. Keep the same meaning. Output only the corrected text.",
+            },
+            { role: "user", content: TEST_SAMPLE },
+          ],
+          stream: false,
+          options: { repeat_penalty: 1.15, num_predict: 180, temperature: 0.35 },
+        }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const out  = (data?.message?.content ?? "").trim();
+      setTestOutput(out);
+      setTestState("passed");
+    } catch (e) {
+      setTestErrorMsg(String(e));
+      setTestState("failed");
+    }
+  }
+
+  const isBusy    = status === "checking" || status === "installing";
+  const canTest   = status === "ready" && testState !== "running";
+  const canInstall = status === "model_missing" || status === "install_error";
+
+  // Overlay status label with test result when a test has run
+  const displayLabel =
+    testState === "running" ? "⏳  Testing cleanup…" :
+    testState === "passed"  ? "✓  Test passed" :
+    testState === "failed"  ? "✗  Test failed" :
+    STATUS_LABEL[status];
+
+  const displayColor =
+    testState === "running" ? "#0a84ff" :
+    testState === "passed"  ? "#30d158" :
+    testState === "failed"  ? "#ff3b30" :
+    STATUS_COLOR[status];
 
   return (
     <Card title="Local AI Cleanup (Ollama)">
-      {/* Status row */}
-      <div className="mb-3">
-        <div
-          className="text-sm font-semibold mb-1"
-          style={{ color: STATUS_COLOR[status] }}
-        >
-          {STATUS_LABEL[status]}
+      {/* Status / test result label */}
+      <div className="mb-1">
+        <div className="text-sm font-semibold" style={{ color: displayColor }}>
+          {displayLabel}
         </div>
-        <div className="text-xs text-jarvis-muted leading-relaxed">
-          {STATUS_DETAIL[status]}
-        </div>
-        {status === "install_error" && installError && (
-          <div className="mt-1 text-xs font-mono text-red-400 break-all leading-relaxed">
-            {installError}
-          </div>
-        )}
       </div>
 
-      {/* Fallback note */}
+      {/* Detail text */}
+      {testState === "idle" && (
+        <p className="text-xs text-jarvis-muted leading-relaxed mb-3">
+          {STATUS_DETAIL[status]}
+        </p>
+      )}
+      {testState === "running" && (
+        <p className="text-xs text-jarvis-muted leading-relaxed mb-3">
+          Input: &ldquo;{TEST_SAMPLE}&rdquo;
+        </p>
+      )}
+      {testState === "passed" && (
+        <p className="text-xs text-jarvis-muted leading-relaxed mb-3">
+          Output: &ldquo;{testOutput}&rdquo;
+        </p>
+      )}
+      {testState === "failed" && (
+        <p className="text-xs text-red-400 leading-relaxed font-mono break-all mb-3">
+          {testErrorMsg}
+        </p>
+      )}
+
+      {/* Install error detail */}
+      {status === "install_error" && installError && testState === "idle" && (
+        <p className="text-xs font-mono text-red-400 break-all leading-relaxed mb-3">
+          {installError}
+        </p>
+      )}
+
+      {/* Fallback note — matches Python fallback_lbl */}
       {(status === "not_installed" || status === "not_running") && (
         <p className="text-xs text-jarvis-muted italic mb-3">
           Dictation still works without Local AI Cleanup.
         </p>
       )}
 
-      {/* Action buttons */}
+      {/* Action buttons — all 4, matching Python's 2×2 grid */}
       <div className="flex flex-wrap gap-2">
-        {/* Always available: Check Again */}
         <button
           onClick={runCheck}
           disabled={isBusy}
@@ -143,30 +225,43 @@ function OllamaReadinessCard() {
           Check Again
         </button>
 
-        {/* Not installed: offer download link */}
-        {status === "not_installed" && (
-          <button
-            onClick={openDownload}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium border border-jarvis-border bg-jarvis-surface text-jarvis-muted hover:text-jarvis-text transition-colors"
-          >
-            Download Ollama
-          </button>
-        )}
+        {/* Always visible — useful in every state for reference */}
+        <button
+          onClick={openDownload}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-jarvis-border bg-jarvis-surface text-jarvis-muted hover:text-jarvis-text transition-colors"
+        >
+          Open Ollama Download Page
+        </button>
 
-        {/* Model missing (or error): offer install */}
-        {(status === "model_missing" || status === "install_error") && (
-          <button
-            onClick={installModel}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-jarvis-accent hover:bg-jarvis-accent-hover text-white transition-colors"
-          >
-            Install Recommended Model
-          </button>
-        )}
+        {/* Test Cleanup — enabled only when Ollama is ready */}
+        <button
+          onClick={testCleanup}
+          disabled={!canTest}
+          title={status !== "ready" ? "Ollama must be ready to test" : undefined}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-jarvis-border bg-jarvis-surface text-jarvis-muted hover:text-jarvis-text transition-colors disabled:opacity-40"
+        >
+          {testState === "running" ? "Testing…" : "Test Cleanup"}
+        </button>
+
+        {/* Install Recommended Model — shown when model is missing */}
+        <button
+          onClick={installModel}
+          disabled={!canInstall || isBusy}
+          title={!canInstall ? `Install available when model is missing` : undefined}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+            canInstall
+              ? "bg-jarvis-accent hover:bg-jarvis-accent-hover text-white"
+              : "border border-jarvis-border bg-jarvis-surface text-jarvis-muted opacity-40 cursor-not-allowed"
+          }`}
+        >
+          {status === "installing" ? `Downloading ${RECOMMENDED_MODEL}…` : "Install Recommended Model"}
+        </button>
       </div>
 
-      {/* Recommended model label */}
+      {/* Recommended model footer */}
       <p className="mt-3 text-xs text-jarvis-muted">
-        Recommended model: <span className="font-mono text-jarvis-text">{RECOMMENDED_MODEL}</span>
+        Recommended model:{" "}
+        <span className="font-mono text-jarvis-text">{RECOMMENDED_MODEL}</span>
       </p>
     </Card>
   );
@@ -178,19 +273,28 @@ export default function AiCleanupPage() {
 
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
+      {/* Header — matches Python page title + subtitle */}
       <div>
-        <h2 className="text-lg font-semibold text-jarvis-text">AI Cleanup</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Configure Ollama AI cleanup and correction strength.</p>
+        <h2 className="text-lg font-semibold text-jarvis-text">Local AI Cleanup</h2>
+        <p className="text-sm text-jarvis-muted mt-1">
+          Polish dictated text with a local Ollama model after transcription.
+        </p>
       </div>
 
-      {/* Ollama readiness — always shown first so users know the state */}
+      {/* English-only caveat — matches Python description text */}
+      <div className="px-3 py-2.5 rounded-lg border border-jarvis-border bg-jarvis-surface">
+        <p className="text-xs text-jarvis-muted leading-relaxed">
+          Local AI Cleanup currently improves English dictation. For other spoken languages,
+          Quill skips cleanup automatically to avoid accidental translation.
+        </p>
+      </div>
+
+      {/* Ollama readiness — always first */}
       <OllamaReadinessCard />
 
-      <Card title="AI Cleanup Mode">
-        <p className="text-xs text-jarvis-muted mb-3">
-          Ollama cleans up raw Whisper output — fixing grammar, punctuation, and formatting.
-        </p>
-        <div className="flex gap-2">
+      {/* AI Cleanup Mode — full 3-line explanation always visible, matches Python helper_text */}
+      <Card title="Local AI Cleanup Mode">
+        <div className="flex gap-2 mb-3">
           {(["auto", "on", "off"] as AiCleanupMode[]).map((mode) => (
             <button
               key={mode}
@@ -205,40 +309,27 @@ export default function AiCleanupPage() {
             </button>
           ))}
         </div>
-        <div className="mt-2 text-xs text-jarvis-muted">
-          {settings.ai_cleanup_mode === "auto" && "Smart mode — skips cleanup for short phrases, commands, and questions."}
-          {settings.ai_cleanup_mode === "on"   && "Always runs Ollama on every dictation."}
-          {settings.ai_cleanup_mode === "off"  && "Raw Whisper output only — no AI cleanup."}
+        {/* All three descriptions always shown — matches Python helper_text block */}
+        <div className="text-xs text-jarvis-muted leading-relaxed space-y-1 font-mono">
+          <p>
+            <span className={settings.ai_cleanup_mode === "auto" ? "text-jarvis-text font-semibold" : ""}>auto</span>
+            {" — "}use Local AI Cleanup if available, skip silently if not{" "}
+            <span className="text-jarvis-hint">(recommended)</span>.
+          </p>
+          <p>
+            <span className={settings.ai_cleanup_mode === "on" ? "text-jarvis-text font-semibold" : ""}>on</span>
+            {" — "}always try to use it; show a warning in the HUD if unavailable.
+          </p>
+          <p>
+            <span className={settings.ai_cleanup_mode === "off" ? "text-jarvis-text font-semibold" : ""}>off</span>
+            {" — "}never use Local AI Cleanup.
+          </p>
         </div>
       </Card>
 
-      <Card title="Ollama">
-        <div className="flex flex-col gap-3">
-          <Toggle
-            checked={settings.use_ollama}
-            onChange={(v) => updateSetting("use_ollama", v)}
-            label="Enable Ollama"
-            description="Requires Ollama running locally with qwen2.5:3b"
-          />
-          <div className="border-t border-jarvis-border" />
-          <Toggle
-            checked={settings.safe_mode}
-            onChange={(v) => updateSetting("safe_mode", v)}
-            label="Safe mode"
-            description="Extra conservative cleanup — never changes meaning"
-          />
-          <div className="border-t border-jarvis-border" />
-          <Toggle
-            checked={settings.context_format}
-            onChange={(v) => updateSetting("context_format", v)}
-            label="Context-aware formatting"
-            description="Detects the active app and adjusts output format accordingly"
-          />
-        </div>
-      </Card>
-
+      {/* Correction Strength — with "Recommended: Standard" note matching Python */}
       <Card title="Correction Strength">
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 mb-3">
           {STRENGTHS.map((s) => (
             <button
               key={s}
@@ -255,6 +346,37 @@ export default function AiCleanupPage() {
               <span className="text-xs text-jarvis-muted">{STRENGTH_DESC[s]}</span>
             </button>
           ))}
+        </div>
+        {/* Note matching Python helper_text */}
+        <p className="text-xs text-jarvis-muted leading-relaxed">
+          Recommended: Standard. Short phrases and unsafe AI rewrites are always protected.
+        </p>
+      </Card>
+
+      {/* Ollama toggles */}
+      <Card title="Ollama">
+        <div className="flex flex-col gap-3">
+          <Toggle
+            checked={settings.use_ollama}
+            onChange={(v) => updateSetting("use_ollama", v)}
+            label="Enable Ollama"
+            description="Requires Ollama running locally with qwen2.5:3b"
+          />
+          <div className="border-t border-jarvis-border" />
+          {/* Safe Mode description matches Python: "Pure dictation: disables Local AI Cleanup…" */}
+          <Toggle
+            checked={settings.safe_mode}
+            onChange={(v) => updateSetting("safe_mode", v)}
+            label="Safe Mode"
+            description="Pure dictation — disables Local AI Cleanup, Jarvis commands, and cloud transcription"
+          />
+          <div className="border-t border-jarvis-border" />
+          <Toggle
+            checked={settings.context_format}
+            onChange={(v) => updateSetting("context_format", v)}
+            label="Context-aware formatting"
+            description="Detects the active app and adjusts output format accordingly"
+          />
         </div>
       </Card>
 
