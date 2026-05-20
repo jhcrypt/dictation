@@ -6,6 +6,11 @@ use crate::settings::{self, Settings};
 use crate::sidecar::{SidecarState, TranscribeResult, spawn_sidecar};
 use tauri::State;
 use serde_json::json;
+use core_graphics::event::{
+    CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode,
+};
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use std::time::Instant;
 
 // ── Settings commands ─────────────────────────────────────────────────────────
 
@@ -245,6 +250,52 @@ fn pbcopy(text: &str) -> Result<(), String> {
 /// Uses macOS pbcopy CLI tool for clipboard write (not arboard), matching the
 /// Python app's approach.  pbcopy writes directly to NSPasteboard so there is
 /// no cache-vs-reality mismatch like arboard has.
+
+fn send_cmd_v_quartz() -> Result<(), String> {
+    const KEY_V: CGKeyCode = 9;
+
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .map_err(|e| format!("failed to create CGEventSource: {:?}", e))?;
+
+    let key_down = CGEvent::new_keyboard_event(source.clone(), KEY_V, true)
+        .map_err(|e| format!("failed to create key down event: {:?}", e))?;
+    key_down.set_flags(CGEventFlags::CGEventFlagCommand);
+    key_down.post(CGEventTapLocation::HID);
+
+    let key_up = CGEvent::new_keyboard_event(source, KEY_V, false)
+        .map_err(|e| format!("failed to create key up event: {:?}", e))?;
+    key_up.set_flags(CGEventFlags::CGEventFlagCommand);
+    key_up.post(CGEventTapLocation::HID);
+
+    Ok(())
+}
+
+fn send_cmd_v_osascript() -> Result<(), String> {
+    std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(r#"tell application "System Events" to keystroke "v" using command down"#)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+fn send_cmd_v() -> Result<(), String> {
+    match send_cmd_v_quartz() {
+        Ok(()) => {
+            eprintln!("[paste] cmd_v method=quartz");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!(
+                "[paste] Quartz Cmd+V failed, falling back to osascript: {}",
+                e
+            );
+            send_cmd_v_osascript()
+        }
+    }
+}
+
 #[tauri::command]
 pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), String> {
     eprintln!("[paste] requested text len={} preview={}", text.len(), &text[..text.len().min(40)]);
@@ -277,18 +328,13 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
     // ── 4. Cmd+V ───────────────────────────────────────────────────────────
     // pbcopy is synchronous — the process exits only after NSPasteboard ownership
     // is registered.  No settle needed (unlike arboard which had internal cache).
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(r#"tell application "System Events" to keystroke "v" using command down"#)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).to_string();
-        eprintln!("[paste] Cmd+V failed: {}", err);
-        return Err(format!("Paste failed: {}", err));
-    }
-    eprintln!("[paste] Cmd+V sent successfully into '{}'", app_info.name);
+    let cmd_v_start = Instant::now();
+    send_cmd_v()?;
+    eprintln!(
+        "[paste] cmd_v returned elapsed={}ms",
+        cmd_v_start.elapsed().as_millis()
+    );
+eprintln!("[paste] Cmd+V sent successfully into '{}'", app_info.name);
 
     // ── 5. Leave dictated text on clipboard (no restore) ────────────────────
     // Python app: "leaving dictated text on clipboard" at line 2598.
