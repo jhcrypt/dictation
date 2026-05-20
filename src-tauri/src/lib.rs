@@ -8,6 +8,7 @@ mod tray;
 
 use commands::*;
 use focus::LastTargetApp;
+use hotkey::HotkeyConfig;
 use sidecar::SidecarState;
 use tauri::{Manager, WebviewWindowBuilder, WebviewUrl};
 
@@ -18,6 +19,10 @@ pub fn run() {
         .manage(SidecarState::new())
         .manage(LastTargetApp::new())
         .setup(|app| {
+            // Load initial settings to seed the hotkey config.
+            let init_settings = crate::settings::load();
+            let hk_config = HotkeyConfig::new(&init_settings.hotkey_label, init_settings.toggle_mode);
+            app.manage(hk_config);
             tray::setup_tray(app.handle())?;
 
             // Create main window programmatically for full macOS chrome control.
@@ -36,7 +41,8 @@ pub fn run() {
                 .build()?;
 
             // Global hotkey listener (CGEventTap, no HIToolbox calls).
-            hotkey::start_hotkey_listener(app.handle().clone());
+            let hk = app.handle().state::<HotkeyConfig>().inner().clone();
+            hotkey::start_hotkey_listener(app.handle().clone(), hk);
 
             // Start focus tracker — polls frontmost app every 800 ms.
             focus::start_focus_tracker(app.handle().clone());

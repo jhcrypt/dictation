@@ -1,6 +1,7 @@
 use crate::data::{self, Contact, HistoryEntry};
 use arboard;
 use crate::focus::{LastTargetApp, activate_app};
+use crate::hotkey::HotkeyConfig;
 use crate::settings::{self, Settings};
 use crate::sidecar::{SidecarState, TranscribeResult, spawn_sidecar};
 use tauri::State;
@@ -14,7 +15,13 @@ pub fn load_settings() -> Settings {
 }
 
 #[tauri::command]
-pub fn save_settings(settings: Settings) -> Result<(), String> {
+pub fn save_settings(
+    settings: Settings,
+    hk: State<'_, HotkeyConfig>,
+) -> Result<(), String> {
+    // Update live hotkey atomics so listener switches immediately (no restart).
+    hk.set_key(&settings.hotkey_label);
+    hk.set_toggle(settings.toggle_mode);
     settings::save(&settings).map_err(|e| e.to_string())
 }
 

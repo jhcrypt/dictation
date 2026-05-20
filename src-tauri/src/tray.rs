@@ -5,6 +5,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, Runtime,
 };
+use crate::hotkey::HotkeyConfig;
 
 // ── Model / hotkey / strength / profile option lists (matching Python) ────────
 
@@ -213,6 +214,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 let mut s = crate::settings::load();
                 s.hotkey_label = k.to_string();
                 let _ = crate::settings::save(&s);
+                // Update live atomic so listener switches immediately.
+                app.state::<HotkeyConfig>().set_key(k);
                 let _ = app.emit("settings-changed", ());
                 // Python: app.show_message("Record key: {key}", BLUE)
                 hud_notify(app, &format!("Record key: {}", k));
