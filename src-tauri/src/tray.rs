@@ -1,3 +1,4 @@
+use serde_json::json;
 use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -124,6 +125,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(true)
+        // model_items captured so we can update checkmarks at runtime.
+        // CheckMenuItem is Arc-backed in Tauri v2 — safe to capture + call set_checked.
         .on_menu_event(move |app, event| {
             let id = event.id.as_ref();
 
@@ -174,12 +177,30 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 return;
             }
 
-            // ── Submenus — model / key / strength / profile ───────────────────
+            // ── Whisper Model submenu ─────────────────────────────────────────
             if let Some(m) = id.strip_prefix("model::") {
                 let mut s = crate::settings::load();
                 s.model = m.to_string();
                 let _ = crate::settings::save(&s);
-                let _ = app.emit("settings-changed", ());
+
+                // Update checkmarks: uncheck all models, check the selected one.
+                // model_items is captured from the enclosing setup_tray scope.
+                for (i, &name) in WHISPER_MODELS.iter().enumerate() {
+                    let _ = model_items[i].set_checked(name == m);
+                }
+
+                // HUD notification — matches Python: "Loading <model>..." in blue.
+                // "command" state shows a Zap icon in blue with the subtext as label.
+                let _ = app.emit("hud-state", json!({
+                    "state":   "command",
+                    "subtext": format!("Loading {}…", m),
+                }));
+                let a = app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(2500));
+                    let _ = a.emit("hud-state", json!({ "state": "idle" }));
+                });
+
                 return;
             }
             if let Some(k) = id.strip_prefix("key::") {
