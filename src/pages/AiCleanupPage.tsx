@@ -113,6 +113,9 @@ function OllamaReadinessCard() {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("install_ollama_model");
       await runCheck();
+      // Python: self.show_message(f"{OLLAMA_MODEL} installed!", self.GREEN)
+      const { hudSaved } = await import("../utils/hudNotify");
+      hudSaved(`${RECOMMENDED_MODEL} installed!`);
     } catch (e) {
       setInstallError(String(e));
       setStatus("install_error");
@@ -147,6 +150,9 @@ function OllamaReadinessCard() {
       const out  = (data?.message?.content ?? "").trim();
       setTestOutput(out);
       setTestState("passed");
+      // HUD confirmation — Python shows result in status card only; we add a brief HUD
+      const { hudSaved } = await import("../utils/hudNotify");
+      hudSaved("Test passed");
     } catch (e) {
       setTestErrorMsg(String(e));
       setTestState("failed");
