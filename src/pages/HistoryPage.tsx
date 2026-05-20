@@ -59,7 +59,7 @@ export default function HistoryPage() {
         </div>
         <button
           onClick={clearHistory}
-          className="text-xs text-jarvis-muted hover:text-jarvis-recording transition-colors px-3 py-1.5 border border-jarvis-border rounded-lg"
+          className="px-4 py-2 text-sm font-medium text-jarvis-muted hover:text-jarvis-recording bg-jarvis-sidebar border border-jarvis-border rounded-lg hover:border-jarvis-muted transition-colors"
         >
           Clear All
         </button>

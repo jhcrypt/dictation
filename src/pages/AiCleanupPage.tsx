@@ -215,43 +215,40 @@ function OllamaReadinessCard() {
         </p>
       )}
 
-      {/* Action buttons — all 4, matching Python's 2×2 grid */}
-      <div className="flex flex-wrap gap-2">
+      {/* Action buttons — 2×2 grid matching Python layout */}
+      <div className="grid grid-cols-2 gap-2">
         <button
           onClick={runCheck}
           disabled={isBusy}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-jarvis-border bg-jarvis-surface text-jarvis-muted hover:text-jarvis-text transition-colors disabled:opacity-40"
+          className="py-2 px-4 rounded-lg text-sm font-medium border border-jarvis-border bg-jarvis-sidebar text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted transition-colors disabled:opacity-40"
         >
           Check Again
         </button>
 
-        {/* Always visible — useful in every state for reference */}
         <button
           onClick={openDownload}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-jarvis-border bg-jarvis-surface text-jarvis-muted hover:text-jarvis-text transition-colors"
+          className="py-2 px-4 rounded-lg text-sm font-medium border border-jarvis-border bg-jarvis-sidebar text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted transition-colors"
         >
           Open Ollama Download Page
         </button>
 
-        {/* Test Cleanup — enabled only when Ollama is ready */}
         <button
           onClick={testCleanup}
           disabled={!canTest}
           title={status !== "ready" ? "Ollama must be ready to test" : undefined}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-jarvis-border bg-jarvis-surface text-jarvis-muted hover:text-jarvis-text transition-colors disabled:opacity-40"
+          className="py-2 px-4 rounded-lg text-sm font-medium border border-jarvis-border bg-jarvis-sidebar text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted transition-colors disabled:opacity-40"
         >
           {testState === "running" ? "Testing…" : "Test Cleanup"}
         </button>
 
-        {/* Install Recommended Model — shown when model is missing */}
         <button
           onClick={installModel}
           disabled={!canInstall || isBusy}
           title={!canInstall ? `Install available when model is missing` : undefined}
-          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+          className={`py-2 px-4 rounded-lg text-sm font-medium border transition-colors ${
             canInstall
-              ? "bg-jarvis-accent hover:bg-jarvis-accent-hover text-white"
-              : "border border-jarvis-border bg-jarvis-surface text-jarvis-muted opacity-40 cursor-not-allowed"
+              ? "bg-jarvis-accent border-jarvis-accent hover:bg-jarvis-accent-hover text-white"
+              : "border-jarvis-border bg-jarvis-sidebar text-jarvis-muted opacity-40 cursor-not-allowed"
           }`}
         >
           {status === "installing" ? `Downloading ${RECOMMENDED_MODEL}…` : "Install Recommended Model"}

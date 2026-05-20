@@ -121,7 +121,7 @@ export default function HelpPage() {
             </div>
             <button
               onClick={clearVocab}
-              className="text-xs text-jarvis-muted hover:text-jarvis-recording border border-jarvis-border rounded-lg px-3 py-1.5 transition-colors"
+              className="px-4 py-2 text-sm font-medium text-jarvis-muted hover:text-jarvis-recording bg-jarvis-sidebar border border-jarvis-border rounded-lg hover:border-jarvis-muted transition-colors"
             >
               Clear
             </button>
@@ -134,7 +134,7 @@ export default function HelpPage() {
             </div>
             <button
               onClick={clearLog}
-              className="text-xs text-jarvis-muted hover:text-jarvis-recording border border-jarvis-border rounded-lg px-3 py-1.5 transition-colors"
+              className="px-4 py-2 text-sm font-medium text-jarvis-muted hover:text-jarvis-recording bg-jarvis-sidebar border border-jarvis-border rounded-lg hover:border-jarvis-muted transition-colors"
             >
               Clear
             </button>
@@ -147,7 +147,7 @@ export default function HelpPage() {
           <button
             onClick={runDiagnostics}
             disabled={diagBusy}
-            className="px-3 py-1.5 bg-jarvis-accent hover:bg-jarvis-accent-hover text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+            className="px-4 py-2 bg-jarvis-accent hover:bg-jarvis-accent-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
           >
             {diagBusy ? "Running…" : "Run Diagnostics"}
           </button>

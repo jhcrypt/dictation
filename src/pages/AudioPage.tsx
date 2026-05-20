@@ -190,7 +190,7 @@ export default function AudioPage() {
                 await invoke("restart_engine");
               } catch { /* not in Tauri */ }
             }}
-            className="px-5 py-2 rounded-lg text-sm font-semibold bg-jarvis-surface border border-jarvis-border text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted transition-colors"
+            className="px-5 py-2 rounded-lg text-sm font-semibold bg-jarvis-sidebar border border-jarvis-border text-jarvis-muted hover:text-jarvis-text hover:border-jarvis-muted transition-colors"
           >
             Save &amp; Restart Engine
           </button>
