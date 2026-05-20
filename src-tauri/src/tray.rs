@@ -296,6 +296,7 @@ fn show_and_emit<R: Runtime>(app: &AppHandle<R>, event: &str) {
 fn load_tray_icon<R: Runtime>(_app: &AppHandle<R>) -> Image<'static> {
     // Embed at compile time — works in both `tauri dev` and production bundles.
     // The binary is built from src-tauri/ so the path is relative to Cargo.toml.
+    // ICNS-derived feather — rebuilt 2026-05-20 to match header/HUD icon family
     const ICON_BYTES: &[u8] = include_bytes!("../icons/quill_menubar_template_black_44.png");
     Image::from_bytes(ICON_BYTES).expect("valid tray icon PNG")
 }
