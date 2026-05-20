@@ -1,45 +1,48 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Mic, Check, Zap, AlertCircle, Loader2, Sparkles } from "lucide-react";
+import { Mic, Check, Zap, AlertCircle, Loader2, Sparkles, AlertTriangle } from "lucide-react";
 
-// All HUD states mirroring the Python app
+// ── HUD state type — mirrors Python DictationApp states + Tauri extras ────────
 export type HudState =
-  | "idle"           // Quill Ready — Hold ⌥ to dictate
-  | "recording"      // Recording… — Release to stop (hotkey mode)
-  | "wake_recording" // Keep speaking · press ⌥ to stop (wake-word mode)
+  | "idle"           // Hold ⌥ to dictate
+  | "tap_ignored"    // Tap ignored — hold a little longer
+  | "recording"      // Recording… press/release to stop
+  | "wake_recording" // Keep speaking · press ⌥ to stop
   | "transcribing"   // Transcribing…
-  | "cleanup"        // Cleaning up…
-  | "skipped"        // Status: skipped: <reason>
-  | "inserted"       // Final: <text preview> / Status: pasted / Profile: <name>
+  | "cleanup"        // Cleaning up… (Ollama running)
+  | "skipped"        // Short phrase / already well-formed / unsafe rewrite
+  | "inserted"       // Final: <text>  Status: …  Profile: …
   | "command"        // Jarvis command executed
   | "error";         // Error: <message>
 
-interface HudPayload {
+export interface HudPayload {
   state: HudState;
-  subtext?: string;     // extra detail line (preview text, error msg, skip reason)
-  profile?: string;     // writing profile shown on final state
-  status?: string;      // status label on final state
+  subtext?: string;     // detail / skip reason / error message / text preview
+  profile?: string;     // writing profile on inserted state
+  status?: string;      // ollama status label on inserted state
+  toggleMode?: boolean; // true = "press ⌥ again to stop", false = "release ⌥ to stop"
 }
 
-// ── Indicator components ──────────────────────────────────────────────────────
+// ── Waveform — 22 bars × 2px + 21 gaps × 1px = 65px, matching Python spec ───
 
-// Animated waveform bars — used for recording state
+const WAVE_BARS = 22;
 function WaveformBars({ color = "#ff453a" }: { color?: string }) {
   return (
     <div
-      className="flex items-end flex-shrink-0"
-      style={{ gap: 2, height: 16, width: 20 }}
+      className="flex items-center flex-shrink-0"
+      style={{ gap: 1, height: 24, width: 65 }}
     >
-      {[0, 1, 2, 3].map((i) => (
+      {Array.from({ length: WAVE_BARS }, (_, i) => (
         <div
           key={i}
           style={{
-            width: 3,
-            height: 16,
+            width: 2,
+            height: 24,
             background: color,
-            borderRadius: 2,
-            transformOrigin: "bottom center",
+            borderRadius: 1,
+            transformOrigin: "center center",
             animation: "hud-wave 0.75s ease-in-out infinite",
-            animationDelay: `${i * 0.14}s`,
+            // stagger across full cycle so bars feel like a live waveform
+            animationDelay: `-${((i * 0.034) % 0.75).toFixed(3)}s`,
           }}
         />
       ))}
@@ -58,7 +61,7 @@ function Spinner() {
   );
 }
 
-// ── State config ──────────────────────────────────────────────────────────────
+// ── State config ───────────────────────────────────────────────────────────────
 
 interface StateConfig {
   icon: React.ReactNode;
@@ -68,20 +71,27 @@ interface StateConfig {
 }
 
 function getConfig(state: HudState, payload: HudPayload): StateConfig {
-  const DIM      = "#6a6a6a";
-  const FG       = "#f0f0f0";
-  const BLUE     = "#0a84ff";
-  const RED      = "#ff453a";
-  const GREEN    = "#30d158";
-  const ORANGE   = "#ff9f0a";
-  const HINT     = "#8ab4f8";
+  const DIM    = "#6a6a6a";
+  const FG     = "#f0f0f0";
+  const BLUE   = "#0a84ff";
+  const RED    = "#ff453a";
+  const GREEN  = "#30d158";
+  const ORANGE = "#ff9f0a";
+  const HINT   = "#8ab4f8";
 
   switch (state) {
     case "idle":
       return {
         icon:       <Mic size={15} strokeWidth={1.75} style={{ color: DIM }} className="flex-shrink-0" />,
-        label:      "Quill Ready",
+        label:      "Hold ⌥ to dictate",
         labelColor: DIM,
+        subColor:   DIM,
+      };
+    case "tap_ignored":
+      return {
+        icon:       <AlertTriangle size={15} strokeWidth={1.75} style={{ color: ORANGE }} className="flex-shrink-0" />,
+        label:      "Tap ignored — hold a little longer",
+        labelColor: ORANGE,
         subColor:   DIM,
       };
     case "recording":
@@ -94,7 +104,7 @@ function getConfig(state: HudState, payload: HudPayload): StateConfig {
     case "wake_recording":
       return {
         icon:       <WaveformBars color={RED} />,
-        label:      "Jarvis wake-word recording",
+        label:      "Keep speaking",
         labelColor: FG,
         subColor:   DIM,
       };
@@ -102,7 +112,7 @@ function getConfig(state: HudState, payload: HudPayload): StateConfig {
       return {
         icon:       <Spinner />,
         label:      "Transcribing…",
-        labelColor: FG,
+        labelColor: BLUE,
         subColor:   DIM,
       };
     case "cleanup":
@@ -114,9 +124,9 @@ function getConfig(state: HudState, payload: HudPayload): StateConfig {
       };
     case "skipped":
       return {
-        icon:       <Check size={15} strokeWidth={2} style={{ color: ORANGE }} className="flex-shrink-0" />,
-        label:      "Skipped cleanup",
-        labelColor: ORANGE,
+        icon:       <Check size={15} strokeWidth={2} style={{ color: BLUE }} className="flex-shrink-0" />,
+        label:      payload.subtext ? _skippedLabel(payload.subtext) : "Skipped cleanup",
+        labelColor: BLUE,
         subColor:   DIM,
       };
     case "inserted":
@@ -143,37 +153,60 @@ function getConfig(state: HudState, payload: HudPayload): StateConfig {
   }
 }
 
-// ── Default subtexts per state ────────────────────────────────────────────────
-
-function getSubtext(state: HudState, payload: HudPayload): string {
-  if (state === "inserted") {
-    // Build "Status: pasted  ·  Profile: Email" line
-    const parts: string[] = [];
-    if (payload.status) parts.push(`Status: ${payload.status}`);
-    if (payload.profile) parts.push(`Profile: ${payload.profile}`);
-    return parts.join("  ·  ");
-  }
-  if (state === "skipped" && payload.subtext) return `Reason: ${payload.subtext}`;
-  if (state === "error"   && payload.subtext) return payload.subtext;
-  if (state === "command" && payload.subtext) return "";
-
-  const defaults: Partial<Record<HudState, string>> = {
-    idle:          "Hold ⌥ to dictate",
-    recording:     "Hotkey recording · release to stop",
-    wake_recording:"Keep speaking · press ⌥ to stop",
-    transcribing:  "Processing speech…",
-    cleanup:       "Ollama AI cleanup running…",
-    skipped:       "",
-  };
-  return defaults[state] ?? "";
+/** Map Python skip_reason to a human-readable HUD label matching Python messages. */
+function _skippedLabel(reason: string): string {
+  if (reason === "short phrase")        return "Short phrase — skipped AI cleanup";
+  if (reason === "already well-formed") return "Already well-formed — skipped";
+  if (reason === "unsafe rewrite")      return "AI cleanup rejected — used original";
+  return `Skipped: ${reason}`;
 }
 
-// ── Main HUD component ────────────────────────────────────────────────────────
+// ── Subtexts ───────────────────────────────────────────────────────────────────
+
+function getSubtext(state: HudState, payload: HudPayload): string {
+  switch (state) {
+    case "idle":          return "";          // Python shows nothing below idle text
+    case "tap_ignored":   return "";
+    case "recording":
+      // Match Python: "press to stop" (toggle) or "release to stop" (hold)
+      if (payload.subtext) return payload.subtext;
+      return payload.toggleMode ? "Press ⌥ again to stop" : "Release ⌥ to stop";
+    case "wake_recording": return "Press ⌥ to stop";
+    case "transcribing":   return "";
+    case "cleanup":        return "Ollama AI cleanup running…";
+    case "skipped":        return "";  // label already contains the message
+    case "inserted": {
+      const parts: string[] = [];
+      if (payload.status)  parts.push(`Status: ${payload.status}`);
+      if (payload.profile) parts.push(`Profile: ${payload.profile}`);
+      return parts.join("  ·  ");
+    }
+    case "command":  return "";
+    case "error":    return payload.subtext ?? "";
+  }
+}
+
+// ── App icon ───────────────────────────────────────────────────────────────────
+
+async function fetchAppIcon(): Promise<string | null> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const b64 = await invoke<string | null>("get_target_app_icon");
+    if (!b64) return null;
+    return `data:image/png;base64,${b64}`;
+  } catch {
+    return null;
+  }
+}
+
+// ── Main HUD component ─────────────────────────────────────────────────────────
 
 export default function HudApp() {
   const [state,   setState]   = useState<HudState>("idle");
   const [payload, setPayload] = useState<HudPayload>({ state: "idle" });
+  const [appIcon, setAppIcon] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const iconTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const savePosition = useCallback((x: number, y: number) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -185,6 +218,11 @@ export default function HudApp() {
     }, 500);
   }, []);
 
+  const refreshIcon = useCallback(async () => {
+    const src = await fetchAppIcon();
+    setAppIcon(src);
+  }, []);
+
   useEffect(() => {
     let unlistenHud:   (() => void) | null = null;
     let unlistenMoved: (() => void) | null = null;
@@ -193,6 +231,7 @@ export default function HudApp() {
       listen<HudPayload>("hud-state", (event) => {
         setState(event.payload.state);
         setPayload(event.payload);
+        refreshIcon();
       }).then((fn) => { unlistenHud = fn; });
     }).catch(() => {});
 
@@ -202,12 +241,16 @@ export default function HudApp() {
       }).then((fn) => { unlistenMoved = fn; });
     }).catch(() => {});
 
+    refreshIcon();
+    iconTimer.current = setInterval(refreshIcon, 3000);
+
     return () => {
       unlistenHud?.();
       unlistenMoved?.();
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (iconTimer.current) clearInterval(iconTimer.current);
     };
-  }, [savePosition]);
+  }, [savePosition, refreshIcon]);
 
   const handleMouseDown = async (e: React.MouseEvent) => {
     if (e.button !== 0) return;
@@ -219,29 +262,28 @@ export default function HudApp() {
 
   const cfg     = getConfig(state, payload);
   const subtext = getSubtext(state, payload);
-
-  // Truncate long labels (final text preview)
-  const label = cfg.label.length > 70 ? cfg.label.slice(0, 70) + "…" : cfg.label;
+  const label   = cfg.label.length > 58 ? cfg.label.slice(0, 58) + "…" : cfg.label;
 
   return (
     <div
-      className="w-full h-full flex items-center gap-3"
+      className="w-full h-full flex items-center"
       style={{
-        padding:      "0 18px",
+        padding:      "0 14px",
+        gap:          10,
         background:   "rgba(28, 28, 30, 0.96)",
         border:       "1px solid rgba(255,255,255,0.10)",
-        borderRadius: "14px",
+        borderRadius: "10px",
         cursor:       "grab",
         overflow:     "hidden",
-        backdropFilter: "blur(20px)",
+        backdropFilter:       "blur(20px)",
         WebkitBackdropFilter: "blur(20px)",
       } as React.CSSProperties}
       onMouseDown={handleMouseDown}
     >
-      {/* State icon */}
+      {/* Left: state icon — natural width (waveform=65px, others=15–16px) */}
       {cfg.icon}
 
-      {/* Text area */}
+      {/* Middle: label + optional subtext */}
       <div className="flex-1 min-w-0">
         <div
           className="text-[13px] font-semibold leading-tight truncate"
@@ -258,6 +300,29 @@ export default function HudApp() {
           </div>
         )}
       </div>
+
+      {/* Right: target app icon */}
+      {appIcon && (
+        <div
+          style={{
+            width:          40,
+            height:         40,
+            borderRadius:   10,
+            flexShrink:     0,
+            overflow:       "hidden",
+            display:        "flex",
+            alignItems:     "center",
+            justifyContent: "center",
+          }}
+        >
+          <img
+            src={appIcon}
+            alt=""
+            draggable={false}
+            style={{ width: 34, height: 34, objectFit: "contain", display: "block" }}
+          />
+        </div>
+      )}
     </div>
   );
 }

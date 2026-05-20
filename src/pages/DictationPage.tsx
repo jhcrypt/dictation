@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Card from "../components/ui/Card";
 import { useSettings } from "../context/SettingsContext";
+import type { HudPayload } from "../HudApp";
 
 type RecordingState = "idle" | "recording" | "transcribing";
 type SidecarStatus  = "checking" | "ready" | "error";
@@ -80,10 +81,10 @@ export default function DictationPage() {
 
   // ── HUD helper ────────────────────────────────────────────────────────────
 
-  async function hudEmit(hudState: string, payload?: { subtext?: string; profile?: string; status?: string }) {
+  async function hudEmit(payload: HudPayload) {
     try {
       const { emit } = await import("@tauri-apps/api/event");
-      emit("hud-state", { state: hudState, ...payload });
+      emit("hud-state", payload);
     } catch { /* browser preview */ }
   }
 
@@ -120,7 +121,8 @@ export default function DictationPage() {
   const handleRecord = async () => {
     if (state === "idle") {
       setState("recording");
-      hudEmit("recording");
+      // Manual button = always "click to stop" (no hold-mode concept)
+      hudEmit({ state: "recording", toggleMode: true });
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("sidecar_start_recording");
@@ -128,13 +130,13 @@ export default function DictationPage() {
         setSidecarError(String(e));
         setSidecarStatus("error");
         setState("idle");
-        hudEmit("error", { subtext: String(e) });
-        setTimeout(() => hudEmit("idle"), 4000);
+        hudEmit({ state: "error", subtext: String(e) });
+        setTimeout(() => hudEmit({ state: "idle" }), 4000);
       }
 
     } else if (state === "recording") {
       setState("transcribing");
-      hudEmit("transcribing");
+      hudEmit({ state: "transcribing" });
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("sidecar_stop_recording");
@@ -153,16 +155,16 @@ export default function DictationPage() {
           setLastText(result.text);
           setTiming(result.timing);
 
-          // Show cleanup state briefly if Ollama ran
+          // Cleanup state: briefly visible when Ollama ran
           if (!result.skipped_cleanup && settings.use_ollama && settings.ai_cleanup_mode !== "off") {
-            hudEmit("cleanup");
+            hudEmit({ state: "cleanup" });
             await new Promise((r) => setTimeout(r, 600));
           }
 
-          // Show skipped state if cleanup was skipped
+          // Skipped: show reason matching Python skip messages
           if (result.skipped_cleanup && result.skip_reason) {
-            hudEmit("skipped", { subtext: result.skip_reason });
-            await new Promise((r) => setTimeout(r, 1200));
+            hudEmit({ state: "skipped", subtext: result.skip_reason });
+            await new Promise((r) => setTimeout(r, 1500));
           }
 
           let pasteStatus = "transcribed";
@@ -178,7 +180,8 @@ export default function DictationPage() {
           }
 
           const profile = result.profile ?? settings.writing_profile ?? "General";
-          hudEmit("inserted", {
+          hudEmit({
+            state:   "inserted",
             subtext: result.text.slice(0, 55),
             status:  pasteStatus,
             profile: settings.show_active_profile ? profile : undefined,
@@ -187,26 +190,27 @@ export default function DictationPage() {
           try {
             await invoke("save_history_entry", {
               entry: {
-                timestamp: new Date().toISOString(),
+                timestamp:  new Date().toISOString(),
                 final_text: result.text,
-                status: pasteStatus,
+                status:     pasteStatus,
                 profile,
-                source: "tauri",
-                timing: result.timing ?? null,
+                source:     "tauri",
+                timing:     result.timing ?? null,
               },
             });
           } catch (he) { console.error("[history] save failed:", he); }
 
-          setTimeout(() => hudEmit("idle"), 3500);
+          // Return to idle after 1.5 s (matches Python's time.sleep(1.5))
+          setTimeout(() => hudEmit({ state: "idle" }), 1500);
         } else {
           setSidecarError(result.error ?? "Transcription failed");
-          hudEmit("error", { subtext: result.error ?? "Transcription failed" });
-          setTimeout(() => hudEmit("idle"), 4000);
+          hudEmit({ state: "error", subtext: result.error ?? "Transcription failed" });
+          setTimeout(() => hudEmit({ state: "idle" }), 4000);
         }
       } catch (e) {
         setSidecarError(String(e));
-        hudEmit("error", { subtext: String(e) });
-        setTimeout(() => hudEmit("idle"), 4000);
+        hudEmit({ state: "error", subtext: String(e) });
+        setTimeout(() => hudEmit({ state: "idle" }), 4000);
       }
       setState("idle");
     }

@@ -271,6 +271,54 @@ pub fn get_last_target_app(target: State<LastTargetApp>) -> Option<String> {
     guard.as_ref().map(|i| format!("{} ({})", i.name, i.bundle_id))
 }
 
+/// Return the target app's icon as a base64-encoded PNG (24×24) for the HUD.
+/// Returns None if the icon cannot be resolved.
+#[tauri::command]
+pub fn get_target_app_icon(target: State<LastTargetApp>) -> Option<String> {
+    let bundle_id = {
+        let guard = target.0.lock().ok()?;
+        guard.as_ref()?.bundle_id.clone()
+    };
+
+    // Find the .app bundle path from the bundle identifier.
+    let mdfind_out = std::process::Command::new("mdfind")
+        .arg(format!("kMDItemCFBundleIdentifier == '{}'", bundle_id))
+        .output().ok()?;
+    let app_path = String::from_utf8_lossy(&mdfind_out.stdout)
+        .trim().lines().next()?.trim().to_string();
+    if app_path.is_empty() { return None; }
+
+    // Read CFBundleIconFile from Info.plist.
+    let plist_path = format!("{}/Contents/Info.plist", app_path);
+    let defaults_out = std::process::Command::new("defaults")
+        .args(["read", &plist_path, "CFBundleIconFile"])
+        .output().ok()?;
+    let mut icon_name = String::from_utf8_lossy(&defaults_out.stdout).trim().to_string();
+    if icon_name.is_empty() { return None; }
+    if !icon_name.ends_with(".icns") { icon_name.push_str(".icns"); }
+
+    let icon_src = format!("{}/Contents/Resources/{}", app_path, icon_name);
+    let tmp_path = format!("/tmp/jarvis_hud_icon_{}.png", std::process::id());
+
+    // Convert .icns → 80×80 PNG via sips (2× of 40px display → crisp on Retina).
+    let ok = std::process::Command::new("sips")
+        .args(["-s", "format", "png", "-z", "80", "80",
+               &icon_src, "--out", &tmp_path])
+        .output().ok()?.status.success();
+    if !ok { return None; }
+
+    // Read bytes and base64-encode via the system `base64` tool.
+    let b64_out = std::process::Command::new("base64")
+        .args(["-i", &tmp_path])
+        .output().ok()?;
+    if !b64_out.status.success() { return None; }
+
+    let encoded = String::from_utf8_lossy(&b64_out.stdout)
+        .split_whitespace()   // strip newlines inserted by base64
+        .collect::<String>();
+    Some(encoded)
+}
+
 // ── Accessibility ─────────────────────────────────────────────────────────────
 
 /// Returns true if Accessibility permission has been granted.

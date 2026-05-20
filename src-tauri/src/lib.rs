@@ -122,6 +122,7 @@ pub fn run() {
             sidecar_cancel_recording,
             // HUD
             save_hud_position,
+            get_target_app_icon,
             // Paste & clipboard & accessibility
             paste_text,
             copy_to_clipboard,

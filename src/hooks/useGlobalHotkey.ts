@@ -8,12 +8,17 @@
  *
  * Hold mode  (toggle_mode = false):
  *   key-down = start recording
- *   key-up   = stop + transcribe
+ *   key-up   = stop + transcribe  (or tap_ignored if < MIN_TAP_MS)
  *
  * Toggle mode (toggle_mode = true):
  *   key-down when idle      = start recording
  *   key-down when recording = stop + transcribe
  *   key-up is IGNORED
+ *
+ * Tap detection (hold mode only):
+ *   If Right Option is released within MIN_TAP_MS (300 ms) of being pressed,
+ *   the recording is cancelled and HUD shows "Tap ignored — hold a little longer"
+ *   for 2.5 s, matching the Python app's MIN_RECORD_SECONDS = 0.30 guard.
  *
  * Also listens for:
  *   tray-start-dictation / tray-stop-dictation → tray menu actions
@@ -21,21 +26,19 @@
  */
 import { useEffect, useRef } from "react";
 import { useSettings } from "../context/SettingsContext";
+import type { HudPayload } from "../HudApp";
 
 type RecState = "idle" | "recording" | "transcribing";
 
-type HudPayload = {
-  state: string;
-  subtext?: string;
-  profile?: string;
-  status?: string;
-};
+/** Minimum hold time before a release is treated as a real recording (ms). */
+const MIN_TAP_MS = 300;
 
 export function useGlobalHotkey() {
   const { settings } = useSettings();
-  const stateRef      = useRef<RecState>("idle");
-  const settingsRef   = useRef(settings);
-  const timeoutRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stateRef       = useRef<RecState>("idle");
+  const settingsRef    = useRef(settings);
+  const timeoutRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recordStartRef = useRef<number>(0);  // timestamp when recording began
 
   useEffect(() => { settingsRef.current = settings; }, [settings]);
 
@@ -49,7 +52,6 @@ export function useGlobalHotkey() {
       } catch { /* browser preview */ }
     };
 
-    // invoke with per-command timeout to prevent indefinite hangs
     const invokeWithTimeout = async <T>(
       cmd: string,
       args?: Record<string, unknown>,
@@ -66,7 +68,7 @@ export function useGlobalHotkey() {
       if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
     };
 
-    // ── Recording flow ───────────────────────────────────────────────────────
+    // ── Recording flow ────────────────────────────────────────────────────────
 
     const startRecording = async () => {
       if (stateRef.current !== "idle") {
@@ -75,9 +77,16 @@ export function useGlobalHotkey() {
       }
       console.log("[recording] start requested");
       stateRef.current = "recording";
-      hudEmit({ state: "recording" });
+      recordStartRef.current = Date.now();
 
-      // Safety auto-stop: never stay recording longer than 90 s
+      const toggleMode = settingsRef.current.toggle_mode;
+      hudEmit({
+        state:      "recording",
+        toggleMode,
+        // subtext is derived in HudApp from toggleMode flag
+      });
+
+      // Safety auto-stop after 90 s
       timeoutRef.current = setTimeout(() => {
         console.warn("[recording] 90-second safety timeout — forcing stop");
         stopAndTranscribe();
@@ -126,13 +135,16 @@ export function useGlobalHotkey() {
         if (result.ok && result.text) {
           const s = settingsRef.current;
 
+          // Cleanup state: show briefly only when Ollama actually ran
           if (!result.skipped_cleanup && s.use_ollama && s.ai_cleanup_mode !== "off") {
             hudEmit({ state: "cleanup" });
             await new Promise((r) => setTimeout(r, 600));
           }
+
+          // Skipped cleanup: match Python messages by skip_reason
           if (result.skipped_cleanup && result.skip_reason) {
             hudEmit({ state: "skipped", subtext: result.skip_reason });
-            await new Promise((r) => setTimeout(r, 1200));
+            await new Promise((r) => setTimeout(r, 1500));
           }
 
           let pasteStatus = "transcribed";
@@ -149,6 +161,8 @@ export function useGlobalHotkey() {
 
           const profile = result.profile ?? s.writing_profile ?? "General";
           console.log("[hud] → inserted  status=", pasteStatus, "profile=", profile);
+
+          // "inserted" = Python's set_transcript — green check, text preview
           hudEmit({
             state:   "inserted",
             subtext: result.text.slice(0, 55),
@@ -159,17 +173,18 @@ export function useGlobalHotkey() {
           try {
             await invokeWithTimeout("save_history_entry", {
               entry: {
-                timestamp: new Date().toISOString(),
+                timestamp:  new Date().toISOString(),
                 final_text: result.text,
-                status: pasteStatus,
+                status:     pasteStatus,
                 profile,
-                source: "tauri",
-                timing: result.timing ?? null,
+                source:     "tauri",
+                timing:     result.timing ?? null,
               },
             }, 5_000);
           } catch { /* non-critical */ }
 
-          setTimeout(() => hudEmit({ state: "idle" }), 3500);
+          // Return to idle after 1.5 s, matching Python's `time.sleep(1.5); app.set_state("idle")`
+          setTimeout(() => hudEmit({ state: "idle" }), 1500);
         } else {
           const errMsg = result.error ?? "Transcription failed";
           console.error("[sidecar] transcription failed:", errMsg);
@@ -183,6 +198,26 @@ export function useGlobalHotkey() {
       }
 
       stateRef.current = "idle";
+    };
+
+    /**
+     * Short-tap handler (hold mode only):
+     * If the key was released within MIN_TAP_MS of being pressed, cancel the
+     * recording and show "Tap ignored — hold a little longer" for 2.5 s.
+     * Matches Python's MIN_RECORD_SECONDS = 0.30 guard in _finish_short_recording().
+     */
+    const handleShortTap = async () => {
+      if (stateRef.current !== "recording") return;
+      console.log("[recording] short tap — cancelling, showing tap_ignored");
+      clearRecordingTimeout();
+      stateRef.current = "idle";
+      hudEmit({ state: "tap_ignored" });
+      setTimeout(() => hudEmit({ state: "idle" }), 2500);
+      try {
+        await invokeWithTimeout("sidecar_cancel_recording", undefined, 5_000);
+      } catch (e) {
+        console.warn("[sidecar] cancel_recording error (ignored):", e);
+      }
     };
 
     const cancelRecording = async () => {
@@ -202,7 +237,7 @@ export function useGlobalHotkey() {
       }
     };
 
-    // ── Event listeners ──────────────────────────────────────────────────────
+    // ── Event listeners ───────────────────────────────────────────────────────
 
     const unlisteners: Array<() => void> = [];
 
@@ -213,12 +248,10 @@ export function useGlobalHotkey() {
         const tm = settingsRef.current.toggle_mode;
         console.log("[hotkey] right option down  toggle_mode=", tm, " state=", stateRef.current);
         if (tm) {
-          // Toggle mode: press toggles recording
-          if (stateRef.current === "idle")      startRecording();
+          if (stateRef.current === "idle")           startRecording();
           else if (stateRef.current === "recording") stopAndTranscribe();
           // transcribing → ignore
         } else {
-          // Hold mode: press starts
           startRecording();
         }
       }).then(f => unlisteners.push(f));
@@ -228,8 +261,14 @@ export function useGlobalHotkey() {
         const tm = settingsRef.current.toggle_mode;
         console.log("[hotkey] right option up  toggle_mode=", tm, " state=", stateRef.current);
         if (!tm) {
-          // Hold mode only: release stops
-          stopAndTranscribe();
+          // Hold mode: check for short tap before committing to transcribe
+          const elapsed = Date.now() - recordStartRef.current;
+          console.log("[hotkey] hold duration =", elapsed, "ms  threshold =", MIN_TAP_MS, "ms");
+          if (elapsed < MIN_TAP_MS) {
+            handleShortTap();
+          } else {
+            stopAndTranscribe();
+          }
         }
         // Toggle mode: release is intentionally ignored
       }).then(f => unlisteners.push(f));
