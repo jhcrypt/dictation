@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Card from "../components/ui/Card";
 import SaveButton from "../components/ui/SaveButton";
@@ -14,13 +14,21 @@ interface VocabFile {
   manual_vocabulary: string;
 }
 
-export default function VocabularyPage() {
+interface VocabularyPageProps {
+  /** Pre-fill the "Whisper hears…" field (set by tray "Add Correction from Last Dictation"). */
+  prefill?: string | null;
+}
+
+export default function VocabularyPage({ prefill }: VocabularyPageProps = {}) {
   const { settings, updateSetting, saveSettings, saved } = useSettings();
   const [wrong, setWrong] = useState("");
   const [right, setRight] = useState("");
   const [corrections, setCorrections] = useState<Correction[]>([]);
   const [corrStatus, setCorrStatus] = useState("");
   const [loading, setLoading] = useState(true);
+
+  // Ref to the "Should be…" input so we can focus it after prefill
+  const rightInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     invoke<VocabFile>("load_vocab")
@@ -31,6 +39,16 @@ export default function VocabularyPage() {
       .catch(() => setCorrections([]))
       .finally(() => setLoading(false));
   }, []);
+
+  // Apply prefill when "Add Correction from Last Dictation" is triggered
+  useEffect(() => {
+    if (prefill) {
+      setWrong(prefill);
+      setRight("");
+      // Focus the "Should be…" field so the user can type the correction immediately
+      setTimeout(() => rightInputRef.current?.focus(), 50);
+    }
+  }, [prefill]);
 
   const flash = (msg: string) => {
     setCorrStatus(msg);
@@ -101,6 +119,7 @@ export default function VocabularyPage() {
           />
           <span className="self-center text-jarvis-muted">→</span>
           <input
+            ref={rightInputRef}
             placeholder="Should be…"
             value={right}
             onChange={(e) => setRight(e.target.value)}

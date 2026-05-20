@@ -274,6 +274,12 @@ export function useGlobalHotkey() {
             profile: s.show_active_profile ? profile : undefined,
           });
 
+          // ── Store last dictated text for "Add Correction" tray item ─────────
+          try {
+            const { emit } = await import("@tauri-apps/api/event");
+            emit("last-dictation-text", result.text);
+          } catch { /* non-critical */ }
+
           // ── Emit full timing breakdown (non-blocking, after paste) ───────────
           const cleanupStatus =
             s.ai_cleanup_mode === "off" ? "off" :

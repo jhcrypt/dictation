@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from "react";
+import React, { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from "react";
 import Sidebar, { Page } from "./components/Sidebar";
 import { SettingsProvider, useSettings } from "./context/SettingsContext";
 import { useGlobalHotkey } from "./hooks/useGlobalHotkey";
@@ -66,18 +66,22 @@ class AppErrorBoundary extends Component<
   }
 }
 
-// Tray nav-event → page id mapping
+// Tray nav-event → page id mapping (nav-vocabulary handled separately for prefill)
 const TRAY_NAV: Record<string, Page> = {
   "nav-setup":          "setup",
   "nav-history":        "history",
   "nav-snippets":       "snippets",
   "nav-customcommands": "customcommands",
-  "nav-vocabulary":     "vocabulary",
   "nav-help":           "help",
 };
 
 function AppContent() {
   const [page, setPage] = useState<Page>("dictation");
+  // Prefill for the Vocabulary correction form (set by "Add Correction" tray item)
+  const [vocabPrefill, setVocabPrefill] = useState<string | null>(null);
+  // Ref stores last dictated text without triggering re-renders
+  const lastDictatedRef = useRef<string>("");
+
   const { loadSettings } = useSettings();
 
   useGlobalHotkey();
@@ -86,15 +90,36 @@ function AppContent() {
     loadSettings();
   }, [loadSettings]);
 
-  // Listen for tray navigation events
   useEffect(() => {
-    let unlisten: Array<() => void> = [];
+    const unlisteners: Array<() => void> = [];
     import("@tauri-apps/api/event").then(({ listen }) => {
+
+      // Standard tray navigation (no special payload)
       Object.entries(TRAY_NAV).forEach(([event, target]) => {
-        listen(event, () => setPage(target)).then((fn) => unlisten.push(fn));
+        listen(event, () => setPage(target)).then((fn) => unlisteners.push(fn));
       });
+
+      // Store last dictated text whenever a dictation completes
+      listen<string>("last-dictation-text", (e) => {
+        lastDictatedRef.current = e.payload;
+      }).then((fn) => unlisteners.push(fn));
+
+      // "Add Correction from Last Dictation" — navigate + pre-fill if text available
+      listen("nav-vocabulary", () => {
+        const text = lastDictatedRef.current;
+        setVocabPrefill(text || null); // null → no prefill (shows placeholder)
+        if (!text) {
+          // HUD notice so the user knows the form will be empty
+          import("@tauri-apps/api/event").then(({ emit }) => {
+            emit("hud-state", { state: "command", subtext: "No recent dictation to correct" });
+            setTimeout(() => emit("hud-state", { state: "idle" }), 2500);
+          }).catch(() => {});
+        }
+        setPage("vocabulary");
+      }).then((fn) => unlisteners.push(fn));
+
     }).catch(() => {});
-    return () => unlisten.forEach((fn) => fn());
+    return () => unlisteners.forEach((fn) => fn());
   }, []);
 
   const PageComponent: Record<Page, React.FC> = {
@@ -106,7 +131,7 @@ function AppContent() {
     jarvis:         JarvisPage,
     customcommands: CustomCommandsPage,
     contacts:       ContactsPage,
-    vocabulary:     VocabularyPage,
+    vocabulary:     () => <VocabularyPage prefill={vocabPrefill} />,
     snippets:       SnippetsPage,
     cloud:          CloudPage,
     workflows:      WorkflowsPage,

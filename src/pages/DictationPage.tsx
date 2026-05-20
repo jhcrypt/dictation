@@ -233,6 +233,12 @@ export default function DictationPage() {
             profile: settings.show_active_profile ? profile : undefined,
           });
 
+          // Store last dictated text for "Add Correction" tray item
+          try {
+            const { emit: _emit } = await import("@tauri-apps/api/event");
+            _emit("last-dictation-text", result.text);
+          } catch { /* non-critical */ }
+
           // Emit timing for the Timing card
           const cleanupStatus =
             settings.ai_cleanup_mode === "off" ? "off" :
