@@ -71,10 +71,10 @@ interface StateConfig {
 }
 
 function getConfig(state: HudState, payload: HudPayload): StateConfig {
-  const DIM    = "#6a6a6a";
-  const FG     = "#f0f0f0";
+  const DIM    = "#4a4a4a";   // Python TEXT_DIM
+  const FG     = "#ffffff";   // Python TEXT_WHITE
   const BLUE   = "#0a84ff";
-  const RED    = "#ff453a";
+  const RED    = "#ff3b30";   // Python RED
   const GREEN  = "#30d158";
   const ORANGE = "#ff9f0a";
   const HINT   = "#8ab4f8";
@@ -201,10 +201,46 @@ async function fetchAppIcon(): Promise<string | null> {
 
 // ── Main HUD component ─────────────────────────────────────────────────────────
 
+// ── Dominant-colour extractor ─────────────────────────────────────────────────
+// Draws the icon onto an offscreen canvas, samples a grid of pixels, discards
+// near-black / near-white / near-grey, and returns the most saturated colour.
+function extractDominantColor(src: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const size = 32;
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { resolve(null); return; }
+        ctx.drawImage(img, 0, 0, size, size);
+        const { data } = ctx.getImageData(0, 0, size, size);
+        let bestSat = 0, bestR = 0, bestG = 0, bestB = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const [r, g, b, a] = [data[i], data[i+1], data[i+2], data[i+3]];
+          if (a < 80) continue;                         // skip transparent
+          const max = Math.max(r, g, b), min = Math.min(r, g, b);
+          const lightness = (max + min) / 510;          // 0–1
+          if (lightness < 0.12 || lightness > 0.88) continue; // skip near-black/white
+          const sat = max === 0 ? 0 : (max - min) / max;
+          if (sat > bestSat) { bestSat = sat; bestR = r; bestG = g; bestB = b; }
+        }
+        resolve(bestSat > 0.15
+          ? `rgb(${bestR},${bestG},${bestB})`
+          : null);                                       // fall back if icon is grey
+      } catch { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
 export default function HudApp() {
-  const [state,   setState]   = useState<HudState>("idle");
-  const [payload, setPayload] = useState<HudPayload>({ state: "idle" });
-  const [appIcon, setAppIcon] = useState<string | null>(null);
+  const [state,      setState]      = useState<HudState>("idle");
+  const [payload,    setPayload]    = useState<HudPayload>({ state: "idle" });
+  const [appIcon,    setAppIcon]    = useState<string | null>(null);
+  const [iconColor,  setIconColor]  = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const iconTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -221,6 +257,12 @@ export default function HudApp() {
   const refreshIcon = useCallback(async () => {
     const src = await fetchAppIcon();
     setAppIcon(src);
+    if (src) {
+      const color = await extractDominantColor(src);
+      setIconColor(color);
+    } else {
+      setIconColor(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -264,19 +306,26 @@ export default function HudApp() {
   const subtext = getSubtext(state, payload);
   const label   = cfg.label.length > 58 ? cfg.label.slice(0, 58) + "…" : cfg.label;
 
+  // Show border only when HUD is active; colour from app icon, fallback blue
+  const isActive = state !== "idle" && state !== "tap_ignored";
+  const borderColor = isActive
+    ? (iconColor ?? "rgba(10, 132, 255, 0.7)")
+    : "transparent";
+
   return (
     <div
       className="w-full h-full flex items-center"
       style={{
-        padding:      "0 14px",
+        padding:      "0 13px",           // 1px less each side to absorb border
         gap:          10,
-        background:   "rgba(38, 40, 43, 0.94)",
-        border:       "1px solid rgba(255,255,255,0.10)",
+        background:   "rgba(36, 36, 36, 0.96)",
         borderRadius: "10px",
+        border:       `1px solid ${borderColor}`,
         cursor:       "grab",
         overflow:     "hidden",
         backdropFilter:       "blur(20px)",
         WebkitBackdropFilter: "blur(20px)",
+        transition:   "border-color 0.3s ease",
       } as React.CSSProperties}
       onMouseDown={handleMouseDown}
     >
