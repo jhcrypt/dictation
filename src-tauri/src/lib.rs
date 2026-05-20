@@ -144,6 +144,9 @@ pub fn run() {
             open_accessibility_settings,
             // History
             save_history_entry,
+            // Ollama
+            check_ollama_status,
+            install_ollama_model,
             // Native
             open_url,
             open_app,

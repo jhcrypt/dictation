@@ -382,6 +382,95 @@ pub fn save_hud_position(x: i32, y: i32) -> Result<(), String> {
     settings::save(&s).map_err(|e| e.to_string())
 }
 
+// ── Ollama status + model install ─────────────────────────────────────────────
+
+/// The single model recommended by Quill for local AI cleanup — must match
+/// Python's OLLAMA_MODEL constant and the sidecar's OLLAMA_MODEL value.
+pub const OLLAMA_RECOMMENDED_MODEL: &str = "qwen2.5:3b";
+
+/// Find the ollama CLI binary. Mirrors Python's _check_ollama_status probe order.
+fn find_ollama_cli() -> Option<String> {
+    // Try PATH via `which`
+    if let Ok(out) = std::process::Command::new("which").arg("ollama").output() {
+        if out.status.success() {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !p.is_empty() { return Some(p); }
+        }
+    }
+    // Common install locations (Homebrew + official pkg installer)
+    for p in &["/usr/local/bin/ollama", "/opt/homebrew/bin/ollama"] {
+        if std::path::Path::new(p).exists() { return Some(p.to_string()); }
+    }
+    None
+}
+
+/// Probe Ollama and return one of:
+///   "ready"         — server running, recommended model present
+///   "not_installed" — ollama CLI not found
+///   "not_running"   — CLI found, but `ollama list` failed / server not responding
+///   "model_missing" — server running, model not yet downloaded
+///
+/// Matches Python _check_ollama_status exactly. Safe to call from any thread.
+#[tauri::command]
+pub fn check_ollama_status() -> String {
+    let Some(cli) = find_ollama_cli() else {
+        eprintln!("[ollama] status: not_installed");
+        return "not_installed".into();
+    };
+
+    // Is the server responding?
+    let list = std::process::Command::new(&cli)
+        .arg("list")
+        .output();
+
+    match list {
+        Err(_) => {
+            eprintln!("[ollama] status: not_running (spawn failed)");
+            return "not_running".into();
+        }
+        Ok(out) if !out.status.success() => {
+            eprintln!("[ollama] status: not_running (exit {})", out.status);
+            return "not_running".into();
+        }
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if stdout.contains(OLLAMA_RECOMMENDED_MODEL) {
+                eprintln!("[ollama] status: ready");
+                "ready".into()
+            } else {
+                eprintln!("[ollama] status: model_missing");
+                "model_missing".into()
+            }
+        }
+    }
+}
+
+/// Pull the recommended model (`ollama pull qwen2.5:3b`).
+/// Runs in a blocking thread so Tauri's async runtime stays free.
+/// Returns Ok("installed") on success, Err(message) on failure.
+/// Matches Python's _do_install_model — only runs when the user explicitly clicks.
+#[tauri::command]
+pub async fn install_ollama_model() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| {
+        eprintln!("[ollama] pulling {} …", OLLAMA_RECOMMENDED_MODEL);
+        let result = std::process::Command::new("ollama")
+            .args(["pull", OLLAMA_RECOMMENDED_MODEL])
+            .output()
+            .map_err(|e| format!("Failed to run ollama: {}", e))?;
+
+        if result.status.success() {
+            eprintln!("[ollama] pull complete");
+            Ok("installed".to_string())
+        } else {
+            let err = String::from_utf8_lossy(&result.stderr).to_string();
+            eprintln!("[ollama] pull failed: {}", err);
+            Err(format!("ollama pull failed: {}", err.lines().next().unwrap_or("unknown error")))
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ── Native macOS commands ─────────────────────────────────────────────────────
 
 #[tauri::command]
