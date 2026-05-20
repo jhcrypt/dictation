@@ -45,6 +45,15 @@
  * Adding a new trigger: emit one of the four events above. Do not invoke
  * sidecar_start_recording / sidecar_stop_recording / sidecar_transcribe_last
  * from anywhere other than this file.
+ *
+ * ── CRITICAL PERFORMANCE ORDER (fast path) ──────────────────────────────────
+ * After transcribe_last returns, the fast path MUST be:
+ *   1. paste text
+ *   2. everything else (HUD, history, timing) — fire-and-forget, never awaited
+ *
+ * This matches the Python app which pastes FIRST, then saves history and
+ * updates UI asynchronously.  Any HUD animation (skipped/cleanup/inserted)
+ * that runs before paste will ADD visible lag.
  */
 import { useEffect, useRef } from "react";
 import { useSettings } from "../context/SettingsContext";
@@ -310,25 +319,20 @@ export function useGlobalHotkey() {
         if (result.ok && result.text) {
           const s = settingsRef.current;
 
-          if (!result.skipped_cleanup && s.use_ollama && s.ai_cleanup_mode !== "off") {
-            hudEmit({ state: "cleanup" });
-            await new Promise((r) => setTimeout(r, 600));
-          }
-
-          if (result.skipped_cleanup && result.skip_reason) {
-            hudEmit({ state: "skipped", subtext: result.skip_reason });
-            await new Promise((r) => setTimeout(r, 1500));
-          }
+          // ── FAST PATH: paste FIRST, before any HUD/history/timing work ─────
+          // Matches Python app: paste_text() happens before save_history() and
+          // show_message().  No HUD animation or setTimeout blocks paste.
 
           let pasteStatus = "transcribed";
           const t_pasteStart = Date.now();
           let   t_pasteEnd   = t_pasteStart;
           if (!s.safe_mode) {
             try {
+              console.log("[perf] paste_text sent");
               await invokeWithTimeout("paste_text", { text: result.text }, 8_000);
               t_pasteEnd = Date.now();
               pasteStatus = "pasted";
-              console.log("[paste] pasted", result.text.length, "chars");
+              console.log("[perf] paste_text returned  elapsed=", t_pasteEnd - t_pasteStart, "ms");
             } catch (pe) {
               t_pasteEnd = Date.now();
               pasteStatus = "paste_failed";
@@ -338,19 +342,29 @@ export function useGlobalHotkey() {
             t_pasteEnd = t_pasteStart; // safe mode: no paste
           }
 
-          // Guard after paste: another cycle may have started during paste_text
-          if (cycleIdRef.current !== myCycle) {
-            console.log("[recording] paste done — stale cycle", myCycle, "discarding HUD update");
-            return;
-          }
+          // ── AFTER PASTE: everything is fire-and-forget, never awaited ──────
+          // HUD update, history save, timing emission all happen after paste
+          // and do not block the user from continuing.
 
           const profile = result.profile ?? s.writing_profile ?? "General";
+
+          // HUD "inserted" state — fire-and-forget
           hudEmit({
             state:   "inserted",
             subtext: result.text.slice(0, 55),
             status:  pasteStatus,
             profile: s.show_active_profile ? profile : undefined,
-          });
+          }).then(() => {
+            setTimeout(() => hudEmit({ state: "idle" }), 1500);
+          }).catch(() => {});
+
+          // HUD skipped/cleanup state — fire-and-forget AFTER insert
+          // This replaces the blocking 1.5s setTimeout that was blocking paste.
+          if (result.skipped_cleanup && result.skip_reason) {
+            setTimeout(() => {
+              hudEmit({ state: "skipped", subtext: result.skip_reason }).catch(() => {});
+            }, 300);
+          }
 
           // ── Store last dictated text for "Add Correction" tray item ─────────
           try {
@@ -358,7 +372,7 @@ export function useGlobalHotkey() {
             emit("last-dictation-text", result.text);
           } catch { /* non-critical */ }
 
-          // ── Emit full timing breakdown (non-blocking, after paste) ───────────
+          // ── Emit full timing breakdown (fire-and-forget) ────────────────────
           const cleanupStatus =
             s.ai_cleanup_mode === "off" ? "off" :
             result.skipped_cleanup      ? "skipped" :
@@ -381,23 +395,22 @@ export function useGlobalHotkey() {
 
           try {
             const { emit } = await import("@tauri-apps/api/event");
+            console.log("[perf] timing event emitted  totalAfterReleaseMs=", timingPayload.totalAfterReleaseMs);
             emit("dictation-timing", timingPayload);
           } catch { /* non-critical */ }
 
-          try {
-            await invokeWithTimeout("save_history_entry", {
-              entry: {
-                timestamp:  new Date().toISOString(),
-                final_text: result.text,
-                status:     pasteStatus,
-                profile,
-                source:     "tauri",
-                timing:     result.timing ?? null,
-              },
-            }, 5_000);
-          } catch { /* non-critical */ }
+          // History save — fire-and-forget (not awaited)
+          invokeWithTimeout("save_history_entry", {
+            entry: {
+              timestamp:  new Date().toISOString(),
+              final_text: result.text,
+              status:     pasteStatus,
+              profile,
+              source:     "tauri",
+              timing:     result.timing ?? null,
+            },
+          }, 5_000).catch(() => {});
 
-          setTimeout(() => hudEmit({ state: "idle" }), 1500);
         } else {
           // Guard before showing error: don't clobber a new cycle's HUD
           if (cycleIdRef.current !== myCycle) {
