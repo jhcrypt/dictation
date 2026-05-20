@@ -18,7 +18,7 @@ export default function Select<T extends string>({ value, options, onChange, lab
       <select
         value={value}
         onChange={(e) => onChange(e.target.value as T)}
-        className="bg-jarvis-surface border border-jarvis-border rounded-lg px-3 py-2 text-sm text-jarvis-text focus:outline-none focus:border-jarvis-accent cursor-pointer"
+        className="bg-jarvis-sidebar border border-jarvis-border rounded-lg px-3 py-2 text-sm text-jarvis-text focus:outline-none focus:border-jarvis-accent cursor-pointer"
       >
         {options.map((o) => (
           <option key={o} value={o}>{o}</option>
