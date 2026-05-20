@@ -27,7 +27,7 @@ export default function WorkflowsPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Workflows</h2>
-        <p className="text-sm text-jarvis-muted mt-1">
+        <p className="text-sm text-jarvis-hint mt-1">
           Voice commands that trigger actions. Spoken during or after dictation.
         </p>
       </div>

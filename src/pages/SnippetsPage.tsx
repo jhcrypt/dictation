@@ -80,7 +80,7 @@ export default function SnippetsPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Snippets</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Say the trigger phrase and it expands to the full text.</p>
+        <p className="text-sm text-jarvis-hint mt-1">Say the trigger phrase and it expands to the full text.</p>
       </div>
 
       <Card title="New Snippet">

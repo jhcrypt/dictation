@@ -228,7 +228,7 @@ export default function DictationPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Dictation</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Hold Right Option anywhere to dictate.</p>
+        <p className="text-sm text-jarvis-hint mt-1">Hold Right Option anywhere to dictate.</p>
       </div>
 
       {/* Engine status */}
@@ -315,7 +315,7 @@ export default function DictationPage() {
               Will paste into: <span className="text-jarvis-text">{targetApp.split(" (")[0]}</span>
             </p>
           ) : (
-            <p className="text-xs text-jarvis-muted leading-relaxed">
+            <p className="text-xs text-jarvis-hint leading-relaxed">
               Hold{" "}
               <kbd className="px-1.5 py-0.5 bg-jarvis-surface border border-jarvis-border rounded text-[11px]">Right Option</kbd>
               {" "}anywhere to dictate, or click into your target app first and use the button above.

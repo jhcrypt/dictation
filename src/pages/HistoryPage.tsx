@@ -55,7 +55,7 @@ export default function HistoryPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-jarvis-text">History</h2>
-          <p className="text-sm text-jarvis-muted mt-1">Recent dictations. {history.length} entries.</p>
+          <p className="text-sm text-jarvis-hint mt-1">Recent dictations. {history.length} entries.</p>
         </div>
         <button
           onClick={clearHistory}

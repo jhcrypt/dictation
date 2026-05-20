@@ -57,20 +57,20 @@ export default function HelpPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Help</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Reference, troubleshooting, and storage management.</p>
+        <p className="text-sm text-jarvis-hint mt-1">Reference, troubleshooting, and storage management.</p>
       </div>
 
       <Card title="About">
-        <div className="text-xs text-jarvis-muted space-y-1">
+        <div className="text-xs text-jarvis-hint space-y-1">
           <p className="text-sm text-jarvis-text font-semibold">Jarvis Dictation Tauri Preview</p>
           <p>Bundle ID: <span className="font-mono text-jarvis-text">com.jarvis.dictation.tauri</span></p>
           <p>Version: <span className="font-mono text-jarvis-text">0.1.0</span></p>
-          <p className="text-jarvis-muted pt-1">This is the Tauri port — a separate app from the stable Python version at <span className="font-mono">/Applications/Jarvis Dictation.app</span>.</p>
+          <p className="text-jarvis-hint pt-1">This is the Tauri port — a separate app from the stable Python version at <span className="font-mono">/Applications/Jarvis Dictation.app</span>.</p>
         </div>
       </Card>
 
       <Card title="Quick Reference">
-        <div className="text-xs text-jarvis-muted space-y-2 leading-relaxed">
+        <div className="text-xs text-jarvis-hint space-y-2 leading-relaxed">
           <div className="flex gap-3">
             <span className="text-jarvis-text font-mono bg-jarvis-surface px-2 py-0.5 rounded whitespace-nowrap">Right Option</span>
             <span>Hold to record, release to transcribe</span>
@@ -87,7 +87,7 @@ export default function HelpPage() {
       </Card>
 
       <Card title="Permissions Required">
-        <div className="text-xs text-jarvis-muted space-y-1.5">
+        <div className="text-xs text-jarvis-hint space-y-1.5">
           <p><span className="text-jarvis-text font-medium">Microphone</span> — to record audio</p>
           <p><span className="text-jarvis-text font-medium">Accessibility</span> — to detect the hotkey and paste text</p>
           <p><span className="text-jarvis-text font-medium">Automation</span> — to control Mail.app and Reminders via AppleScript</p>
@@ -101,7 +101,7 @@ export default function HelpPage() {
       </Card>
 
       <Card title="Data Files">
-        <div className="text-xs text-jarvis-muted space-y-1 font-mono">
+        <div className="text-xs text-jarvis-hint space-y-1 font-mono">
           <p>~/.dictation_settings.json</p>
           <p>~/.dictation_contacts.json</p>
           <p>~/.dictation_history.json</p>
@@ -117,7 +117,7 @@ export default function HelpPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-jarvis-text">Vocabulary data</p>
-              <p className="text-xs text-jarvis-muted">Word frequency counts learned from dictations</p>
+              <p className="text-xs text-jarvis-hint">Word frequency counts learned from dictations</p>
             </div>
             <button
               onClick={clearVocab}
@@ -130,7 +130,7 @@ export default function HelpPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-jarvis-text">Startup debug log</p>
-              <p className="text-xs text-jarvis-muted">~/jarvis_startup_debug.log</p>
+              <p className="text-xs text-jarvis-hint">~/jarvis_startup_debug.log</p>
             </div>
             <button
               onClick={clearLog}
@@ -180,7 +180,7 @@ export default function HelpPage() {
       </Card>
 
       <Card title="Debug">
-        <p className="text-xs text-jarvis-muted leading-relaxed">
+        <p className="text-xs text-jarvis-hint leading-relaxed">
           Enable <span className="text-jarvis-text">Debug Logging</span> in Setup if Jarvis isn't behaving as expected.
           Logs are written to <span className="font-mono text-jarvis-text">~/jarvis_startup_debug.log</span>.
         </p>

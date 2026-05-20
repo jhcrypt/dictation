@@ -12,7 +12,7 @@ export default function CloudPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Cloud</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Use OpenAI Whisper API instead of local transcription.</p>
+        <p className="text-sm text-jarvis-hint mt-1">Use OpenAI Whisper API instead of local transcription.</p>
       </div>
 
       <Card title="Cloud Mode">

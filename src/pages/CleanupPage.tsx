@@ -21,7 +21,7 @@ export default function CleanupPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Writing Cleanup</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Configure Ollama AI cleanup and writing profiles.</p>
+        <p className="text-sm text-jarvis-hint mt-1">Configure Ollama AI cleanup and writing profiles.</p>
       </div>
 
       <Card title="AI Cleanup Mode">

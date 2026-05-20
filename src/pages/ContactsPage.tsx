@@ -62,7 +62,7 @@ export default function ContactsPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Contacts</h2>
-        <p className="text-sm text-jarvis-muted mt-1">People you can email by voice. "Email Val" → looks up alias.</p>
+        <p className="text-sm text-jarvis-hint mt-1">People you can email by voice. "Email Val" → looks up alias.</p>
       </div>
 
       <Card title="Add Contact">

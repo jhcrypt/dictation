@@ -66,11 +66,11 @@ export default function SetupPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Setup</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Basic configuration to get started.</p>
+        <p className="text-sm text-jarvis-hint mt-1">Basic configuration to get started.</p>
       </div>
 
       <Card title="Recording Hotkey">
-        <p className="text-sm text-jarvis-muted mb-3">
+        <p className="text-sm text-jarvis-hint mb-3">
           Current hotkey: <span className="text-jarvis-text font-medium">{settings.hotkey_label}</span>
         </p>
         <div className="flex gap-2 flex-wrap">
@@ -121,7 +121,7 @@ export default function SetupPage() {
       </Card>
 
       <Card title="Accessibility Permission">
-        <p className="text-sm text-jarvis-muted mb-3">
+        <p className="text-sm text-jarvis-hint mb-3">
           Required for global hotkey (Right Option) and auto-paste into other apps.
         </p>
         <div className="flex items-center gap-2 mb-3">
@@ -142,7 +142,7 @@ export default function SetupPage() {
           </button>
         </div>
         {axGranted === false && (
-          <p className="text-xs text-jarvis-muted mb-3 leading-relaxed">
+          <p className="text-xs text-jarvis-hint mb-3 leading-relaxed">
             Go to <strong className="text-jarvis-text">System Settings → Privacy & Security → Accessibility</strong> and enable Jarvis Dictation.
           </p>
         )}
@@ -162,7 +162,7 @@ export default function SetupPage() {
       </Card>
 
       <Card title="Microphone Diagnostics">
-        <p className="text-xs text-jarvis-muted mb-3">
+        <p className="text-xs text-jarvis-hint mb-3">
           Configured device index: <span className="text-jarvis-text font-medium">{settings.mic_device ?? "default"}</span>
         </p>
         <div className="flex gap-2 mb-3">

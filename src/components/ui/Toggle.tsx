@@ -15,7 +15,7 @@ export default function Toggle({ checked, onChange, label, description }: Toggle
     >
       <div>
         <div className="text-sm text-jarvis-text font-medium">{label}</div>
-        {description && <div className="text-xs text-jarvis-muted mt-0.5">{description}</div>}
+        {description && <div className="text-xs text-jarvis-hint mt-0.5">{description}</div>}
       </div>
       <div
         className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ml-4 ${

@@ -66,7 +66,7 @@ export default function CustomCommandsPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Custom Commands</h2>
-        <p className="text-sm text-jarvis-muted mt-1">
+        <p className="text-sm text-jarvis-hint mt-1">
           Say the trigger phrase to run an action. Triggers must be at least 2 words.
         </p>
       </div>

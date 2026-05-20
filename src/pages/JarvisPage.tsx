@@ -18,7 +18,7 @@ export default function JarvisPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Jarvis</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Wake word and voice command settings.</p>
+        <p className="text-sm text-jarvis-hint mt-1">Wake word and voice command settings.</p>
       </div>
 
       <Card title="Wake Word">
@@ -38,13 +38,13 @@ export default function JarvisPage() {
       </Card>
 
       <Card title="Wake Dictation Timing">
-        <p className="text-xs text-jarvis-muted mb-3">
+        <p className="text-xs text-jarvis-hint mb-3">
           Fine-tune how long Jarvis waits before and after your speech.
         </p>
         <div className="flex items-center justify-between gap-4 py-2">
           <div>
             <div className="text-sm font-medium text-jarvis-text">Grace period</div>
-            <div className="text-xs text-jarvis-muted mt-0.5">Seconds to wait after wake word before recording starts</div>
+            <div className="text-xs text-jarvis-hint mt-0.5">Seconds to wait after wake word before recording starts</div>
           </div>
           <input
             type="number"
@@ -60,7 +60,7 @@ export default function JarvisPage() {
         <div className="flex items-center justify-between gap-4 py-2">
           <div>
             <div className="text-sm font-medium text-jarvis-text">Silence cutoff</div>
-            <div className="text-xs text-jarvis-muted mt-0.5">Seconds of silence before recording auto-stops</div>
+            <div className="text-xs text-jarvis-hint mt-0.5">Seconds of silence before recording auto-stops</div>
           </div>
           <input
             type="number"
@@ -76,7 +76,7 @@ export default function JarvisPage() {
         <div className="flex items-center justify-between gap-4 py-2">
           <div>
             <div className="text-sm font-medium text-jarvis-text">Max recording length</div>
-            <div className="text-xs text-jarvis-muted mt-0.5">Hard cap in seconds for a single wake dictation</div>
+            <div className="text-xs text-jarvis-hint mt-0.5">Hard cap in seconds for a single wake dictation</div>
           </div>
           <input
             type="number"

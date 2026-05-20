@@ -60,7 +60,7 @@ export default function AudioPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Audio &amp; Language</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Configure microphone, speech model, and translation.</p>
+        <p className="text-sm text-jarvis-hint mt-1">Configure microphone, speech model, and translation.</p>
       </div>
 
       {/* 1. Microphone */}
@@ -76,7 +76,7 @@ export default function AudioPage() {
 
       {/* 2. I'm Speaking (input language) */}
       <Card title="I'm Speaking">
-        <p className="text-xs text-jarvis-muted mb-3">
+        <p className="text-xs text-jarvis-hint mb-3">
           The language you speak into the microphone. Auto Detect works well for most users.
         </p>
         <div className="flex flex-wrap gap-2">
@@ -123,7 +123,7 @@ export default function AudioPage() {
 
       {/* 4. Advanced Speech Model */}
       <Card title="Advanced Speech Model">
-        <p className="text-xs text-jarvis-muted mb-2">
+        <p className="text-xs text-jarvis-hint mb-2">
           Optional override. Leave blank to use the model set by Dictation Quality above.
         </p>
         <input
@@ -142,7 +142,7 @@ export default function AudioPage() {
 
       {/* 5. Translate My Dictation To */}
       <Card title="Translate My Dictation To">
-        <p className="text-xs text-jarvis-muted mb-3">
+        <p className="text-xs text-jarvis-hint mb-3">
           Translate the output of every dictation to another language. Set to Off to disable.
         </p>
         <Select<TranslateTarget>
@@ -154,7 +154,7 @@ export default function AudioPage() {
 
       {/* 6. Translate Selected Text To */}
       <Card title="Translate Selected Text To">
-        <p className="text-xs text-jarvis-muted mb-3">
+        <p className="text-xs text-jarvis-hint mb-3">
           Target language when you say "translate that" or "translate selected text".
           This is separate from Translate My Dictation.
         </p>
@@ -167,7 +167,7 @@ export default function AudioPage() {
 
       {/* 7. How language settings work */}
       <Card title="How Language Settings Work">
-        <div className="text-xs text-jarvis-muted leading-relaxed space-y-2">
+        <div className="text-xs text-jarvis-hint leading-relaxed space-y-2">
           <p><span className="text-jarvis-text font-medium">I'm Speaking</span> — the language you speak. Controls which Whisper model is used and how auto-detect works.</p>
           <p><span className="text-jarvis-text font-medium">Translate My Dictation</span> — every dictation output is translated to this language before pasting. Use when you speak one language but write in another.</p>
           <p><span className="text-jarvis-text font-medium">Translate Selected Text</span> — triggered by voice command only. Translates whatever is in the clipboard.</p>
@@ -177,7 +177,7 @@ export default function AudioPage() {
 
       {/* 8. Restart card */}
       <Card title="Apply Changes">
-        <p className="text-xs text-jarvis-muted mb-3">
+        <p className="text-xs text-jarvis-hint mb-3">
           Audio and model changes take effect after saving and restarting the dictation engine.
         </p>
         <div className="flex gap-2">

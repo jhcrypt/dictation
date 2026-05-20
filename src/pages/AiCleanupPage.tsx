@@ -181,17 +181,17 @@ function OllamaReadinessCard() {
 
       {/* Detail text */}
       {testState === "idle" && (
-        <p className="text-xs text-jarvis-muted leading-relaxed mb-3">
+        <p className="text-xs text-jarvis-hint leading-relaxed mb-3">
           {STATUS_DETAIL[status]}
         </p>
       )}
       {testState === "running" && (
-        <p className="text-xs text-jarvis-muted leading-relaxed mb-3">
+        <p className="text-xs text-jarvis-hint leading-relaxed mb-3">
           Input: &ldquo;{TEST_SAMPLE}&rdquo;
         </p>
       )}
       {testState === "passed" && (
-        <p className="text-xs text-jarvis-muted leading-relaxed mb-3">
+        <p className="text-xs text-jarvis-hint leading-relaxed mb-3">
           Output: &ldquo;{testOutput}&rdquo;
         </p>
       )}
@@ -210,7 +210,7 @@ function OllamaReadinessCard() {
 
       {/* Fallback note — matches Python fallback_lbl */}
       {(status === "not_installed" || status === "not_running") && (
-        <p className="text-xs text-jarvis-muted italic mb-3">
+        <p className="text-xs text-jarvis-hint italic mb-3">
           Dictation still works without Local AI Cleanup.
         </p>
       )}
@@ -259,7 +259,7 @@ function OllamaReadinessCard() {
       </div>
 
       {/* Recommended model footer */}
-      <p className="mt-3 text-xs text-jarvis-muted">
+      <p className="mt-3 text-xs text-jarvis-hint">
         Recommended model:{" "}
         <span className="font-mono text-jarvis-text">{RECOMMENDED_MODEL}</span>
       </p>
@@ -276,14 +276,14 @@ export default function AiCleanupPage() {
       {/* Header — matches Python page title + subtitle */}
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Local AI Cleanup</h2>
-        <p className="text-sm text-jarvis-muted mt-1">
+        <p className="text-sm text-jarvis-hint mt-1">
           Polish dictated text with a local Ollama model after transcription.
         </p>
       </div>
 
       {/* English-only caveat — matches Python description text */}
       <div className="px-3 py-2.5 rounded-lg border border-jarvis-border bg-jarvis-surface">
-        <p className="text-xs text-jarvis-muted leading-relaxed">
+        <p className="text-xs text-jarvis-hint leading-relaxed">
           Local AI Cleanup currently improves English dictation. For other spoken languages,
           Quill skips cleanup automatically to avoid accidental translation.
         </p>
@@ -310,7 +310,7 @@ export default function AiCleanupPage() {
           ))}
         </div>
         {/* All three descriptions always shown — matches Python helper_text block */}
-        <div className="text-xs text-jarvis-muted leading-relaxed space-y-1 font-mono">
+        <div className="text-xs text-jarvis-hint leading-relaxed space-y-1 font-mono">
           <p>
             <span className={settings.ai_cleanup_mode === "auto" ? "text-jarvis-text font-semibold" : ""}>auto</span>
             {" — "}use Local AI Cleanup if available, skip silently if not{" "}
@@ -348,7 +348,7 @@ export default function AiCleanupPage() {
           ))}
         </div>
         {/* Note matching Python helper_text */}
-        <p className="text-xs text-jarvis-muted leading-relaxed">
+        <p className="text-xs text-jarvis-hint leading-relaxed">
           Recommended: Standard. Short phrases and unsafe AI rewrites are always protected.
         </p>
       </Card>

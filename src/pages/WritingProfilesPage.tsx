@@ -30,7 +30,7 @@ export default function WritingProfilesPage() {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Writing Profiles</h2>
-        <p className="text-sm text-jarvis-muted mt-1">Profile adjusts how Ollama formats and phrases the output.</p>
+        <p className="text-sm text-jarvis-hint mt-1">Profile adjusts how Ollama formats and phrases the output.</p>
       </div>
 
       <Card title="Active Profile">
