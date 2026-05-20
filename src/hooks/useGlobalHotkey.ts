@@ -51,6 +51,33 @@ type RecState =
 /** Minimum hold time before a release is treated as a real recording (ms). */
 const MIN_TAP_MS = 300;
 
+/**
+ * Timing breakdown emitted after each dictation cycle.
+ * Broadcast via "dictation-timing" Tauri event → DictationPage card.
+ */
+export interface DictationTiming {
+  model?: string;
+  /** Key-down to key-up (hold duration) */
+  recordingMs?: number;
+  /** key-up to stop_recording returned (WAV save + sidecar overhead) */
+  stopMs?: number;
+  /** Whisper inference time (from sidecar) */
+  transcriptionMs?: number;
+  /** Ollama cleanup time ms (from sidecar); undefined if skipped */
+  cleanupMs?: number;
+  /** "done" | "skipped" | "off" */
+  cleanupStatus?: string;
+  /** paste_text call duration */
+  pasteMs?: number;
+  /** key-up to paste completed */
+  totalAfterReleaseMs?: number;
+  /** key-down to paste completed */
+  totalCycleMs?: number;
+  profile?: string;
+  status?: string;
+  updatedAt?: number;
+}
+
 export function useGlobalHotkey() {
   const { settings } = useSettings();
   const stateRef      = useRef<RecState>("idle");
@@ -64,6 +91,11 @@ export function useGlobalHotkey() {
    * cancels instead of advancing to "recording".
    */
   const pendingStopRef = useRef<boolean>(false);
+
+  // ── Timing checkpoints (wall-clock ms) ──────────────────────────────────────
+  const t_keyDown    = useRef<number>(0); // hotkey pressed
+  const t_stopCalled = useRef<number>(0); // key-up / stop requested
+  const t_stopDone   = useRef<number>(0); // sidecar_stop_recording returned
 
   useEffect(() => { settingsRef.current = settings; }, [settings]);
 
@@ -119,6 +151,7 @@ export function useGlobalHotkey() {
       stateRef.current  = "starting";
       pendingStopRef.current = false;
       recordStartRef.current = Date.now();
+      t_keyDown.current = recordStartRef.current;
 
       const toggleMode = settingsRef.current.toggle_mode;
       hudEmit({ state: "recording", toggleMode });
@@ -172,6 +205,7 @@ export function useGlobalHotkey() {
       console.log("[recording] → stopping");
       clearRecordingTimeout();
       stateRef.current = "stopping";
+      t_stopCalled.current = Date.now();
       hudEmit({ state: "transcribing" });
 
       try {
@@ -185,6 +219,7 @@ export function useGlobalHotkey() {
         return;
       }
 
+      t_stopDone.current = Date.now();
       stateRef.current = "transcribing";
 
       try {
@@ -214,15 +249,21 @@ export function useGlobalHotkey() {
           }
 
           let pasteStatus = "transcribed";
+          const t_pasteStart = Date.now();
+          let   t_pasteEnd   = t_pasteStart;
           if (!s.safe_mode) {
             try {
               await invokeWithTimeout("paste_text", { text: result.text }, 8_000);
+              t_pasteEnd = Date.now();
               pasteStatus = "pasted";
               console.log("[paste] pasted", result.text.length, "chars");
             } catch (pe) {
+              t_pasteEnd = Date.now();
               pasteStatus = "paste_failed";
               console.error("[paste] failed:", pe);
             }
+          } else {
+            t_pasteEnd = t_pasteStart; // safe mode: no paste
           }
 
           const profile = result.profile ?? s.writing_profile ?? "General";
@@ -232,6 +273,32 @@ export function useGlobalHotkey() {
             status:  pasteStatus,
             profile: s.show_active_profile ? profile : undefined,
           });
+
+          // ── Emit full timing breakdown (non-blocking, after paste) ───────────
+          const cleanupStatus =
+            s.ai_cleanup_mode === "off" ? "off" :
+            result.skipped_cleanup      ? "skipped" :
+            result.timing.ollama > 0   ? "done" : "skipped";
+
+          const timingPayload: DictationTiming = {
+            model:               s.model,
+            recordingMs:         t_stopCalled.current - t_keyDown.current,
+            stopMs:              t_stopDone.current   - t_stopCalled.current,
+            transcriptionMs:     result.timing.whisper,
+            cleanupMs:           result.timing.ollama > 0 ? result.timing.ollama : undefined,
+            cleanupStatus,
+            pasteMs:             s.safe_mode ? undefined : (t_pasteEnd - t_pasteStart),
+            totalAfterReleaseMs: t_pasteEnd - t_stopCalled.current,
+            totalCycleMs:        t_pasteEnd - t_keyDown.current,
+            profile,
+            status:              pasteStatus,
+            updatedAt:           Date.now(),
+          };
+
+          try {
+            const { emit } = await import("@tauri-apps/api/event");
+            emit("dictation-timing", timingPayload);
+          } catch { /* non-critical */ }
 
           try {
             await invokeWithTimeout("save_history_entry", {

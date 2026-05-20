@@ -2,9 +2,35 @@ import React, { useState, useEffect, useCallback } from "react";
 import Card from "../components/ui/Card";
 import { useSettings } from "../context/SettingsContext";
 import type { HudPayload } from "../HudApp";
+import type { DictationTiming } from "../hooks/useGlobalHotkey";
 
 type RecordingState = "idle" | "recording" | "transcribing";
 type SidecarStatus  = "checking" | "ready" | "error";
+
+/** Format a millisecond value as "1.23s" or "—" if undefined/zero */
+function fmtMs(ms: number | undefined, hideZero = false): string {
+  if (ms === undefined) return "—";
+  if (hideZero && ms === 0) return "—";
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+/** Single label → value row for the timing card */
+function TimingRow({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
+  return (
+    <div className="flex items-center justify-between py-1">
+      <span className={`text-xs ${bold ? "text-jarvis-text font-medium" : "text-jarvis-muted"}`}>
+        {label}
+      </span>
+      <span className={`text-xs font-mono ${
+        value === "—" || value === "skipped" || value === "off"
+          ? "text-jarvis-muted"
+          : bold ? "text-jarvis-text font-semibold" : "text-jarvis-text"
+      }`}>
+        {value}
+      </span>
+    </div>
+  );
+}
 
 export default function DictationPage() {
   const { settings } = useSettings();
@@ -15,6 +41,7 @@ export default function DictationPage() {
   const [hudState,      setHudState]      = useState<string>("idle");
   const [lastText,      setLastText]      = useState("");
   const [timing,        setTiming]        = useState<{ whisper: number; ollama: number; total: number } | null>(null);
+  const [dictTiming,    setDictTiming]    = useState<DictationTiming | null>(null);
   const [axGranted,     setAxGranted]     = useState<boolean | null>(null);
   const [copied,        setCopied]        = useState(false);
   const [targetApp,     setTargetApp]     = useState<string | null>(null);
@@ -34,6 +61,17 @@ export default function DictationPage() {
     import("@tauri-apps/api/event").then(({ listen }) => {
       listen<{ state: string }>("hud-state", (e) => {
         setHudState(e.payload.state);
+      }).then(fn => { unlisten = fn; });
+    }).catch(() => {});
+    return () => { unlisten?.(); };
+  }, []);
+
+  // Listen for timing events emitted by useGlobalHotkey after each dictation cycle
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<DictationTiming>("dictation-timing", (e) => {
+        setDictTiming(e.payload);
       }).then(fn => { unlisten = fn; });
     }).catch(() => {});
     return () => { unlisten?.(); };
@@ -137,9 +175,11 @@ export default function DictationPage() {
     } else if (state === "recording") {
       setState("transcribing");
       hudEmit({ state: "transcribing" });
+      const t_stopCalled = Date.now();
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("sidecar_stop_recording");
+        const t_stopDone = Date.now();
 
         const result = await invoke<{
           ok: boolean; text: string;
@@ -169,14 +209,20 @@ export default function DictationPage() {
 
           let pasteStatus = "transcribed";
           setPasteError("");
+          const t_pasteStart = Date.now();
+          let   t_pasteEnd   = t_pasteStart;
           if (!settings.safe_mode) {
             try {
               await invoke("paste_text", { text: result.text });
+              t_pasteEnd = Date.now();
               pasteStatus = "pasted";
             } catch (pe) {
+              t_pasteEnd = Date.now();
               pasteStatus = "paste_failed";
               setPasteError(String(pe));
             }
+          } else {
+            t_pasteEnd = t_pasteStart;
           }
 
           const profile = result.profile ?? settings.writing_profile ?? "General";
@@ -185,6 +231,27 @@ export default function DictationPage() {
             subtext: result.text.slice(0, 55),
             status:  pasteStatus,
             profile: settings.show_active_profile ? profile : undefined,
+          });
+
+          // Emit timing for the Timing card
+          const cleanupStatus =
+            settings.ai_cleanup_mode === "off" ? "off" :
+            result.skipped_cleanup              ? "skipped" :
+            result.timing.ollama > 0           ? "done" : "skipped";
+
+          setDictTiming({
+            model:               settings.model,
+            recordingMs:         undefined, // manual button: no hotkey-down ref
+            stopMs:              t_stopDone - t_stopCalled,
+            transcriptionMs:     result.timing.whisper,
+            cleanupMs:           result.timing.ollama > 0 ? result.timing.ollama : undefined,
+            cleanupStatus,
+            pasteMs:             settings.safe_mode ? undefined : (t_pasteEnd - t_pasteStart),
+            totalAfterReleaseMs: t_pasteEnd - t_stopCalled,
+            totalCycleMs:        undefined, // no keydown ref for manual mode
+            profile,
+            status:              pasteStatus,
+            updatedAt:           Date.now(),
           });
 
           try {
@@ -335,22 +402,58 @@ export default function DictationPage() {
       {lastText && (
         <Card title="Last Transcript">
           <p className="text-sm text-jarvis-text leading-relaxed">{lastText}</p>
-          <div className="flex items-center gap-4 mt-3 pt-3 border-t border-jarvis-border">
+          <div className="flex items-center gap-3 mt-3 pt-3 border-t border-jarvis-border">
             <button
               onClick={() => copyText(lastText)}
               className="text-xs px-2.5 py-1 rounded-lg border border-jarvis-border bg-jarvis-surface text-jarvis-muted hover:text-jarvis-text transition-colors shrink-0"
             >
               {copied ? "✓ Copied" : "Copy"}
             </button>
-            {timing && (
-              <div className="flex gap-4 flex-wrap">
-                <span className="text-xs text-jarvis-muted">Whisper: <span className="text-jarvis-text">{timing.whisper}ms</span></span>
-                {timing.ollama > 0 && (
-                  <span className="text-xs text-jarvis-muted">Ollama: <span className="text-jarvis-text">{timing.ollama}ms</span></span>
-                )}
-                <span className="text-xs text-jarvis-muted">Total: <span className="text-jarvis-text">{timing.total}ms</span></span>
-              </div>
-            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Last Dictation Timing */}
+      {dictTiming && (
+        <Card title="Last Dictation Timing">
+          <div className="flex flex-col gap-0">
+            {/* Header row: model + profile + status */}
+            <div className="flex items-center gap-3 mb-2 pb-2 border-b border-jarvis-border">
+              {dictTiming.model && (
+                <span className="text-xs font-mono bg-jarvis-sidebar border border-jarvis-border rounded px-2 py-0.5 text-jarvis-text">
+                  {dictTiming.model}
+                </span>
+              )}
+              {dictTiming.profile && (
+                <span className="text-xs text-jarvis-muted">{dictTiming.profile}</span>
+              )}
+              {dictTiming.status && (
+                <span className={`ml-auto text-xs font-medium ${
+                  dictTiming.status === "pasted"      ? "text-green-400" :
+                  dictTiming.status === "paste_failed" ? "text-red-400"   :
+                  "text-jarvis-muted"
+                }`}>
+                  {dictTiming.status}
+                </span>
+              )}
+            </div>
+
+            {/* Timing rows — Python label convention */}
+            <TimingRow label="Recording"         value={fmtMs(dictTiming.recordingMs, true)} />
+            <TimingRow label="Stop processing"   value={fmtMs(dictTiming.stopMs)} />
+            <TimingRow label="Transcription"     value={fmtMs(dictTiming.transcriptionMs)} />
+            <TimingRow
+              label="Cleanup"
+              value={
+                dictTiming.cleanupStatus === "off"     ? "off" :
+                dictTiming.cleanupStatus === "skipped" ? "skipped" :
+                fmtMs(dictTiming.cleanupMs)
+              }
+            />
+            <TimingRow label="Paste"             value={fmtMs(dictTiming.pasteMs, true)} />
+            <div className="border-t border-jarvis-border my-1.5" />
+            <TimingRow label="Total after release" value={fmtMs(dictTiming.totalAfterReleaseMs)} bold />
+            <TimingRow label="Total cycle"         value={fmtMs(dictTiming.totalCycleMs, true)} bold />
           </div>
         </Card>
       )}
