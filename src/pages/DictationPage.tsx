@@ -419,9 +419,25 @@ export default function DictationPage() {
         </Card>
       )}
 
-      {/* Last Dictation Timing */}
-      {dictTiming && (
-        <Card title="Last Dictation Timing">
+      {/* Last Dictation Timing — always visible; shows placeholders before first dictation */}
+      <Card title="Last Dictation Timing">
+        {!dictTiming ? (
+          // Pre-dictation placeholder
+          <div className="flex flex-col gap-0">
+            <p className="text-xs text-jarvis-muted mb-2 pb-2 border-b border-jarvis-border">
+              Timing will appear here after your first dictation.
+            </p>
+            <TimingRow label="Model"              value="—" />
+            <TimingRow label="Recording"          value="—" />
+            <TimingRow label="Stop processing"    value="—" />
+            <TimingRow label="Transcription"      value="—" />
+            <TimingRow label="Cleanup"            value="—" />
+            <TimingRow label="Paste"              value="—" />
+            <div className="border-t border-jarvis-border my-1.5" />
+            <TimingRow label="Total after release" value="—" bold />
+            <TimingRow label="Total cycle"         value="—" bold />
+          </div>
+        ) : (
           <div className="flex flex-col gap-0">
             {/* Header row: model + profile + status */}
             <div className="flex items-center gap-3 mb-2 pb-2 border-b border-jarvis-border">
@@ -435,7 +451,7 @@ export default function DictationPage() {
               )}
               {dictTiming.status && (
                 <span className={`ml-auto text-xs font-medium ${
-                  dictTiming.status === "pasted"      ? "text-green-400" :
+                  dictTiming.status === "pasted"       ? "text-green-400" :
                   dictTiming.status === "paste_failed" ? "text-red-400"   :
                   "text-jarvis-muted"
                 }`}>
@@ -445,9 +461,9 @@ export default function DictationPage() {
             </div>
 
             {/* Timing rows — Python label convention */}
-            <TimingRow label="Recording"         value={fmtMs(dictTiming.recordingMs, true)} />
-            <TimingRow label="Stop processing"   value={fmtMs(dictTiming.stopMs)} />
-            <TimingRow label="Transcription"     value={fmtMs(dictTiming.transcriptionMs)} />
+            <TimingRow label="Recording"          value={fmtMs(dictTiming.recordingMs, true)} />
+            <TimingRow label="Stop processing"    value={fmtMs(dictTiming.stopMs)} />
+            <TimingRow label="Transcription"      value={fmtMs(dictTiming.transcriptionMs)} />
             <TimingRow
               label="Cleanup"
               value={
@@ -456,13 +472,13 @@ export default function DictationPage() {
                 fmtMs(dictTiming.cleanupMs)
               }
             />
-            <TimingRow label="Paste"             value={fmtMs(dictTiming.pasteMs, true)} />
+            <TimingRow label="Paste"              value={fmtMs(dictTiming.pasteMs, true)} />
             <div className="border-t border-jarvis-border my-1.5" />
             <TimingRow label="Total after release" value={fmtMs(dictTiming.totalAfterReleaseMs)} bold />
             <TimingRow label="Total cycle"         value={fmtMs(dictTiming.totalCycleMs, true)} bold />
           </div>
-        </Card>
-      )}
+        )}
+      </Card>
     </div>
   );
 }
