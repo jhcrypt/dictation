@@ -515,7 +515,13 @@ export function useGlobalHotkey() {
         else cancelRecording();
       }).then(f => unlisteners.push(f));
 
-      // DictationPage stop button (hotkey-initiated session)
+      // DictationPage start button → same path as hotkey / tray
+      listen("ui-start-recording", () => {
+        console.log("[ui] ui-start-recording  state=", stateRef.current);
+        startRecording();
+      }).then(f => unlisteners.push(f));
+
+      // DictationPage stop button → same path as hotkey / tray
       listen("ui-stop-recording", () => {
         const st = stateRef.current;
         console.log("[ui] ui-stop-recording  state=", st);
