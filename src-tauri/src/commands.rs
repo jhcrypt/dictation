@@ -215,19 +215,6 @@ pub fn sidecar_test_microphone(state: State<SidecarState>) -> Result<serde_json:
 
 // ── Text insertion ────────────────────────────────────────────────────────────
 
-/// Run `pbpaste` and return the clipboard text as a String, or None on failure.
-fn pbpaste() -> Option<String> {
-    let out = std::process::Command::new("pbpaste")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output().ok()?;
-    if !out.status.success() { return None; }
-    // pbpaste may append a trailing newline — strip it
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
-}
-
 /// Run `pbcopy` with the given text. Returns Ok(()) on success.
 fn pbcopy(text: &str) -> Result<(), String> {
     let mut child = std::process::Command::new("pbcopy")
@@ -251,19 +238,13 @@ fn pbcopy(text: &str) -> Result<(), String> {
 }
 
 /// Activate the last-known non-Jarvis app, then paste text into it via Cmd+V.
-/// Restores the previous clipboard content after 600 ms.
+/// Leaves the dictated text on the clipboard afterward (no restore) — matching
+/// the Python app's behavior at line 2598 which logs "leaving dictated text on
+/// clipboard".
 ///
-/// Uses macOS pbcopy/pbpaste CLI tools for reliable clipboard access (matching
-/// the Python app's approach).  This avoids arboard's internal cache which can
-/// diverge from the real macOS NSPasteboard — especially on the first write of
-/// a process lifetime.
-///
-/// CRITICAL ORDER:
-///   1. Save previous clipboard via pbpaste
-///   2. Write dictated text via pbcopy
-///   3. Verify via pbpaste (real macOS pasteboard, not arboard cache)
-///   4. Send Cmd+V
-///   5. Restore previous clipboard in background thread after 600ms
+/// Uses macOS pbcopy CLI tool for clipboard write (not arboard), matching the
+/// Python app's approach.  pbcopy writes directly to NSPasteboard so there is
+/// no cache-vs-reality mismatch like arboard has.
 #[tauri::command]
 pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), String> {
     eprintln!("[paste] requested text len={} preview={}", text.len(), &text[..text.len().min(40)]);
@@ -285,37 +266,18 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
     // Wait for the window to come to front before writing to clipboard.
     std::thread::sleep(std::time::Duration::from_millis(250));
 
-    // ── 3. Save previous clipboard ─────────────────────────────────────────
-    let previous = pbpaste();
-    eprintln!("[paste] previous clipboard len={} preview={}",
-        previous.as_ref().map(|s| s.len()).unwrap_or(0),
-        previous.as_ref().map(|s| &s[..s.len().min(40)]).unwrap_or("(none)"));
-
-    // ── 4. Write dictated text via pbcopy ──────────────────────────────────
+    // ── 3. Write dictated text via pbcopy ──────────────────────────────────
     // Append a trailing space to match Python behavior (ensures paste ends
     // the word being typed rather than extending it).
+    // Python source: paste_text() at line 2484: paste_content = text + " "
     let paste_content = format!("{} ", text);
     pbcopy(&paste_content)?;
     eprintln!("[paste] clipboard set via pbcopy");
 
-    // ── 5. Verify via pbpaste (real macOS pasteboard, NOT arboard cache) ───
+    // Brief settle so NSPasteboard ownership propagates before Cmd+V.
     std::thread::sleep(std::time::Duration::from_millis(30));
-    let verify = pbpaste();
-    let expected = paste_content.trim();
-    if verify.as_deref() != Some(expected) {
-        eprintln!("[paste] verify FAILED (got {:?}), retrying…", verify.as_ref().map(|s| &s[..s.len().min(40)]));
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        pbcopy(&paste_content)?;
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        let verify2 = pbpaste();
-        if verify2.as_deref() != Some(expected) {
-            eprintln!("[paste] verify FAILED after retry — aborting Cmd+V");
-            return Err("Clipboard write could not be verified — aborting paste".into());
-        }
-    }
-    eprintln!("[paste] clipboard verify OK via pbpaste");
 
-    // ── 6. Cmd+V ───────────────────────────────────────────────────────────
+    // ── 4. Cmd+V ───────────────────────────────────────────────────────────
     let output = std::process::Command::new("osascript")
         .arg("-e")
         .arg(r#"tell application "System Events" to keystroke "v" using command down"#)
@@ -329,16 +291,11 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
     }
     eprintln!("[paste] Cmd+V sent successfully into '{}'", app_info.name);
 
-    // ── 7. Restore previous clipboard (non-blocking, after paste completes) ─
-    // Use pbcopy for restore too, since arboard cache can diverge from real
-    // macOS pasteboard.  Wait longer so paste fully finishes before restoring.
-    if let Some(prev) = previous {
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(800));
-            let _ = pbcopy(&prev);
-            eprintln!("[paste] previous clipboard restored");
-        });
-    }
+    // ── 5. Leave dictated text on clipboard (no restore) ────────────────────
+    // Python app: "leaving dictated text on clipboard" at line 2598.
+    // The user can re-paste manually if needed.
+    eprintln!("[paste] leaving dictated text on clipboard");
+
     Ok(())
 }
 
