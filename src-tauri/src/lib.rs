@@ -56,16 +56,30 @@ pub fn run() {
                 Err(e) => { eprintln!("[jarvis] sidecar auto-start failed: {}", e); }
             }
 
-            // If wake_enabled, send start_wake_listen to the sidecar now.
-            if init_settings.wake_enabled {
-                if let Some(proc) = guard.as_mut() {
-                    match proc.send("start_wake_listen") {
-                        Ok(v) => eprintln!("[jarvis] wake auto-start: {}", v),
-                        Err(e) => eprintln!("[jarvis] wake auto-start failed: {}", e),
-                    }
-                }
-            }
             drop(guard);
+
+            // If wake_enabled, send start_wake_listen to the sidecar in a background
+            // thread. DO NOT call proc.send() here in setup() — the sidecar takes
+            // several seconds to finish its Python import phase (whisper, sounddevice,
+            // CoreAudio init), and blocking setup() on that read_line() prevents the
+            // macOS event loop from starting, which means windows never become visible.
+            if init_settings.wake_enabled {
+                let wake_state = app.handle().state::<SidecarState>().0.clone();
+                std::thread::Builder::new()
+                    .name("wake-auto-start".into())
+                    .spawn(move || {
+                        // Wait for sidecar to finish its startup import phase.
+                        std::thread::sleep(std::time::Duration::from_millis(2500));
+                        let mut guard = wake_state.lock().unwrap();
+                        if let Some(proc) = guard.as_mut() {
+                            match proc.send("start_wake_listen") {
+                                Ok(v)  => eprintln!("[jarvis] wake auto-start: {}", v),
+                                Err(e) => eprintln!("[jarvis] wake auto-start failed: {}", e),
+                            }
+                        }
+                    })
+                    .expect("wake-auto-start thread spawn failed");
+            }
 
             // Start the wake-word poll thread (runs for process lifetime;
             // harmless when wake is disabled — sidecar returns detected:false).
@@ -183,6 +197,7 @@ pub fn run() {
             open_url,
             open_app,
             restart_engine,
+            play_recording_sound,
             get_diagnostics,
             get_last_target_app,
         ])

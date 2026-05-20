@@ -536,6 +536,35 @@ pub fn restart_engine(state: State<SidecarState>) -> Result<(), String> {
     sidecar_start(state).map(|_| ())
 }
 
+// ── Recording sounds ──────────────────────────────────────────────────────────
+
+/// Play a system sound via `afplay` to indicate recording state transitions.
+/// Fire-and-forget: the command is spawned, and any failure is silently ignored
+/// so that sound playback never interferes with dictation.
+///
+/// kind must be one of:
+///   "start"  → /System/Library/Sounds/Tink.aiff
+///   "stop"   → /System/Library/Sounds/Pop.aiff
+///   "cancel" → /System/Library/Sounds/Funk.aiff
+#[tauri::command]
+pub fn play_recording_sound(kind: String) -> Result<(), String> {
+    let sound = match kind.as_str() {
+        "start"  => "/System/Library/Sounds/Tink.aiff",
+        "stop"   => "/System/Library/Sounds/Pop.aiff",
+        "cancel" => "/System/Library/Sounds/Funk.aiff",
+        _ => return Err(format!("Unknown recording sound kind: {}", kind)),
+    };
+
+    // Fire-and-forget: spawn afplay, ignore any failure
+    match std::process::Command::new("afplay").arg(sound).spawn() {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            eprintln!("[sound] failed to play {}: {}", kind, e);
+            Err(format!("Failed to play sound: {}", e))
+        }
+    }
+}
+
 // ── Diagnostics ───────────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]

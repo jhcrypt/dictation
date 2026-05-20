@@ -130,6 +130,14 @@ export function useGlobalHotkey() {
   useEffect(() => {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /** Play a recording sound if the user has play_sounds enabled. Fire-and-forget. */
+    const playSound = (kind: "start" | "stop" | "cancel") => {
+      if (settingsRef.current.play_sounds !== true) return;
+      import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke("play_recording_sound", { kind }).catch(() => {}))
+        .catch(() => {});
+    };
+
     const hudEmit = async (payload: HudPayload) => {
       try {
         const { emit } = await import("@tauri-apps/api/event");
@@ -230,6 +238,9 @@ export function useGlobalHotkey() {
         return;
       }
 
+      // Play start sound on successful recording start
+      playSound("start");
+
       // Advance to live-recording state
       console.log("[recording] → recording");
       stateRef.current = "recording";
@@ -247,6 +258,7 @@ export function useGlobalHotkey() {
       console.log("[recording] → stopping  cycle=", myCycle);
       clearRecordingTimeout();
       isWakeRecordingRef.current = false;
+      playSound("stop");
       stateRef.current = "stopping";
       t_stopCalled.current = Date.now();
       hudEmit({ state: "transcribing" });
@@ -437,6 +449,7 @@ export function useGlobalHotkey() {
       }
 
       // state === "recording" — cancel now
+      playSound("cancel");
       stateRef.current = "idle";
       hudEmit({ state: "tap_ignored" });
       setTimeout(() => hudEmit({ state: "idle" }), 2500);
@@ -465,6 +478,7 @@ export function useGlobalHotkey() {
         return;
       }
 
+      playSound("cancel");
       stateRef.current = "idle";
       hudEmit({ state: "idle" });
       try {
