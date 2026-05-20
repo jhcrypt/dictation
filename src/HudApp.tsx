@@ -270,7 +270,7 @@ export default function HudApp() {
       style={{
         padding:      "0 14px",
         gap:          10,
-        background:   "rgba(28, 28, 30, 0.96)",
+        background:   "rgba(38, 40, 43, 0.94)",
         border:       "1px solid rgba(255,255,255,0.10)",
         borderRadius: "10px",
         cursor:       "grab",

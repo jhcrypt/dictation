@@ -4,7 +4,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, Runtime,
 };
-use std::path::PathBuf;
 
 // ── Model / hotkey / strength / profile option lists (matching Python) ────────
 
@@ -79,15 +78,19 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let sep3 = PredefinedMenuItem::separator(app)?;
 
     // ── Navigation / utility items ────────────────────────────────────────────
-    let open_settings = MenuItem::with_id(app, "open_settings", "Open Settings…",          true, None::<&str>)?;
-    let open_snippets = MenuItem::with_id(app, "open_snippets", "Manage Snippets…",         true, None::<&str>)?;
-    let open_history  = MenuItem::with_id(app, "open_history",  "Show History…",            true, None::<&str>)?;
-    let open_perms    = MenuItem::with_id(app, "open_perms",    "Open macOS Permissions…",  true, None::<&str>)?;
-    let sep4          = PredefinedMenuItem::separator(app)?;
+    let open_settings  = MenuItem::with_id(app, "open_settings",  "Open Settings…",                    true,  None::<&str>)?;
+    let add_correction = MenuItem::with_id(app, "add_correction", "Add Correction from Last Dictation", true,  None::<&str>)?;
+    let open_snippets  = MenuItem::with_id(app, "open_snippets",  "Manage Snippets…",                   true,  None::<&str>)?;
+    let open_history   = MenuItem::with_id(app, "open_history",   "Show History…",                      true,  None::<&str>)?;
+    let open_perms     = MenuItem::with_id(app, "open_perms",     "Open macOS Permissions…",            true,  None::<&str>)?;
+    let sep4           = PredefinedMenuItem::separator(app)?;
 
     // ── System items ──────────────────────────────────────────────────────────
-    let about = MenuItem::with_id(app, "about", "About Quill Tauri Preview",    true, None::<&str>)?;
-    let quit  = MenuItem::with_id(app, "quit",  "Quit Quill Tauri Preview",     true, None::<&str>)?;
+    // Launch at Login: not yet implemented in Tauri build — disabled with TODO.
+    let launch_login = MenuItem::with_id(app, "launch_login", "Launch at Login  (coming soon)", false, None::<&str>)?;
+    let sep5  = PredefinedMenuItem::separator(app)?;
+    let about = MenuItem::with_id(app, "about", "About Quill Tauri Preview", true, None::<&str>)?;
+    let quit  = MenuItem::with_id(app, "quit",  "Quit Quill Tauri Preview",  true, None::<&str>)?;
 
     let menu = Menu::with_items(app, &[
         &status,
@@ -105,10 +108,13 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         &profile_sub,
         &sep3,
         &open_settings,
+        &add_correction,
         &open_snippets,
         &open_history,
         &open_perms,
         &sep4,
+        &launch_login,
+        &sep5,
         &about,
         &quit,
     ])?;
@@ -122,10 +128,11 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             let id = event.id.as_ref();
 
             // ── Navigation ────────────────────────────────────────────────────
-            if id == "open_settings" { return show_and_emit(app, "nav-setup");       }
-            if id == "open_snippets" { return show_and_emit(app, "nav-snippets");     }
-            if id == "open_history"  { return show_and_emit(app, "nav-history");      }
-            if id == "open_perms"    {
+            if id == "open_settings"  { return show_and_emit(app, "nav-setup");       }
+            if id == "add_correction" { return show_and_emit(app, "nav-vocabulary");  }
+            if id == "open_snippets"  { return show_and_emit(app, "nav-snippets");    }
+            if id == "open_history"   { return show_and_emit(app, "nav-history");     }
+            if id == "open_perms"     {
                 let _ = std::process::Command::new("open")
                     .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
                     .spawn();
@@ -237,18 +244,8 @@ fn show_and_emit<R: Runtime>(app: &AppHandle<R>, event: &str) {
 }
 
 fn load_tray_icon<R: Runtime>(_app: &AppHandle<R>) -> Image<'static> {
-    let base = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|p| p.join("icons")))
-        .unwrap_or_else(|| PathBuf::from("src-tauri/icons"));
-
-    for name in &["quill_menubar_template_black_44.png", "32x32.png"] {
-        let path = base.join(name);
-        if let Ok(bytes) = std::fs::read(&path) {
-            if let Ok(img) = Image::from_bytes(&bytes) {
-                return img;
-            }
-        }
-    }
-    Image::new_owned(vec![0u8; 4], 1, 1)
+    // Embed at compile time — works in both `tauri dev` and production bundles.
+    // The binary is built from src-tauri/ so the path is relative to Cargo.toml.
+    const ICON_BYTES: &[u8] = include_bytes!("../icons/quill_menubar_template_black_44.png");
+    Image::from_bytes(ICON_BYTES).expect("valid tray icon PNG")
 }

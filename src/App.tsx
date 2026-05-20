@@ -24,6 +24,7 @@ const TRAY_NAV: Record<string, Page> = {
   "nav-history":        "history",
   "nav-snippets":       "snippets",
   "nav-customcommands": "customcommands",
+  "nav-vocabulary":     "vocabulary",
   "nav-help":           "help",
 };
 
