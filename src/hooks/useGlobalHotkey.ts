@@ -100,6 +100,13 @@ export interface DictationTiming {
   updatedAt?: number;
 }
 
+type CustomCommandAction = "open_url" | "open_app" | "type_text";
+interface RuntimeCustomCommand {
+  trigger: string;
+  action: CustomCommandAction;
+  target: string;
+}
+
 export function useGlobalHotkey() {
   const { settings } = useSettings();
   const stateRef      = useRef<RecState>("idle");
@@ -168,6 +175,46 @@ export function useGlobalHotkey() {
 
     const clearRecordingTimeout = () => {
       if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+    };
+
+    const normalizeTrigger = (text: string) =>
+      text.trim().toLowerCase().replace(/[.,!?]+$/g, "");
+
+    const runCustomCommand = async (spokenText: string): Promise<{
+      matched: boolean;
+      pasteText?: string;
+      status?: string;
+      subtext?: string;
+    }> => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const cmds = await invoke<RuntimeCustomCommand[]>("load_custom_commands");
+        if (!Array.isArray(cmds) || cmds.length === 0) return { matched: false };
+
+        const lower = normalizeTrigger(spokenText);
+        const match = cmds.find((cmd) => {
+          const trig = normalizeTrigger(String(cmd?.trigger ?? ""));
+          return trig.length > 0 && trig.split(/\s+/).length >= 2 && trig === lower;
+        });
+        if (!match) return { matched: false };
+
+        if (match.action === "open_url") {
+          await invoke("open_url", { url: match.target });
+          return { matched: true, status: "custom_command", subtext: `Opened ${match.target}` };
+        }
+        if (match.action === "open_app") {
+          await invoke("open_app", { appName: match.target });
+          return { matched: true, status: "custom_command", subtext: `Opened ${match.target}` };
+        }
+        if (match.action === "type_text") {
+          return { matched: true, pasteText: match.target, status: "custom_command", subtext: match.target.slice(0, 55) };
+        }
+
+        return { matched: false };
+      } catch (e) {
+        console.warn("[custom-command] runtime dispatch failed:", e);
+        return { matched: false };
+      }
     };
 
     // ── State helpers ─────────────────────────────────────────────────────────
@@ -317,8 +364,6 @@ export function useGlobalHotkey() {
         }
 
         if (result.ok && result.text) {
-          const s = settingsRef.current;
-
           // ── SAFETY GUARD: never paste empty or whitespace-only text ────────
           // This prevents pasting stale clipboard contents when transcription
           // returns an empty result (e.g. audio too quiet, sidecar error).
@@ -330,6 +375,21 @@ export function useGlobalHotkey() {
             return;
           }
 
+          const s = settingsRef.current;
+
+          let custom: { matched: boolean; pasteText?: string; status?: string; subtext?: string } = { matched: false };
+          if (settingsRef.current.jarvis_enabled === true) {
+            custom = await runCustomCommand(trimmed);
+            if (custom.matched && !custom.pasteText) {
+              hudEmit({ state: "inserted", subtext: custom.subtext ?? trimmed.slice(0, 55), status: custom.status ?? "custom_command" })
+                .then(() => setTimeout(() => hudEmit({ state: "idle" }), 1200))
+                .catch(() => {});
+              return;
+            }
+          }
+
+          const textToPaste = custom.pasteText ?? trimmed;
+
           // ── FAST PATH: paste FIRST, before any HUD/history/timing work ─────
           // Matches Python app: paste_text() happens before save_history() and
           // show_message().  No HUD animation or setTimeout blocks paste.
@@ -340,7 +400,7 @@ export function useGlobalHotkey() {
           if (!s.safe_mode) {
             try {
               console.log("[perf] paste_text sent");
-              await invokeWithTimeout("paste_text", { text: trimmed }, 8_000);
+              await invokeWithTimeout("paste_text", { text: textToPaste }, 8_000);
               t_pasteEnd = Date.now();
               pasteStatus = "pasted";
               console.log("[perf] paste_text returned  elapsed=", t_pasteEnd - t_pasteStart, "ms");
@@ -362,8 +422,8 @@ export function useGlobalHotkey() {
           // HUD "inserted" state — fire-and-forget
           hudEmit({
             state:   "inserted",
-            subtext: result.text.slice(0, 55),
-            status:  pasteStatus,
+            subtext: textToPaste.slice(0, 55),
+            status:  custom.status ?? pasteStatus,
             profile: s.show_active_profile ? profile : undefined,
           }).then(() => {
             setTimeout(() => hudEmit({ state: "idle" }), 1500);
@@ -414,8 +474,8 @@ export function useGlobalHotkey() {
           invokeWithTimeout("save_history_entry", {
             entry: {
               timestamp:  new Date().toISOString(),
-              final_text: result.text,
-              status:     pasteStatus,
+              final_text: textToPaste,
+              status:     custom.status ?? pasteStatus,
               profile,
               source:     "tauri",
               timing:     result.timing ?? null,
