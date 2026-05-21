@@ -753,6 +753,7 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             or strength == "Off"
             or not text
             or len(_dictation_words(text)) <= 4
+            or (ai_mode == "auto" and len(_dictation_words(text)) < 10)
         )
 
         if not skip_ollama:

@@ -166,6 +166,17 @@ Acceptance test:
 7. Short tap never pastes anything.
 ```
 
+### Future product/UX option (do not implement in current parity pass)
+
+- **Clipboard preservation setting — design carefully; current Python/Tauri behavior leaves dictated text on clipboard.**
+- Feature idea: **Preserve clipboard after dictation**.
+  - If enabled: Quill temporarily uses clipboard for dictated paste, then restores previous clipboard after paste safely completes.
+  - If disabled: Quill leaves dictated text on clipboard (current behavior).
+- Safety constraints:
+  - Must not reintroduce stale clipboard / first-dictation wrong-paste bug.
+  - Do not use delayed background restore threads.
+  - Keep restore flow synchronous and generation-safe when/if designed.
+
 ---
 
 ### 4.4 Ollama skip-simple-cleanup logic
