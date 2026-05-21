@@ -209,6 +209,8 @@ Claude should:
 - Show `Cleanup: skipped` when skipped.
 - Keep simple dictation fast.
 
+Future: port full Python smart-skip cleanup logic after stability checkpoint. Include question-like, already well-formed, repetitive input, command-like text, translation-active, non-English, and worker-busy skip rules. Do not implement all at once; port one rule at a time with tests.
+
 ---
 
 ### 4.5 Restore local auto-correction parity
