@@ -83,7 +83,7 @@ export default function Sidebar({ current, onChange }: SidebarProps) {
             >
               <Icon
                 size={22}
-                strokeWidth={2.0}
+                strokeWidth={1.35}
                 className={active ? "text-jarvis-accent" : "text-jarvis-muted"}
               />
               <span className="text-[12.5px] font-medium">{label}</span>
