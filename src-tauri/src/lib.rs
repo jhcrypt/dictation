@@ -198,6 +198,8 @@ pub fn run() {
             open_app,
             restart_engine,
             play_recording_sound,
+            pause_media,
+            resume_media,
             get_diagnostics,
             get_last_target_app,
         ])

@@ -11,6 +11,7 @@ use core_graphics::event::{
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use std::time::Instant;
+use std::sync::{Mutex, OnceLock};
 
 // ── Settings commands ─────────────────────────────────────────────────────────
 
@@ -608,6 +609,140 @@ pub fn restart_engine(state: State<SidecarState>) -> Result<(), String> {
     let _ = sidecar_stop(state.clone());
     sidecar_start(state).map(|_| ())
 }
+
+
+// ── Media pause / resume ─────────────────────────────────────────────────────
+
+#[derive(Default, Debug)]
+struct MediaPauseState {
+    active: bool,
+    pre_recording_muted: bool,
+    paused_apps: Vec<String>,
+}
+
+static MEDIA_PAUSE_STATE: OnceLock<Mutex<MediaPauseState>> = OnceLock::new();
+
+fn media_pause_state() -> &'static Mutex<MediaPauseState> {
+    MEDIA_PAUSE_STATE.get_or_init(|| Mutex::new(MediaPauseState::default()))
+}
+
+fn osa_output(script: &str) -> Option<String> {
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .ok()?;
+
+    if !out.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn osa_spawn(script: &str) {
+    let _ = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+fn app_is_running(process_name: &str) -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-ix", process_name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn pause_player_if_playing(app_name: &str) -> bool {
+    if !app_is_running(app_name) {
+        return false;
+    }
+
+    let script = format!(
+        r#"try
+  tell application "{}" to player state as string
+on error
+  return "stopped"
+end try"#,
+        app_name
+    );
+
+    let state = osa_output(&script).unwrap_or_default().to_lowercase();
+    if state.contains("playing") {
+        osa_spawn(&format!(r#"tell application "{}" to pause"#, app_name));
+        eprintln!("[media] paused {}", app_name);
+        true
+    } else {
+        false
+    }
+}
+
+#[tauri::command]
+pub fn pause_media() -> Result<(), String> {
+    let mut guard = media_pause_state().lock().map_err(|e| e.to_string())?;
+
+    if guard.active {
+        eprintln!("[media] pause_media ignored — already active");
+        return Ok(());
+    }
+
+    let was_muted = osa_output(r#"output muted of (get volume settings)"#)
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    guard.active = true;
+    guard.pre_recording_muted = was_muted;
+    guard.paused_apps.clear();
+
+    // Match Python behavior: instantly mute first so browser/audio cannot bleed into recording.
+    if !was_muted {
+        osa_spawn(r#"set volume with output muted"#);
+        eprintln!("[media] system muted");
+    }
+
+    // Pause app players in the background when they were actually playing.
+    for app_name in ["Spotify", "Music", "Podcasts"] {
+        if pause_player_if_playing(app_name) {
+            guard.paused_apps.push(app_name.to_string());
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn resume_media() -> Result<(), String> {
+    let mut guard = media_pause_state().lock().map_err(|e| e.to_string())?;
+
+    if !guard.active {
+        return Ok(());
+    }
+
+    let pre_recording_muted = guard.pre_recording_muted;
+    let paused_apps = guard.paused_apps.clone();
+
+    guard.active = false;
+    guard.paused_apps.clear();
+
+    if !pre_recording_muted {
+        osa_spawn(r#"set volume without output muted"#);
+        eprintln!("[media] system unmuted");
+    }
+
+    for app_name in paused_apps {
+        osa_spawn(&format!(r#"tell application "{}" to play"#, app_name));
+        eprintln!("[media] resumed {}", app_name);
+    }
+
+    Ok(())
+}
+
 
 // ── Recording sounds ──────────────────────────────────────────────────────────
 

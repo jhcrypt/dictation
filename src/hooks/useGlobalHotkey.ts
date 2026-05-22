@@ -154,6 +154,20 @@ export function useGlobalHotkey() {
         .catch(() => {});
     };
 
+    /** Match Python parity: suppress media while recording. Fire-and-forget. */
+    const pauseMedia = () => {
+      import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke("pause_media").catch((e) => console.warn("[media] pause_media failed:", e)))
+        .catch(() => {});
+    };
+
+    /** Restore media after stop/cancel/start failure. Fire-and-forget. */
+    const resumeMedia = () => {
+      import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke("resume_media").catch((e) => console.warn("[media] resume_media failed:", e)))
+        .catch(() => {});
+    };
+
     const hudEmit = async (payload: HudPayload) => {
       try {
         const { emit } = await import("@tauri-apps/api/event");
@@ -257,6 +271,9 @@ export function useGlobalHotkey() {
         hudEmit({ state: "recording", toggleMode });
       }
 
+      // Python parity: suppress browser/music audio before opening the mic.
+      pauseMedia();
+
       // Safety auto-stop: if still recording after 90 s, force a stop
       timeoutRef.current = setTimeout(() => {
         console.warn("[recording] 90 s safety timeout — forcing stop");
@@ -273,6 +290,7 @@ export function useGlobalHotkey() {
         pendingStopRef.current = false;
         isWakeRecordingRef.current = false;
         stateRef.current = "idle";
+        resumeMedia();
         setError(String(e));
         return;
       }
@@ -291,6 +309,7 @@ export function useGlobalHotkey() {
         } catch (e) {
           console.warn("[sidecar] cancel_recording error (ignored):", e);
         }
+        resumeMedia();
         return;
       }
 
@@ -323,6 +342,7 @@ export function useGlobalHotkey() {
         console.log("[sidecar] stop_recording →");
         await invokeWithTimeout("sidecar_stop_recording", undefined, 8_000);
         console.log("[sidecar] stop_recording ✓");
+        resumeMedia();
       } catch (e) {
         // Guard: a new cycle may have started while we awaited stop_recording
         if (cycleIdRef.current !== myCycle) {
@@ -331,6 +351,7 @@ export function useGlobalHotkey() {
         }
         console.error("[sidecar] stop_recording FAILED:", e);
         stateRef.current = "idle";
+        resumeMedia();
         setError(String(e));
         return;
       }
@@ -543,6 +564,7 @@ export function useGlobalHotkey() {
       } catch (e) {
         console.warn("[sidecar] cancel_recording error (ignored):", e);
       }
+      resumeMedia();
     };
 
     const cancelRecording = async () => {
@@ -571,6 +593,7 @@ export function useGlobalHotkey() {
       } catch (e) {
         console.warn("[sidecar] cancel_recording error (ignored):", e);
       }
+      resumeMedia();
     };
 
     // ── Event listeners ───────────────────────────────────────────────────────
