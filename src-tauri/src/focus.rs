@@ -20,7 +20,21 @@ impl LastTargetApp {
     }
 }
 
-const JARVIS_BUNDLE: &str = "com.jarvis.dictation.tauri";
+fn is_jarvis_app(info: &AppInfo) -> bool {
+    let bundle = info.bundle_id.trim().to_lowercase();
+    let name = info.name.trim().to_lowercase();
+
+    // Exclude all known app/window identities for this Tauri rebuild.
+    // macOS can report different names/bundle identifiers between dev,
+    // packaged builds, and HUD/main windows.
+    bundle == "com.jarvis.dictation.tauri"
+        || bundle == "com.jarvis-dictation"
+        || bundle == "jarvis-dictation"
+        || name == "jarvis-dictation"
+        || name == "jarvis dictation"
+        || name == "quill"
+        || name == "quill tauri preview hud"
+}
 
 /// Query the current frontmost app's bundle ID and name via AppleScript.
 /// Returns None on any failure.
@@ -87,7 +101,7 @@ pub fn start_focus_tracker<R: Runtime>(app: AppHandle<R>) {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(800));
             if let Some(info) = frontmost_app() {
-                if info.bundle_id != JARVIS_BUNDLE {
+                if !is_jarvis_app(&info) {
                     if let Ok(state) = app.try_state::<LastTargetApp>().ok_or(()) {
                         if let Ok(mut guard) = state.0.lock() {
                             *guard = Some(info);
