@@ -27,27 +27,33 @@ export interface HudPayload {
 // ── Waveform — 22 bars × 2px + 21 gaps × 1px = 65px, matching Python spec ───
 
 const WAVE_BARS = 22;
+const WAVEFORM_HEIGHTS = [4, 6, 8, 11, 14, 17, 20, 22, 22, 20, 17, 14, 10, 7, 5, 4, 6, 9, 13, 10, 7, 4];
+
 function WaveformBars({ color = "#ff453a" }: { color?: string }) {
   return (
     <div
       className="flex items-center flex-shrink-0"
       style={{ gap: 1, height: 24, width: 65 }}
     >
-      {Array.from({ length: WAVE_BARS }, (_, i) => (
-        <div
-          key={i}
-          style={{
-            width: 2,
-            height: 24,
-            background: color,
-            borderRadius: 1,
-            transformOrigin: "center center",
-            animation: "hud-wave 0.75s ease-in-out infinite",
-            // stagger across full cycle so bars feel like a live waveform
-            animationDelay: `-${((i * 0.034) % 0.75).toFixed(3)}s`,
-          }}
-        />
-      ))}
+      {Array.from({ length: WAVE_BARS }, (_, i) => {
+        const h = WAVEFORM_HEIGHTS[i % WAVEFORM_HEIGHTS.length];
+
+        return (
+          <div
+            key={i}
+            style={{
+              width: 2,
+              height: h,
+              background: color,
+              opacity: 0.92,
+              borderRadius: 1,
+              transformOrigin: "center center",
+              animation: "hud-wave 0.38s ease-in-out infinite",
+              animationDelay: `-${((i * 0.031) % 0.38).toFixed(3)}s`,
+            }}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -324,16 +330,16 @@ export default function HudApp() {
         : "rgba(10, 132, 255, 0.3)")
     : "transparent";
 
-  // Waveform states: flush-left (no left pad) and zero gap so bars touch the text
+  // Waveform states: keep the waveform flush-left, but leave breathing room before the text.
   const isWaveform = state === "recording" || state === "wake_recording";
 
   return (
     <div
       className="w-full h-full flex items-center"
       style={{
-        paddingLeft:  isWaveform ? 0 : 13,
+        paddingLeft:  isWaveform ? 8 : 13,
         paddingRight: 13,
-        gap:          isWaveform ? 0 : 10,
+        gap:          isWaveform ? 10 : 10,
         background:   "rgba(36, 36, 36, 0.96)",
         borderRadius: "10px",
         border:       `1px solid ${borderColor}`,
