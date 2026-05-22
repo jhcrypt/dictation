@@ -147,12 +147,14 @@ export default function CustomCommandsPage() {
           <div className="flex flex-col gap-1.5">
             {commands.map((cmd, i) => (
               <div key={i} className="flex items-start justify-between px-3 py-2.5 bg-jarvis-surface rounded-lg gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-jarvis-text font-medium truncate">"{cmd.trigger}"</div>
-                  <div className="text-xs text-jarvis-muted mt-0.5">
+                <div className="flex-1 min-w-0 overflow-hidden">
+                  <div className="text-sm text-jarvis-text font-medium truncate">"
+                    {cmd.trigger}"
+                  </div>
+                  <div className="text-xs text-jarvis-muted mt-0.5 whitespace-normal break-words">
                     <span className="text-jarvis-hint">{ACTION_LABELS[cmd.action]}</span>
                     {" → "}
-                    <span className="truncate">{cmd.target}</span>
+                    <span className="break-all">{cmd.target}</span>
                   </div>
                 </div>
                 <button
