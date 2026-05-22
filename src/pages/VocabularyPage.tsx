@@ -26,6 +26,7 @@ export default function VocabularyPage({ prefill }: VocabularyPageProps = {}) {
   const [corrections, setCorrections] = useState<Correction[]>([]);
   const [corrStatus, setCorrStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const [manualVocabularyDraft, setManualVocabularyDraft] = useState(settings.manual_vocabulary ?? "");
 
   // Ref to the "Should be…" input so we can focus it after prefill
   const rightInputRef = useRef<HTMLInputElement>(null);
@@ -39,6 +40,10 @@ export default function VocabularyPage({ prefill }: VocabularyPageProps = {}) {
       .catch(() => setCorrections([]))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    setManualVocabularyDraft(settings.manual_vocabulary ?? "");
+  }, [settings.manual_vocabulary]);
 
   // Apply prefill when "Add Correction from Last Dictation" is triggered
   useEffect(() => {
@@ -94,14 +99,20 @@ export default function VocabularyPage({ prefill }: VocabularyPageProps = {}) {
           One word or phrase per line. Passed to Whisper as hints — improves accuracy for names, brands, and technical terms.
         </p>
         <textarea
-          value={settings.manual_vocabulary}
-          onChange={(e) => updateSetting("manual_vocabulary", e.target.value)}
+          value={manualVocabularyDraft}
+          onChange={(e) => setManualVocabularyDraft(e.target.value)}
           rows={6}
           placeholder={"n8n\nSpotify\nPlaylist\nAPI"}
           className="w-full bg-jarvis-surface border border-jarvis-border rounded-lg px-3 py-2 text-sm text-jarvis-text focus:outline-none focus:border-jarvis-accent placeholder:text-jarvis-muted resize-none font-mono"
         />
         <div className="flex justify-end mt-2">
-          <SaveButton onClick={saveSettings} saved={saved} />
+          <SaveButton
+            onClick={async () => {
+              updateSetting("manual_vocabulary", manualVocabularyDraft);
+              await saveSettings();
+            }}
+            saved={saved}
+          />
         </div>
       </Card>
 
