@@ -316,7 +316,7 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
     // ── 2. Restore focus to target app ──────────────────────────────────────
     activate_app(&app_info).map_err(|e| format!("Could not activate target app: {}", e))?;
     // Wait for the window to come to front before writing to clipboard.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::thread::sleep(std::time::Duration::from_millis(250));
 
     // ── 3. Write dictated text via pbcopy ──────────────────────────────────
     // Append a trailing space to match Python behavior (ensures paste ends
