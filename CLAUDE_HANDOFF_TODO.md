@@ -805,3 +805,32 @@ The Tauri app should match it.
 Current biggest priority:
 Jarvis wake-word parity. Jarvis worked in Python and is heavily used. In Tauri, it says Listening, uses about 10% CPU, and does not trigger recording. Compare the stable Python wake loop to the Tauri sidecar before changing code.
 ```
+
+## Stable Python Feature Inventory
+
+Use `README.md` as the full working feature inventory for the stable Python app.
+
+Do not treat these as speculative future features if they are listed in the README:
+- email drafts / email commands
+- reminders
+- translation
+- screenshots
+- Spotify / music controls
+- system volume and system controls
+- app open / close / quit commands
+- web search
+- weather
+- scratch / undo / redo
+- formatting commands
+- snippets
+- dictation history
+- custom commands
+- custom vocabulary
+- writing profiles
+- context-aware formatting
+- cloud transcription
+- Wake Word
+
+Tauri should be treated as a UI/platform rebuild that must restore parity with the working Python app. Track each missing feature as “Python parity pending” unless it is confirmed working in Tauri.
+
+Wake Word is the exception for now: it worked in Python, but is paused/unsafe in Tauri because enabling it can freeze the app.
