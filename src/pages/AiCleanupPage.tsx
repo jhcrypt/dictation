@@ -73,6 +73,31 @@ const STATUS_DETAIL: Record<OllamaStatus, string> = {
 // ── Test Cleanup state ────────────────────────────────────────────────────────
 type TestState = "idle" | "running" | "passed" | "failed";
 
+function LocalAiExplanationCard() {
+  return (
+    <Card title="About Local AI Cleanup">
+      <div className="space-y-2 text-sm text-jarvis-muted leading-relaxed">
+        <p>
+          Quill works normally without Ollama. Local AI Cleanup is optional and only improves dictated text
+          after Whisper has already transcribed it.
+        </p>
+        <p>
+          When enabled, Ollama runs a local model on your Mac to improve punctuation, formatting, and writing
+          style. No account is required, and cleanup runs locally when Ollama is available.
+        </p>
+        <p>
+          The recommended model is <span className="text-jarvis-text font-medium">qwen2.5:3b</span>. Installing
+          a model requires additional disk space and may take several minutes depending on your internet speed.
+        </p>
+        <p>
+          If Ollama is not installed, not running, or the model is missing, normal dictation still works. You can
+          turn Local AI Cleanup off at any time.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 // ── Ollama readiness card ─────────────────────────────────────────────────────
 function OllamaReadinessCard() {
   const [status,        setStatus]        = useState<OllamaStatus>("checking");
@@ -293,6 +318,7 @@ export default function AiCleanupPage() {
       </div>
 
       {/* Ollama readiness — always first */}
+      <LocalAiExplanationCard />
       <OllamaReadinessCard />
 
       {/* AI Cleanup Mode — full 3-line explanation always visible, matches Python helper_text */}
