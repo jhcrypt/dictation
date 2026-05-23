@@ -3,7 +3,7 @@ use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, Runtime,
+    AppHandle, Emitter, Listener, Manager, Runtime,
 };
 use crate::hotkey::HotkeyConfig;
 
@@ -121,6 +121,10 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         &quit,
     ])?;
 
+    // Clone before the move closure so we can also capture it in the
+    // wake-menu-sync event listener below.
+    let wake_for_sync = wake.clone();
+
     let _tray = TrayIconBuilder::with_id("main")
         .icon(icon)
         .icon_as_template(true)
@@ -171,6 +175,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 let mut s = crate::settings::load();
                 s.wake_enabled = !s.wake_enabled;
                 let _ = crate::settings::save(&s);
+                // Notify Settings UI so its toggle reflects the new value.
+                let _ = app.emit("settings-changed", ());
                 // Python: app.show_message("Wake word On/Off", BLUE)
                 hud_notify(app, if s.wake_enabled { "Wake word On" } else { "Wake word Off" });
                 return;
@@ -179,6 +185,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 let mut s = crate::settings::load();
                 s.jarvis_enabled = !s.jarvis_enabled;
                 let _ = crate::settings::save(&s);
+                // Notify Settings UI so its toggle reflects the new value.
+                let _ = app.emit("settings-changed", ());
                 // Python: app.show_message("Jarvis commands On/Off", BLUE)
                 hud_notify(app, if s.jarvis_enabled { "Jarvis commands On" } else { "Jarvis commands Off" });
                 return;
@@ -267,6 +275,17 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+
+    // Keep the tray checkmark in sync when wake is toggled from the Settings UI.
+    // JarvisPage emits "wake-menu-sync" with a JSON bool after every successful
+    // sidecar_start/stop_wake_listen call.  app.listen returns an EventId (u32);
+    // dropping it does NOT unregister the listener in Tauri v2 — only calling
+    // app.unlisten(id) does.  We intentionally keep this listener alive forever.
+    let _ = app.listen("wake-menu-sync", move |event| {
+        if let Ok(enabled) = serde_json::from_str::<bool>(event.payload()) {
+            let _ = wake_for_sync.set_checked(enabled);
+        }
+    });
 
     Ok(())
 }

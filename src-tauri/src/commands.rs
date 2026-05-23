@@ -223,6 +223,11 @@ pub fn sidecar_test_microphone(state: State<SidecarState>) -> Result<serde_json:
 
 /// Run `pbcopy` with the given text. Returns Ok(()) on success.
 fn pbcopy(text: &str) -> Result<(), String> {
+    pbcopy_raw(text.as_bytes())
+}
+
+/// Run `pbcopy` with raw bytes (preserves non-UTF-8 clipboard contents).
+fn pbcopy_raw(data: &[u8]) -> Result<(), String> {
     let mut child = std::process::Command::new("pbcopy")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -233,7 +238,7 @@ fn pbcopy(text: &str) -> Result<(), String> {
     use std::io::Write;
     child.stdin.take()
         .ok_or_else(|| "pbcopy stdin not available".to_string())?
-        .write_all(text.as_bytes())
+        .write_all(data)
         .map_err(|e| format!("pbcopy write failed: {}", e))?;
 
     let status = child.wait().map_err(|e| format!("pbcopy wait failed: {}", e))?;
@@ -243,14 +248,12 @@ fn pbcopy(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Activate the last-known non-Jarvis app, then paste text into it via Cmd+V.
-/// Leaves the dictated text on the clipboard afterward (no restore) — matching
-/// the Python app's behavior at line 2598 which logs "leaving dictated text on
-/// clipboard".
+/// Activate the last-known non-Jarvis app, paste dictated text via Cmd+V,
+/// then restore the user's original clipboard contents.
 ///
-/// Uses macOS pbcopy CLI tool for clipboard write (not arboard), matching the
-/// Python app's approach.  pbcopy writes directly to NSPasteboard so there is
-/// no cache-vs-reality mismatch like arboard has.
+/// Uses macOS pbcopy/pbpaste CLI tools (not arboard), matching the Python
+/// app's approach.  pbcopy writes directly to NSPasteboard so there is no
+/// cache-vs-reality mismatch like arboard has.
 
 fn send_cmd_v_quartz() -> Result<(), String> {
     const KEY_V: CGKeyCode = 9;
@@ -301,7 +304,24 @@ fn send_cmd_v() -> Result<(), String> {
 pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), String> {
     eprintln!("[paste] requested text len={} preview={}", text.len(), &text[..text.len().min(40)]);
 
-    // ── 1. Resolve target app ───────────────────────────────────────────────
+    // ── 1. Save original clipboard BEFORE we touch it ───────────────────────
+    // pbpaste with no args returns the current plain-text clipboard content.
+    // We read raw bytes so non-UTF-8 content (e.g. RTF, binary) round-trips
+    // correctly through pbcopy_raw() below.
+    let prev_clipboard: Option<Vec<u8>> = std::process::Command::new("pbpaste")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .map(|o| o.stdout)
+        .filter(|b| !b.is_empty());
+
+    eprintln!(
+        "[paste] saved original clipboard ({} bytes)",
+        prev_clipboard.as_ref().map_or(0, |b| b.len())
+    );
+
+    // ── 2. Resolve target app ───────────────────────────────────────────────
     let app_info = {
         let guard = target.0.lock().map_err(|e| e.to_string())?;
         guard.clone()
@@ -313,12 +333,12 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
 
     eprintln!("[paste] target: {} ({})", app_info.name, app_info.bundle_id);
 
-    // ── 2. Restore focus to target app ──────────────────────────────────────
+    // ── 3. Restore focus to target app ──────────────────────────────────────
     activate_app(&app_info).map_err(|e| format!("Could not activate target app: {}", e))?;
     // Wait for the window to come to front before writing to clipboard.
     std::thread::sleep(std::time::Duration::from_millis(250));
 
-    // ── 3. Write dictated text via pbcopy ──────────────────────────────────
+    // ── 4. Write dictated text via pbcopy ──────────────────────────────────
     // Append a trailing space to match Python behavior (ensures paste ends
     // the word being typed rather than extending it).
     // Python source: paste_text() at line 2484: paste_content = text + " "
@@ -326,7 +346,7 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
     pbcopy(&paste_content)?;
     eprintln!("[paste] clipboard set via pbcopy");
 
-    // ── 4. Cmd+V ───────────────────────────────────────────────────────────
+    // ── 5. Cmd+V ───────────────────────────────────────────────────────────
     // pbcopy is synchronous — the process exits only after NSPasteboard ownership
     // is registered.  No settle needed (unlike arboard which had internal cache).
     let cmd_v_start = Instant::now();
@@ -335,12 +355,20 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
         "[paste] cmd_v returned elapsed={}ms",
         cmd_v_start.elapsed().as_millis()
     );
-eprintln!("[paste] Cmd+V sent successfully into '{}'", app_info.name);
+    eprintln!("[paste] Cmd+V sent successfully into '{}'", app_info.name);
 
-    // ── 5. Leave dictated text on clipboard (no restore) ────────────────────
-    // Python app: "leaving dictated text on clipboard" at line 2598.
-    // The user can re-paste manually if needed.
-    eprintln!("[paste] leaving dictated text on clipboard");
+    // ── 6. Wait for target app to process the paste, then restore clipboard ─
+    // 350 ms is enough for the app to read NSPasteboard before we overwrite it.
+    std::thread::sleep(std::time::Duration::from_millis(350));
+
+    if let Some(prev_bytes) = prev_clipboard {
+        match pbcopy_raw(&prev_bytes) {
+            Ok(()) => eprintln!("[paste] original clipboard restored ({} bytes)", prev_bytes.len()),
+            Err(e) => eprintln!("[paste] clipboard restore failed (non-fatal): {}", e),
+        }
+    } else {
+        eprintln!("[paste] no original clipboard to restore (was empty before dictation)");
+    }
 
     Ok(())
 }

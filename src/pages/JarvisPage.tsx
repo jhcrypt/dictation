@@ -13,15 +13,25 @@ export default function JarvisPage() {
   const [wakeStatus, setWakeStatus] = useState<WakeStatus>("idle");
   const [wakeError,  setWakeError]  = useState("");
 
-  // On mount: reflect real sidecar state if wake_enabled is saved as true.
-  // The sidecar auto-starts the listener on app launch when wake_enabled=true,
-  // but the UI needs to show the correct status badge.
+  // Sync the status badge with settings.wake_enabled.
+  // Runs on mount (replacing the old one-shot effect) and whenever the value
+  // changes — e.g., tray menu toggle → loadSettings() → React state update.
+  // handleWakeToggle sets wakeStatus directly; this effect keeps it correct
+  // when an external source (tray) changes the setting.
   useEffect(() => {
     if (settings.wake_enabled) {
-      setWakeStatus("listening");
+      // Only promote idle/error → listening; leave "checking" alone so an
+      // in-flight sidecar call isn't overwritten.
+      setWakeStatus((prev) =>
+        prev === "idle" || prev === "error" ? "listening" : prev
+      );
+    } else {
+      setWakeStatus((prev) =>
+        prev === "listening" || prev === "checking" ? "idle" : prev
+      );
+      setWakeError("");
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // run once on mount
+  }, [settings.wake_enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Wake toggle ─────────────────────────────────────────────────────────────
 
@@ -31,6 +41,7 @@ export default function JarvisPage() {
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+      const { emit }   = await import("@tauri-apps/api/event");
 
       if (enabled) {
         setWakeStatus("checking");
@@ -38,21 +49,30 @@ export default function JarvisPage() {
         const resp = JSON.parse(raw) as { ok: boolean; status?: string; error?: string };
         if (resp.ok) {
           setWakeStatus("listening");
+          // Keep the tray menu checkmark in sync.
+          await emit("wake-menu-sync", true);
         } else {
           const msg = resp.error ?? "Failed to start wake listener";
           setWakeError(msg);
           setWakeStatus("error");
           updateSetting("wake_enabled", false); // revert toggle
+          await emit("wake-menu-sync", false);
         }
       } else {
         setWakeStatus("idle");
         await invoke("sidecar_stop_wake_listen");
+        // Keep the tray menu checkmark in sync.
+        await emit("wake-menu-sync", false);
       }
     } catch (e) {
       const msg = String(e);
       setWakeError(msg);
       setWakeStatus("error");
-      if (enabled) updateSetting("wake_enabled", false); // revert toggle
+      if (enabled) {
+        updateSetting("wake_enabled", false); // revert toggle
+        const { emit } = await import("@tauri-apps/api/event");
+        await emit("wake-menu-sync", false);
+      }
     }
   };
 

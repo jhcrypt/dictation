@@ -104,6 +104,12 @@ function AppContent() {
         lastDictatedRef.current = e.payload;
       }).then((fn) => unlisteners.push(fn));
 
+      // Tray menu toggles (wake, safe_mode, jarvis, hide_hud) save to disk then
+      // emit "settings-changed".  Reload so Settings UI reflects the new values.
+      listen("settings-changed", () => {
+        loadSettings();
+      }).then((fn) => unlisteners.push(fn));
+
       // "Add Correction from Last Dictation" — navigate + pre-fill if text available
       listen("nav-vocabulary", () => {
         const text = lastDictatedRef.current;
@@ -120,7 +126,7 @@ function AppContent() {
 
     }).catch(() => {});
     return () => unlisteners.forEach((fn) => fn());
-  }, []);
+  }, [loadSettings]);
 
   const PageComponent: Record<Page, React.FC> = {
     setup:          SetupPage,

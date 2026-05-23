@@ -355,6 +355,281 @@ def apply_snippets(text: str) -> str:
     return text
 
 
+# ── Mojibake repair ───────────────────────────────────────────────────────────
+
+_MOJIBAKE_MAP = [
+    ("¬¨‚Ä†",  " "),   # non-breaking space rendered via two-byte mojibake
+    ("¬†",      " "),   # lone variant
+    ("Â ",      " "),   # UTF-8 NBSP decoded as Latin-1
+    (" ",  " "),   # actual Unicode non-breaking space
+    ("‚Äô",    "'"),   # right single quotation mark
+    ("‚Äú",    '"'),   # left double quotation mark
+    ("‚Äù",    '"'),   # right double quotation mark
+    ("‚Äì",    "-"),   # en dash
+    ("‚Äî",    "-"),   # em dash
+    ("‚Ä¶",    "..."), # horizontal ellipsis
+    # MacRoman mojibake: UTF-8 bytes misread as Mac OS Roman
+    ("√©", "é"),  ("√®", "è"),  ("√™", "ê"),  ("√´", "ë"),
+    ("√†", "à"),  ("√¢", "â"),  ("√ß", "ç"),  ("√Æ", "î"),
+    ("√Ø", "ï"),  ("√¥", "ô"),  ("√π", "ù"),  ("√ª", "û"),
+    ("√º", "ü"),  ("≈ì", "œ"),  ("√¶", "æ"),
+    ("√â", "É"),  ("√à", "È"),  ("√ä", "Ê"),  ("√ã", "Ë"),
+    ("√Ä", "À"),  ("√Ç", "Â"),  ("√á", "Ç"),  ("√é", "Î"),
+    ("√è", "Ï"),  ("√î", "Ô"),  ("√ô", "Ù"),  ("√õ", "Û"),
+    ("√ú", "Ü"),  ("≈í", "Œ"),  ("√Ü", "Æ"),  ("√±", "ñ"),
+    ("√ë", "Ñ"),
+]
+
+def repair_mojibake(text: str) -> str:
+    """Replace mojibake sequences, collapse multiple spaces, fix space-before-punct."""
+    if not text:
+        return text
+    for bad, good in _MOJIBAKE_MAP:
+        text = text.replace(bad, good)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
+    return text
+
+
+# ── Profile aliases (multi-word phrase → abbreviation) ────────────────────────
+# Only multi-word source phrases are allowed as keys — never single words —
+# to prevent dangerous substitutions (e.g. "I" → "UI").
+# Ported from jarvis_dictation.py PROFILE_ALIASES.
+
+PROFILE_ALIASES: dict[str, dict[str, str]] = {
+    "Developer": {
+        # HUD mis-transcription fixes
+        "the had":      "the HUD",
+        "this had":     "this HUD",
+        "that had":     "that HUD",
+        "had window":   "HUD window",
+        "had overlay":  "HUD overlay",
+        "had card":     "HUD card",
+        "had icon":     "HUD icon",
+        "had position": "HUD position",
+        "had setting":  "HUD setting",
+        "had settings": "HUD settings",
+        # Standard abbreviations
+        "user interface":                    "UI",
+        "user experience":                   "UX",
+        "application programming interface": "API",
+        "java script object notation":       "JSON",
+        "type script":                       "TypeScript",
+        "java script":                       "JavaScript",
+        "local host":                        "localhost",
+        "pull request":                      "PR",
+        "command line interface":            "CLI",
+        "continuous integration":            "CI",
+        "continuous deployment":             "CD",
+        "continuous delivery":               "CD",
+    },
+    "Medical": {
+        "blood pressure":             "BP",
+        "heart rate":                 "HR",
+        "electrocardiogram":          "ECG",
+        "magnetic resonance imaging": "MRI",
+        "computed tomography":        "CT",
+        "body mass index":            "BMI",
+        "complete blood count":       "CBC",
+        "beats per minute":           "BPM",
+    },
+    "Legal": {
+        "limited liability company":     "LLC",
+        "limited liability partnership": "LLP",
+    },
+    "Sales": {
+        "customer relationship management": "CRM",
+        "key performance indicator":        "KPI",
+        "return on investment":             "ROI",
+        "marketing qualified lead":         "MQL",
+        "sales qualified lead":             "SQL",
+    },
+}
+
+_URL_EMAIL_RE = re.compile(r'https?://\S+|www\.\S+|\S+@\S+\.\S+')
+
+def apply_profile_aliases(text: str, profile: str) -> str:
+    """Replace spoken multi-word phrases with profile-specific abbreviations.
+
+    Only multi-word source phrases — never single-word keys — so "I" can never
+    accidentally map to "UI".  Longest phrase matched first.
+    URLs and email addresses are masked so they survive unchanged.
+    """
+    aliases = PROFILE_ALIASES.get(profile)
+    if not aliases:
+        return text
+
+    masks: list[tuple[str, str]] = []
+    def _mask(m: re.Match) -> str:
+        token = f"\x00MASK{len(masks)}\x00"
+        masks.append((token, m.group(0)))
+        return token
+    masked = _URL_EMAIL_RE.sub(_mask, text)
+
+    for phrase in sorted(aliases, key=len, reverse=True):
+        replacement = aliases[phrase]
+        pat = re.compile(r'\b' + re.escape(phrase) + r'\b', re.IGNORECASE)
+        masked = pat.sub(replacement, masked)
+
+    for token, original in masks:
+        masked = masked.replace(token, original)
+    return masked
+
+
+# ── Developer-profile contextual fixes ───────────────────────────────────────
+
+_UI_CONTEXT_WORDS: frozenset = frozenset({
+    "website", "app", "screen", "page", "layout", "design", "interface",
+    "button", "menu", "card", "settings", "frontend", "component", "modal",
+    "dashboard", "sidebar", "header", "footer", "navbar", "dropdown",
+    "form", "dialog", "popup", "panel", "widget", "theme", "css", "html",
+    "responsive", "mobile", "desktop", "viewport", "animation", "icon",
+})
+_UI_VERB_RE = re.compile(
+    r'(must|should|needs|looks|renders|displays|shows|updates|loads|'
+    r'crashes|breaks|feels|appears|handles|requires|supports|allows)',
+    re.IGNORECASE,
+)
+
+def _apply_ui_context_fix(text: str, profile: str) -> str:
+    """Correct Whisper's mis-transcription of 'UI' as 'I' in Developer profile."""
+    if profile != "Developer":
+        return text
+    # Tier 1: determiner-anchored
+    text = re.sub(r'\b(the|this|that|our|your|its)\s+I\b',
+                  lambda m: m.group(1) + " UI", text, flags=re.IGNORECASE)
+    # Tier 2: sentence-start + visual verb
+    text = re.sub(r'(^|(?<=[.!?])\s+)I\s+(' + _UI_VERB_RE.pattern + r')\b',
+                  lambda m: m.group(1) + "UI " + m.group(2),
+                  text, flags=re.IGNORECASE | re.MULTILINE)
+    # Tier 3: context-word triggered
+    text_words = set(re.findall(r'\b\w+\b', text.lower()))
+    if not (text_words & _UI_CONTEXT_WORDS):
+        return text
+    text = re.sub(r'\bI\s+on\b', 'UI on', text, flags=re.IGNORECASE)
+    text = re.sub(r'(^|(?<=[.!?])\s+)I\s+(is|was|has|will|can|would|needs to|should be)\b',
+                  lambda m: m.group(1) + "UI " + m.group(2),
+                  text, flags=re.IGNORECASE | re.MULTILINE)
+    return text
+
+_HUD_CONTEXT_WORDS: frozenset = frozenset({
+    "window", "overlay", "card", "settings", "setting", "icon",
+    "position", "floating", "recording", "dictation", "interface",
+    "screen", "transparent", "rounded", "corner", "resize", "drag",
+    "visible", "hidden", "opacity", "titlebar", "menubar", "panel",
+    "display", "layer", "mode", "state",
+})
+
+def _apply_hud_context_fix(text: str, profile: str) -> str:
+    """Correct Whisper's mis-transcription of 'HUD' as 'had'/'hud' in Developer profile."""
+    if profile != "Developer":
+        return text
+    # Tier 1: casing normalisation
+    text = re.sub(r'\bh\s+u\s+d\b', 'HUD', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bhud\b', 'HUD', text, flags=re.IGNORECASE)
+    # Tier 2: contextual "had" → "HUD"
+    text_words = set(re.findall(r'\b\w+\b', text.lower()))
+    if not (text_words & _HUD_CONTEXT_WORDS):
+        return text
+    _noun = r'(window|overlay|card|icon|position|setting|settings|panel|display|bar|mode|state|view|layer|opacity|size)'
+    text = re.sub(r'\bhad\s+' + _noun + r'\b',
+                  lambda m: 'HUD ' + m.group(1), text, flags=re.IGNORECASE)
+    text = re.sub(r'\b(the|this|that|our|your|its)\s+had\b',
+                  lambda m: m.group(1) + ' HUD', text, flags=re.IGNORECASE)
+    return text
+
+
+# ── Inline linebreaks ─────────────────────────────────────────────────────────
+
+def apply_inline_linebreaks(text: str) -> str:
+    """Convert spoken 'next line' / 'next paragraph' markers to real line breaks."""
+    text = re.sub(r'\s*\bnext paragraph\b\s*', '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*\bnew paragraph\b\s*',  '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*\bnext line\b\s*',      '\n',   text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+# ── Personal corrections (vocab["corrections"]) ───────────────────────────────
+
+def apply_corrections(text: str) -> str:
+    """Apply user-defined corrections (wrong → right) from vocabulary file.
+
+    - Case-insensitive, word-boundary-anchored matching.
+    - Longest phrase matched first so short keys can't shadow long ones.
+    - Replacement is preserved exactly as the user entered it.
+    - Safe for all languages — user controls the mappings.
+    """
+    try:
+        with open(VOCAB_FILE) as f:
+            vocab = json.load(f)
+        corrections: dict[str, str] = vocab.get("corrections", {})
+        if not corrections:
+            return text
+        for wrong in sorted(corrections, key=len, reverse=True):
+            right = corrections[wrong]
+            pattern = re.compile(r'\b' + re.escape(wrong) + r'\b', re.IGNORECASE)
+            text = pattern.sub(lambda _m, r=right: r, text)
+    except Exception:
+        pass
+    return text
+
+
+# ── SymSpell typo correction ──────────────────────────────────────────────────
+# Graceful degradation: if symspellpy is not installed, symspell_correct is a no-op.
+# Install with: pip install symspellpy
+
+try:
+    from symspellpy import SymSpell, Verbosity as _Verbosity
+    import symspellpy as _symspellpy_pkg
+    _sym = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+    _SYMSPELL_DICT = os.path.join(
+        os.path.dirname(_symspellpy_pkg.__file__),
+        "frequency_dictionary_en_82_765.txt",
+    )
+    _USE_SYMSPELL = os.path.exists(_SYMSPELL_DICT) and _sym.load_dictionary(
+        _SYMSPELL_DICT, term_index=0, count_index=1
+    )
+except ImportError:
+    _USE_SYMSPELL = False
+
+def symspell_correct(text: str) -> str:
+    """Apply SymSpell word-level typo correction.
+
+    Safety rules (mirrors Python jarvis_dictation.py):
+    - Only corrects pure alpha words with optional trailing punctuation.
+    - Skips words containing digits, underscores, slashes, or dots
+      (protects code, paths, URLs, snake_case, camelCase, acronyms).
+    - Skips ALL-CAPS words (acronyms like API, HUD, PR).
+    - Skips CamelCase words (TypeScript, iPhone, etc.).
+    - English dictionary only — caller must skip for non-English.
+    - Returns text unchanged if symspellpy is unavailable.
+    """
+    if not _USE_SYMSPELL:
+        return text
+    words = text.split()
+    corrected = []
+    for word in words:
+        m = re.match(r"^([a-zA-Z']+)([.,!?;:]*)$", word)
+        if not m:
+            # Contains digit, underscore, slash, dot, etc. — skip
+            corrected.append(word)
+            continue
+        core, punct = m.group(1), m.group(2)
+        # Skip ALL-CAPS (acronyms) and CamelCase (product names)
+        if core.isupper() or (core != core.lower() and core != core.capitalize()):
+            corrected.append(word)
+            continue
+        suggestions = _sym.lookup(core.lower(), _Verbosity.CLOSEST, max_edit_distance=2)
+        if suggestions:
+            s = suggestions[0].term
+            if core[0].isupper():
+                s = s.capitalize()
+            corrected.append(s + punct)
+        else:
+            corrected.append(word)
+    return " ".join(corrected)
+
+
 # ── Text post-processing ──────────────────────────────────────────────────────
 
 def smart_punctuate(text: str) -> str:
@@ -956,9 +1231,35 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             except Exception as e:
                 _log(f"Translation skipped: {e}")
 
-        # ── Post-processing ────────────────────────────────────────────────────
+        # ── Local correction pipeline (matches jarvis_dictation.py) ──────────
+        # Determine whether the transcription is non-English so we can skip the
+        # English-only SymSpell dictionary on French/Spanish/etc. text.
+        _is_non_english = bool(
+            language and language != "en" and not auto_detect
+        )
+
+        if _is_non_english:
+            # Skip SymSpell for non-English — it uses an English dictionary and
+            # would corrupt French/Spanish/etc. words.
+            text = repair_mojibake(smart_punctuate(text))
+        else:
+            text = repair_mojibake(smart_punctuate(symspell_correct(text)))
+            # Profile aliases: safe multi-word phrase → abbreviation
+            text = apply_profile_aliases(text, profile)
+            # Developer-profile contextual fixes (UI/HUD mis-transcription)
+            text = _apply_ui_context_fix(text, profile)
+            text = _apply_hud_context_fix(text, profile)
+
+        # Inline linebreaks: "next line" / "next paragraph" → real newlines.
+        # Runs for all languages.
+        text = apply_inline_linebreaks(text)
+
+        # Personal corrections from vocab["corrections"]: user-defined wrong→right.
+        # Runs for all languages — user controls the mappings.
+        text = apply_corrections(text)
+
+        # Number words → digits (e.g. "twenty three" → "23")
         text = words_to_digits(text)
-        text = smart_punctuate(text)
 
         # App-context formatting (email → period, terminal → lowercase, etc.)
         if active_app:
