@@ -834,3 +834,23 @@ Do not treat these as speculative future features if they are listed in the READ
 Tauri should be treated as a UI/platform rebuild that must restore parity with the working Python app. Track each missing feature as “Python parity pending” unless it is confirmed working in Tauri.
 
 Wake Word is the exception for now: it worked in Python, but is paused/unsafe in Tauri because enabling it can freeze the app.
+
+## Current Active Priority: Jarvis Wake Word
+
+Wake Word is now the user's main priority.
+
+Prior investigation isolated the freeze to the real openwakeword inference path:
+- Setup/Jarvis bridge can reach `start_wake_listen`.
+- openwakeword model-only load was responsive.
+- mic-only stream was responsive.
+- wake loop without inference was responsive.
+- full `oww.predict(...)` path caused the app freeze/beachball.
+
+Next Wake Word work should focus on:
+1. Matching stable Python app ONNX/OpenMP environment constraints at the top of the sidecar before heavy imports.
+2. Throttling or decimating `oww.predict(...)` so inference cannot starve/freeze the app.
+3. Dropping stale wake audio backlog and keeping newest chunks.
+4. Preserving normal Option-key dictation, media pause/resume, paste, custom commands, Ollama, and Whisper behavior.
+
+Do not resume paste-speed diagnostics until Wake Word is stabilized or user changes priority.
+
