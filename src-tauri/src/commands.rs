@@ -248,6 +248,105 @@ fn pbcopy_raw(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+// ── Key-event helpers for voice commands ──────────────────────────────────────
+
+const KEY_RETURN:    CGKeyCode = 36;
+const KEY_TAB:       CGKeyCode = 48;
+const KEY_BACKSPACE: CGKeyCode = 51;
+
+fn key_name_to_code(name: &str) -> Option<CGKeyCode> {
+    match name {
+        "return" | "enter" => Some(KEY_RETURN),
+        "tab"              => Some(KEY_TAB),
+        "backspace"        => Some(KEY_BACKSPACE),
+        "a"                => Some(0),
+        "c"                => Some(8),
+        "v"                => Some(9),
+        _                  => None,
+    }
+}
+
+fn send_one_key(keycode: CGKeyCode, shift: bool, cmd: bool) -> Result<(), String> {
+    let src = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .map_err(|e| format!("CGEventSource error: {:?}", e))?;
+    let down = CGEvent::new_keyboard_event(src.clone(), keycode, true)
+        .map_err(|e| format!("key-down error: {:?}", e))?;
+    let mut flags = CGEventFlags::empty();
+    if shift { flags |= CGEventFlags::CGEventFlagShift; }
+    if cmd   { flags |= CGEventFlags::CGEventFlagCommand; }
+    if !flags.is_empty() { down.set_flags(flags); }
+    down.post(CGEventTapLocation::HID);
+
+    let up = CGEvent::new_keyboard_event(src, keycode, false)
+        .map_err(|e| format!("key-up error: {:?}", e))?;
+    if !flags.is_empty() { up.set_flags(flags); }
+    up.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+/// Send N backspace key events to the current frontmost app.
+/// Activates the last known target app first so the events land in the right window.
+#[tauri::command]
+pub fn send_backspaces(count: u32, target: State<LastTargetApp>) -> Result<(), String> {
+    if count == 0 { return Ok(()); }
+    let app_info = { target.0.lock().map_err(|e| e.to_string())?.clone() };
+    if let Some(ref info) = app_info {
+        let _ = activate_app(info);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    for _ in 0..count {
+        send_one_key(KEY_BACKSPACE, false, false)?;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+/// Send a named key (return, tab …) optionally with Shift, repeated N times.
+#[tauri::command]
+pub fn send_keypress(
+    key_name: String,
+    with_shift: bool,
+    repeat_count: u32,
+    target: State<LastTargetApp>,
+) -> Result<(), String> {
+    let keycode = key_name_to_code(&key_name)
+        .ok_or_else(|| format!("Unknown key name: {}", key_name))?;
+    let app_info = { target.0.lock().map_err(|e| e.to_string())?.clone() };
+    if let Some(ref info) = app_info {
+        let _ = activate_app(info);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    for _ in 0..repeat_count.max(1) {
+        send_one_key(keycode, with_shift, false)?;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Ok(())
+}
+
+/// Send a Cmd+<key> combo (select-all, copy, paste via voice command etc.).
+#[tauri::command]
+pub fn send_key_combo(
+    modifier: String,
+    key: String,
+    target: State<LastTargetApp>,
+) -> Result<(), String> {
+    let keycode = key_name_to_code(&key)
+        .ok_or_else(|| format!("Unknown key: {}", key))?;
+    let app_info = { target.0.lock().map_err(|e| e.to_string())?.clone() };
+    if let Some(ref info) = app_info {
+        let _ = activate_app(info);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    let use_cmd = modifier.contains("cmd");
+    send_one_key(keycode, false, use_cmd)
+}
+
+/// Copy a string to the clipboard (for "copy that" / "copy last" voice commands).
+#[tauri::command]
+pub fn copy_to_clipboard_str(text: String) -> Result<(), String> {
+    pbcopy(&text)
+}
+
 /// Activate the last-known non-Jarvis app, paste dictated text via Cmd+V,
 /// then restore the user's original clipboard contents.
 ///

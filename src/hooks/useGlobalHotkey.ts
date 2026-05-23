@@ -471,7 +471,16 @@ export function useGlobalHotkey() {
       try {
         console.log("[sidecar] transcribe_last →");
         const result = await invokeWithTimeout<{
-          ok: boolean; text: string;
+          ok: boolean; text: string | null;
+          action?: string | null;
+          backspace_count?: number;
+          key?: string;
+          with_shift?: boolean;
+          repeat?: number;
+          modifier?: string;
+          nav_target?: string;
+          hud?: string | null;
+          hud_color?: string;
           timing: { whisper: number; ollama: number; total: number };
           error?: string;
           profile?: string;
@@ -479,11 +488,75 @@ export function useGlobalHotkey() {
           skipped_cleanup?: boolean;
           skip_reason?: string;
         }>("sidecar_transcribe_last", undefined, 120_000);
-        console.log("[sidecar] transcribe_last ✓  ok=", result.ok, "chars=", result.text?.length);
+        console.log("[sidecar] transcribe_last ✓  ok=", result.ok,
+                    "action=", result.action, "chars=", result.text?.length);
 
         // Guard: bail if a new recording cycle started while transcribe_last was in-flight
         if (cycleIdRef.current !== myCycle) {
           console.log("[recording] transcribe_last result discarded — stale cycle", myCycle);
+          return;
+        }
+
+        // ── Voice command dispatch ──────────────────────────────────────────
+        // The sidecar detects command phrases (scratch, punct, format, nav…)
+        // before the correction pipeline and returns action != null.
+        if (result.ok && result.action) {
+          const { invoke: inv } = await import("@tauri-apps/api/core");
+          const { emit: ev }   = await import("@tauri-apps/api/event");
+          const act = result.action;
+          console.log("[cmd] dispatching action=", act);
+
+          try {
+            if (act === "scratch" || act === "format_paste") {
+              const bc = result.backspace_count ?? 0;
+              if (bc > 0) await inv("send_backspaces", { count: bc });
+            }
+            if ((act === "paste_text" || act === "format_paste") && result.text) {
+              await invokeWithTimeout("paste_text", { text: result.text }, 8_000);
+            }
+            if (act === "keypress") {
+              await inv("send_keypress", {
+                keyName:     result.key ?? "return",
+                withShift:   result.with_shift ?? false,
+                repeatCount: result.repeat ?? 1,
+              });
+            }
+            if (act === "key_combo") {
+              await inv("send_key_combo", {
+                modifier: result.modifier ?? "cmd",
+                key:      result.key ?? "a",
+              });
+            }
+            if (act === "copy_text" && result.text) {
+              await inv("copy_to_clipboard_str", { text: result.text });
+            }
+            if (act === "copy_all") {
+              // Cmd+A then Cmd+C
+              await inv("send_key_combo", { modifier: "cmd", key: "a" });
+              await new Promise(r => setTimeout(r, 60));
+              await inv("send_key_combo", { modifier: "cmd", key: "c" });
+            }
+            if (act === "navigate" && result.nav_target) {
+              const evName = result.nav_target === "history"    ? "nav-history"
+                           : result.nav_target === "vocabulary" ? "nav-vocabulary"
+                           : null;
+              if (evName) { ev(evName, {}); }
+            }
+            // noop: just show HUD
+          } catch (ce) {
+            console.error("[cmd] dispatch error:", ce);
+          }
+
+          // HUD notification for command (fire-and-forget)
+          if (result.hud) {
+            hudEmit({ state: "command", subtext: result.hud })
+              .then(() => setTimeout(() => hudEmit({ state: "idle" }), 1800))
+              .catch(() => {});
+          } else {
+            hudEmit({ state: "idle" }).catch(() => {});
+          }
+
+          stateRef.current = "idle";
           return;
         }
 

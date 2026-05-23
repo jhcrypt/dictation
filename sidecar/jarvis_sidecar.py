@@ -1083,6 +1083,156 @@ def cmd_get_status(_cmd: dict) -> dict:
     }
 
 
+# ── Dictation command detection (ported from jarvis_dictation.py) ─────────────
+# Mirrors the Python app's deterministic command routing that runs on raw Whisper
+# text BEFORE the correction pipeline.  Returns a command action dict or None.
+
+_cmd_last_text:     str       = ""
+_cmd_history:       list[str] = []
+_cmd_history_index: int       = -1
+
+PUNCT_COMMANDS: dict[str, str] = {
+    "period": ".",   "full stop": ".",
+    "comma": ",",
+    "exclamation point": "!", "exclamation mark": "!",
+    "question mark": "?",
+    "colon": ":",    "semicolon": ";",
+    "ellipsis": "...",
+    "open paren": "(", "close paren": ")",
+    "dash": " — ",   "hyphen": "-",
+}
+
+def _fmt_bullet(t: str) -> str:
+    return "\n".join(f"• {s.strip()}" for s in t.split('.') if s.strip())
+
+# (triggers, format_fn, hud_label)
+FORMAT_COMMANDS: list[tuple] = [
+    (("make bold",      "bold that"),                             lambda t: f"**{t}**",   "Bolded!"),
+    (("make italic",    "italic that"),                           lambda t: f"*{t}*",     "Italicized!"),
+    (("format as code", "code that", "make code"),                lambda t: f"`{t}`",     "Code formatted!"),
+    (("make heading",   "heading that", "make title"),            lambda t: f"# {t}",     "Heading!"),
+    (("all caps",       "make caps", "capitalize that"),          str.upper,              "ALL CAPS!"),
+    (("make bullet",    "bullet that", "create list", "make list"), _fmt_bullet,          "Bulleted!"),
+    (("make quote",     "quote that", "block quote"),             lambda t: f"> {t}",     "Quoted!"),
+    (("strikethrough that", "strike that"),                       lambda t: f"~~{t}~~",   "Strikethrough!"),
+]
+
+def _cmd_add_to_history(text: str) -> None:
+    global _cmd_history, _cmd_history_index
+    if _cmd_history_index < len(_cmd_history) - 1:
+        _cmd_history = _cmd_history[:_cmd_history_index + 1]
+    _cmd_history.append(text)
+    _cmd_history_index = len(_cmd_history) - 1
+    if len(_cmd_history) > 50:
+        _cmd_history = _cmd_history[-50:]
+        _cmd_history_index = 49
+
+def _cmd_detect(lower: str, raw_text: str) -> "dict | None":
+    """Detect a dictation command from the normalized Whisper output.
+
+    Called on the raw (pre-pipeline) transcript so command routing is
+    unaffected by spelling correction or Ollama rewrites.
+
+    Returns an action dict consumed by useGlobalHotkey.ts, or None.
+    """
+    global _cmd_last_text, _cmd_history, _cmd_history_index
+
+    # ── Scratch / undo ────────────────────────────────────────────────────────
+    sc = 0
+    if lower in ("scratch that", "undo that", "delete that",
+                 "scratch", "undo", "scratch last",
+                 "scratch again", "undo again", "scratch more"):
+        sc = 1
+    elif any(p in lower for p in ("scratch last 2", "scratch two", "scratch last two",
+                                   "undo last 2", "undo two", "undo last two",
+                                   "delete last 2", "delete two")):
+        sc = 2
+    elif any(p in lower for p in ("scratch last 3", "scratch three", "scratch last three",
+                                   "undo last 3", "undo three", "undo last three",
+                                   "delete last 3", "delete three")):
+        sc = 3
+    elif any(p in lower for p in ("scratch all", "undo all", "delete all", "clear all")):
+        sc = max(len(_cmd_history), 1 if _cmd_last_text else 0)
+
+    if sc > 0:
+        bc = 0
+        for i in range(sc):
+            if 0 <= _cmd_history_index < len(_cmd_history):
+                bc += len(_cmd_history[_cmd_history_index]) + 1  # +1 for trailing space paste adds
+                _cmd_history.pop(_cmd_history_index)
+                _cmd_history_index = len(_cmd_history) - 1
+            elif i == 0 and _cmd_last_text:
+                bc += len(_cmd_last_text) + 1
+        _cmd_last_text = _cmd_history[_cmd_history_index] if (0 <= _cmd_history_index < len(_cmd_history)) else ""
+        msg = (f"Scratched {sc}!" if sc > 1 else "Scratched!") if bc > 0 else "Nothing to scratch"
+        return {"action": "scratch", "backspace_count": bc, "hud": msg, "hud_color": "#ff9f0a"}
+
+    # ── Punctuation ───────────────────────────────────────────────────────────
+    if lower in PUNCT_COMMANDS:
+        return {"action": "paste_text", "text": PUNCT_COMMANDS[lower],
+                "hud": lower.capitalize(), "hud_color": "#0a84ff"}
+
+    # ── Navigation / whitespace keys ──────────────────────────────────────────
+    if lower in ("new line", "newline", "next line"):
+        return {"action": "keypress", "key": "return", "with_shift": False, "repeat": 1,
+                "hud": "Next line", "hud_color": "#0a84ff"}
+    if lower in ("new paragraph", "next paragraph"):
+        return {"action": "keypress", "key": "return", "with_shift": False, "repeat": 2,
+                "hud": "Next paragraph", "hud_color": "#0a84ff"}
+    if lower in ("tab", "indent"):
+        return {"action": "keypress", "key": "tab", "with_shift": False, "repeat": 1,
+                "hud": "Tab", "hud_color": "#0a84ff"}
+    if lower == "select all":
+        return {"action": "key_combo", "modifier": "cmd", "key": "a",
+                "hud": "Select all", "hud_color": "#0a84ff"}
+
+    # ── Copy / paste ──────────────────────────────────────────────────────────
+    if lower in ("copy that", "copy last"):
+        if _cmd_last_text:
+            return {"action": "copy_text", "text": _cmd_last_text,
+                    "hud": "Copied!", "hud_color": "#0a84ff"}
+        return {"action": "noop", "hud": "Nothing to copy", "hud_color": "#ff9f0a"}
+    if lower == "copy all":
+        return {"action": "copy_all", "hud": "Copied all!", "hud_color": "#0a84ff"}
+    if lower in ("paste", "paste that"):
+        return {"action": "key_combo", "modifier": "cmd", "key": "v",
+                "hud": "Pasted!", "hud_color": "#0a84ff"}
+    if lower in ("reinsert last", "re insert last", "insert last", "paste last"):
+        if _cmd_last_text:
+            return {"action": "paste_text", "text": _cmd_last_text,
+                    "hud": "Re-inserted!", "hud_color": "#30d158"}
+        return {"action": "noop", "hud": "Nothing to re-insert", "hud_color": "#ff9f0a"}
+
+    # ── Navigate ──────────────────────────────────────────────────────────────
+    if lower in ("show history", "dictation history", "view history"):
+        return {"action": "navigate", "nav_target": "history",
+                "hud": None, "hud_color": None}
+    if lower in ("correct that", "correct last", "add correction", "fix that"):
+        return {"action": "navigate", "nav_target": "vocabulary",
+                "hud": None, "hud_color": None}
+
+    # ── Formatting ────────────────────────────────────────────────────────────
+    for triggers, fmt_fn, label in FORMAT_COMMANDS:
+        hit = next((p for p in triggers if p in lower), None)
+        if hit is None:
+            continue
+        hit_idx = raw_text.lower().find(hit)
+        before  = raw_text[:hit_idx].strip(" .,!? ") if hit_idx > 0 else ""
+        if before:
+            # Inline: format the text before the trigger phrase
+            return {"action": "paste_text", "text": fmt_fn(before),
+                    "hud": label, "hud_color": "#0a84ff"}
+        # Standalone: format the previous dictation
+        if not _cmd_last_text:
+            return {"action": "noop", "hud": "Nothing to format", "hud_color": "#ff9f0a"}
+        return {"action": "format_paste",
+                "text":            fmt_fn(_cmd_last_text),
+                "backspace_count": len(_cmd_last_text) + 1,
+                "hud":             label, "hud_color": "#0a84ff"}
+
+    return None
+
+
 def cmd_transcribe_last(cmd: dict) -> dict:
     global _last_result
     t_total_start = time.time()
@@ -1148,6 +1298,31 @@ def cmd_transcribe_last(cmd: dict) -> dict:
         raw_text = " ".join(seg.text.strip() for seg in segments).strip()
         t_whisper = int((time.time() - t_whisper_start) * 1000)
         _log(f"Whisper: {raw_text!r} ({t_whisper}ms)")
+
+        # ── Command detection (before Ollama / corrections) ───────────────────
+        # Normalize: lowercase, strip non-alpha/digit/space — same as Python app.
+        lower_cmd = re.sub(r"[^a-z0-9 ]", "", raw_text.lower()).strip()
+        safe_mode_on = settings.get("safe_mode", False)
+
+        if not safe_mode_on and lower_cmd:
+            cmd_result = _cmd_detect(lower_cmd, raw_text)
+            if cmd_result is not None:
+                _log(f"Command detected: action={cmd_result['action']} lower={lower_cmd!r}")
+                t_total = int((time.time() - t_total_start) * 1000)
+                return {
+                    "ok":     True,
+                    "text":   cmd_result.get("text"),
+                    "action": cmd_result["action"],
+                    "backspace_count": cmd_result.get("backspace_count", 0),
+                    "key":    cmd_result.get("key"),
+                    "with_shift": cmd_result.get("with_shift", False),
+                    "repeat": cmd_result.get("repeat", 1),
+                    "modifier": cmd_result.get("modifier"),
+                    "nav_target": cmd_result.get("nav_target"),
+                    "hud":    cmd_result.get("hud"),
+                    "hud_color": cmd_result.get("hud_color", "#0a84ff"),
+                    "timing": {"whisper": t_whisper, "ollama": 0, "total": t_total},
+                }
 
         text = raw_text
 
@@ -1271,10 +1446,17 @@ def cmd_transcribe_last(cmd: dict) -> dict:
         if text:
             learn_from_text(text)
 
+        # ── Update command history for scratch/format commands ────────────────
+        global _cmd_last_text
+        if text:
+            _cmd_last_text = text
+            _cmd_add_to_history(text)
+
         t_total = int((time.time() - t_total_start) * 1000)
         result = {
             "ok":     True,
             "text":   text,
+            "action": None,
             "timing": {"whisper": t_whisper, "ollama": t_ollama, "total": t_total},
             "profile": profile,
         }

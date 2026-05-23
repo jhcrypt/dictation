@@ -186,6 +186,11 @@ pub fn run() {
             // Paste & clipboard & accessibility
             paste_text,
             copy_to_clipboard,
+            copy_to_clipboard_str,
+            // Voice command key events
+            send_backspaces,
+            send_keypress,
+            send_key_combo,
             get_accessibility_status,
             open_accessibility_settings,
             // History
