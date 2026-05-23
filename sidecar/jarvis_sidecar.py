@@ -723,7 +723,13 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             if personal_prompt:
                 transcribe_kwargs["initial_prompt"] = personal_prompt
 
-        segments, _info = model.transcribe(tmp.name, beam_size=5, **transcribe_kwargs)
+        segments, _info = model.transcribe(
+            tmp.name,
+            beam_size=1,
+            best_of=1,
+            condition_on_previous_text=False,
+            **transcribe_kwargs,
+        )
         raw_text = " ".join(seg.text.strip() for seg in segments).strip()
         t_whisper = int((time.time() - t_whisper_start) * 1000)
         _log(f"Whisper: {raw_text!r} ({t_whisper}ms)")
