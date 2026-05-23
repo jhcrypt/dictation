@@ -136,6 +136,13 @@ export function useGlobalHotkey() {
    */
   const isWakeRecordingRef = useRef<boolean>(false);
 
+  /**
+   * wakeMonitorRef: holds the setInterval ID for the wake auto-stop monitor.
+   * Started after wake recording begins; cleared by clearWakeMonitor() in
+   * every stop/cancel path and by the monitor itself on any state mismatch.
+   */
+  const wakeMonitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // ── Timing checkpoints (wall-clock ms) ──────────────────────────────────────
   const t_keyDown    = useRef<number>(0); // hotkey pressed
   const t_stopCalled = useRef<number>(0); // key-up / stop requested
@@ -189,6 +196,11 @@ export function useGlobalHotkey() {
 
     const clearRecordingTimeout = () => {
       if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+    };
+
+    /** Clear the wake auto-stop monitor interval (safe to call when null). */
+    const clearWakeMonitor = () => {
+      if (wakeMonitorRef.current) { clearInterval(wakeMonitorRef.current); wakeMonitorRef.current = null; }
     };
 
     const normalizeTrigger = (text: string) =>
@@ -319,6 +331,96 @@ export function useGlobalHotkey() {
       // Advance to live-recording state
       console.log("[recording] → recording");
       stateRef.current = "recording";
+
+      // ── Wake auto-stop monitor ─────────────────────────────────────────────
+      // Only for wake-triggered recordings. Matches stable Python _silence_stop_monitor:
+      //   1. grace period — never auto-stop before wake_dictation_grace_seconds
+      //   2. voice_active poll — sidecar VAD distinguishes speech from fan/AC noise
+      //   3. silence window — auto-stop after wake_dictation_silence_seconds with
+      //                       no voice_active=true frames
+      //   4. hard cap — force stop at wake_dictation_max_seconds regardless
+      //
+      // Uses voice_active (not raw RMS) so steady background noise cannot prevent
+      // auto-stop after the user finishes speaking.
+      // Normal Option-key recordings are unaffected (monitor only starts for "wake").
+      if (source === "wake") {
+        const wakeStartMs = Date.now();
+        let silenceSinceMs: number | null = null;
+        // IMPORTANT: silence countdown only begins after the user has spoken at
+        // least one voice_active=true frame.  Without this gate, the monitor
+        // would immediately start counting silence right after the grace period
+        // (if the user hasn't started speaking yet), fire a premature auto-stop,
+        // return to idle, and a stale wake frame would re-trigger a new recording
+        // — causing the next Option-key press to see "already recording".
+        let hasHeardVoice = false;
+        const graceMs   = (settingsRef.current.wake_dictation_grace_seconds   ?? 3.5)  * 1000;
+        const silenceMs = (settingsRef.current.wake_dictation_silence_seconds ?? 4.5)  * 1000;
+        const maxMs     = (settingsRef.current.wake_dictation_max_seconds     ?? 45.0) * 1000;
+
+        clearWakeMonitor(); // defensive: clear any stale monitor
+        wakeMonitorRef.current = setInterval(async () => {
+          // Self-cancel if no longer a wake recording (manual ⌥ stop, cancel, error)
+          if (!isWakeRecordingRef.current || stateRef.current !== "recording") {
+            clearWakeMonitor();
+            return;
+          }
+
+          const elapsed = Date.now() - wakeStartMs;
+
+          // Hard max cap — matches Python wake_dictation_max_seconds
+          if (elapsed >= maxMs) {
+            console.log("[wake-monitor] max duration reached — auto-stopping");
+            clearWakeMonitor();
+            stopAndTranscribe();
+            return;
+          }
+
+          // Grace period: user may still be forming their sentence
+          if (elapsed < graceMs) {
+            silenceSinceMs = null;
+            return;
+          }
+
+          // Poll voice activity from sidecar VAD
+          try {
+            const statusStr = await invokeWithTimeout<string>("sidecar_get_status", undefined, 2_000);
+            const status = JSON.parse(statusStr) as {
+              ok: boolean;
+              recording: boolean;
+              voice_active?: boolean;
+            };
+
+            if (!status.ok || !status.recording) {
+              // Sidecar recording stopped unexpectedly — bail out silently
+              clearWakeMonitor();
+              return;
+            }
+
+            const voiceActive = status.voice_active ?? false;
+
+            if (!voiceActive) {
+              // No speech detected.
+              // Don't start the silence window until the user has spoken at
+              // least once — this prevents premature auto-stop when the user
+              // hasn't begun their sentence yet after the wake word.
+              if (!hasHeardVoice) return;
+              if (silenceSinceMs === null) silenceSinceMs = Date.now();
+              else if (Date.now() - silenceSinceMs >= silenceMs) {
+                console.log(
+                  `[wake-monitor] silence for ${((Date.now() - silenceSinceMs) / 1000).toFixed(1)}s — auto-stopping`,
+                );
+                clearWakeMonitor();
+                stopAndTranscribe();
+              }
+            } else {
+              hasHeardVoice = true;      // latch: once set, never cleared
+              silenceSinceMs = null;     // voice detected — reset silence window
+            }
+          } catch (e) {
+            console.warn("[wake-monitor] get_status error (ignored):", e);
+          }
+        }, 200);
+      }
     };
 
     const stopAndTranscribe = async () => {
@@ -332,6 +434,7 @@ export function useGlobalHotkey() {
 
       console.log("[recording] → stopping  cycle=", myCycle);
       clearRecordingTimeout();
+      clearWakeMonitor();
       isWakeRecordingRef.current = false;
       playSound("stop");
       stateRef.current = "stopping";
@@ -544,6 +647,7 @@ export function useGlobalHotkey() {
 
       console.log("[recording] short tap — state was", st);
       clearRecordingTimeout();
+      clearWakeMonitor();
 
       if (st === "starting") {
         // Can't cancel mid-start safely — mark pending, startRecording will cancel
@@ -576,6 +680,7 @@ export function useGlobalHotkey() {
       const st = stateRef.current;
       console.log("[recording] cancel — state was", st);
       clearRecordingTimeout();
+      clearWakeMonitor();
       isWakeRecordingRef.current = false;
 
       if (st === "starting") {

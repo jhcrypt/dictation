@@ -29,14 +29,20 @@ export interface HudPayload {
 const WAVE_BARS = 22;
 const WAVEFORM_HEIGHTS = [4, 6, 8, 11, 14, 17, 20, 22, 22, 20, 17, 14, 10, 7, 5, 4, 6, 9, 13, 10, 7, 4];
 
-function WaveformBars({ color = "#ff453a" }: { color?: string }) {
+// audioLevel: 0.0–1.0 (matches stable Python scale = min(1.0, rms * 18 + 0.15)).
+// Bar heights are scaled by audioLevel so bars grow taller when the mic is louder.
+// The CSS hud-wave animation (scaleY 0.25→1.0) provides organic motion on top.
+// Default 0.15 = minimum visible level (matches Python's +0.15 floor).
+function WaveformBars({ color = "#ff453a", audioLevel = 0.15 }: { color?: string; audioLevel?: number }) {
   return (
     <div
       className="flex items-center flex-shrink-0"
       style={{ gap: 1, height: 24, width: 65 }}
     >
       {Array.from({ length: WAVE_BARS }, (_, i) => {
-        const h = WAVEFORM_HEIGHTS[i % WAVEFORM_HEIGHTS.length];
+        const baseH = WAVEFORM_HEIGHTS[i % WAVEFORM_HEIGHTS.length];
+        // Scale height by audio level; floor at 2px so bars are always visible.
+        const h = Math.max(2, Math.round(baseH * audioLevel));
 
         return (
           <div
@@ -78,7 +84,7 @@ interface StateConfig {
   subColor: string;
 }
 
-function getConfig(state: HudState, payload: HudPayload): StateConfig {
+function getConfig(state: HudState, payload: HudPayload, audioLevel: number): StateConfig {
   const DIM    = "#4a4a4a";   // Python TEXT_DIM
   const FG     = "#ffffff";   // Python TEXT_WHITE
   const BLUE   = "#0a84ff";
@@ -104,14 +110,14 @@ function getConfig(state: HudState, payload: HudPayload): StateConfig {
       };
     case "recording":
       return {
-        icon:       <WaveformBars color={RED} />,
+        icon:       <WaveformBars color={RED} audioLevel={audioLevel} />,
         label:      "Recording…",
         labelColor: FG,
         subColor:   DIM,
       };
     case "wake_recording":
       return {
-        icon:       <WaveformBars color={RED} />,
+        icon:       <WaveformBars color={RED} audioLevel={audioLevel} />,
         label:      "Keep speaking",
         labelColor: FG,
         subColor:   DIM,
@@ -257,8 +263,13 @@ export default function HudApp() {
   const [payload,    setPayload]    = useState<HudPayload>({ state: "idle" });
   const [appIcon,    setAppIcon]    = useState<string | null>(null);
   const [iconColor,  setIconColor]  = useState<string | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const iconTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // audioLevel: 0.0–1.0, matches Python scale = min(1.0, rms * 18 + 0.15).
+  // Polled from sidecar at ~16 FPS while recording; reset to 0.15 when idle.
+  const [audioLevel, setAudioLevel] = useState<number>(0.15);
+  const saveTimer      = useRef<ReturnType<typeof setTimeout>  | null>(null);
+  const iconTimer      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioTimer     = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioPollGuard = useRef<boolean>(false); // prevent overlapping fetch calls
 
   const savePosition = useCallback((x: number, y: number) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -310,6 +321,58 @@ export default function HudApp() {
     };
   }, [savePosition, refreshIcon]);
 
+  // ── Live audio level polling ──────────────────────────────────────────────────
+  // While recording (hotkey or wake), poll sidecar_get_status every 60 ms (~16 FPS)
+  // to read recording_rms and scale WaveformBars heights — matching stable Python
+  // _animate_wave which called get_current_rms() every 30 ms.
+  //
+  // Uses an in-flight guard so slow sidecar responses never stack up.
+  // The existing sidecar get_status command already returns recording_rms
+  // (added for the wake auto-stop monitor — reused here for free).
+  useEffect(() => {
+    const isDictatingNow = state === "recording" || state === "wake_recording";
+
+    if (!isDictatingNow) {
+      if (audioTimer.current) { clearInterval(audioTimer.current); audioTimer.current = null; }
+      setAudioLevel(0.15);
+      audioPollGuard.current = false;
+      return;
+    }
+
+    const poll = async () => {
+      if (audioPollGuard.current) return; // previous call still in-flight
+      audioPollGuard.current = true;
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const raw = await invoke<string>("sidecar_get_status");
+        const status = JSON.parse(raw) as {
+          ok: boolean;
+          recording_rms?: number | null;
+          voice_active?: boolean;
+        };
+        if (status.ok) {
+          const rms = status.recording_rms ?? 0;
+          const voiceActive = status.voice_active ?? false;
+          // voice_active=true  → full Python formula: bars grow with speech volume
+          // voice_active=false → subtle low-level movement; fan/AC noise stays quiet
+          const scale = voiceActive
+            ? Math.min(1.0, rms * 18 + 0.15)
+            : Math.min(0.22, rms * 3 + 0.10);
+          setAudioLevel(scale);
+        }
+      } catch {
+        // Non-critical — sidecar may be momentarily busy; keep last value
+      } finally {
+        audioPollGuard.current = false;
+      }
+    };
+
+    audioTimer.current = setInterval(poll, 60);
+    return () => {
+      if (audioTimer.current) { clearInterval(audioTimer.current); audioTimer.current = null; }
+    };
+  }, [state]);
+
   const handleMouseDown = async (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     try {
@@ -318,7 +381,7 @@ export default function HudApp() {
     } catch { /* browser preview */ }
   };
 
-  const cfg     = getConfig(state, payload);
+  const cfg     = getConfig(state, payload, audioLevel);
   const subtext = getSubtext(state, payload);
   const label   = cfg.label.length > 58 ? cfg.label.slice(0, 58) + "…" : cfg.label;
 

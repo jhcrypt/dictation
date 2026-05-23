@@ -33,12 +33,17 @@ import threading
 import wave
 import tempfile
 
-# ── Environment guards (same as main app) ────────────────────────────────────
+# ── Environment guards (must be set BEFORE importing faster_whisper / onnxruntime)
+# These match the stable Python app exactly.
+# Without them, onnxruntime spawns multi-threaded C++ inference workers that
+# trigger a GIL abort ("illegal hardware instruction") on macOS / Python 3.11.
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["CT2_USE_EXPERIMENTAL_PACKED_GEMM"] = "0"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_WAIT_POLICY"] = "PASSIVE"
+os.environ["MKL_DEBUG_CPU_TYPE"] = "5"        # prevents illegal-hardware-instruction crash
+os.environ["ORT_DISABLE_ALL_OPTIMIZATIONS"] = "0"  # keep optimizations but force single-thread below
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 def _log(msg: str):
@@ -437,6 +442,23 @@ _last_result: dict | None = None
 
 CHUNK = 1024
 
+# ── Live VAD state (updated by recording callback, read by get_status) ────────
+# Updated every ~21 ms (1024 samples @ 48 kHz) from the sounddevice callback.
+# Globals are read/written under Python's GIL so no explicit lock is needed for
+# simple scalar assignments.  Worst case is reading one stale frame — acceptable.
+_live_audio_rms: float = 0.0
+
+# Rolling noise floor — adapts slowly to room ambience.
+# Updated only when voice is NOT active, so speech cannot raise the floor.
+# Formula: floor = floor*0.98 + rms*0.02  (τ ≈ 49 callbacks ≈ 1 s at 48 kHz/1024)
+# Initial value 0.01 suits a typical quiet-to-moderate room.
+_noise_floor: float = 0.01
+
+# True when current RMS is clearly above the noise floor (speech, not fan/AC).
+# Threshold: rms > max(floor * 2.5, 0.012) — the 0.012 floor ensures we always
+# require a minimum absolute level even in very quiet rooms.
+_voice_active: bool = False
+
 # ── Wake-word state ───────────────────────────────────────────────────────────
 # Architecture: one mic stream at a time.
 #   _wake_stream  — 16 kHz InputStream, only open when wake listening AND not recording
@@ -481,6 +503,12 @@ def _resume_wake_stream():
     global _wake_stream
     if not _wake_listening:
         return
+    # Flush any audio that built up while the stream was paused.
+    # The wake loop processes _wake_frames in its next iteration — without this
+    # clear, stale frames (including the original wake word utterance) could
+    # cause an immediate spurious re-detection right after recording ends.
+    with _wake_lock:
+        _wake_frames.clear()
     settings   = load_settings()
     mic_device = settings.get("mic_device", None)
     try:
@@ -500,30 +528,73 @@ def _resume_wake_stream():
         _log(f"Wake stream resume error (non-fatal): {e}")
 
 
-def _wake_loop():
-    """Background thread: feed 16 kHz audio to openwakeword, set _wake_detected on hit.
-    Runs for the lifetime of the wake listener — stopped via _wake_thread_stop event."""
-    global _wake_detected
-    _log("Wake loop: starting")
+def _load_wake_model():
+    """Load the openwakeword model on the CALLING thread.
 
-    # Load openwakeword — suppress its stdout chatter so it doesn't corrupt our protocol.
+    MUST be called from the main thread (or any thread that is the only writer
+    to sys.stdout at that moment).  We use contextlib.redirect_stdout to suppress
+    openwakeword's startup chatter — if this ran in a background thread while the
+    main thread was writing JSON responses, redirect_stdout would silently eat those
+    responses and corrupt the protocol.
+
+    Returns the loaded model, or None on failure.
+    """
+    import io, contextlib
+    import numpy as np  # ensure numpy is imported before onnxruntime to avoid conflict
+
+    _oww_buf = io.StringIO()
     try:
-        import io, contextlib
-        import numpy as np
-        _oww_buf = io.StringIO()
         with contextlib.redirect_stdout(_oww_buf):
             from openwakeword.model import Model as _WakeModel
-            oww = _WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
-        _log("Wake loop: openwakeword model loaded")
+            try:
+                import onnxruntime as _ort
+                _sess_opts = _ort.SessionOptions()
+                _sess_opts.inter_op_num_threads = 1
+                _sess_opts.intra_op_num_threads = 1
+                _sess_opts.execution_mode = _ort.ExecutionMode.ORT_SEQUENTIAL
+                oww = _WakeModel(
+                    wakeword_models=["hey_jarvis"],
+                    inference_framework="onnx",
+                    openwakeword_models_kwargs={"sess_options": _sess_opts},
+                )
+                _log("Wake model loaded with ORT_SEQUENTIAL single-thread session")
+            except Exception as _ort_e:
+                # openwakeword_models_kwargs not accepted by this version — fall back
+                _log(f"Wake model: ORT SessionOptions unavailable ({_ort_e}), using defaults")
+                oww = _WakeModel(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+                _log("Wake model loaded (fallback, no session options)")
+        return oww
     except ImportError:
-        _log("Wake loop: openwakeword not available — thread exiting")
-        return
+        _log("Wake model: openwakeword not available")
+        return None
     except Exception as e:
-        _log(f"Wake loop: model load failed: {e}")
-        return
+        _log(f"Wake model load failed: {e}")
+        return None
+
+
+def _wake_loop(oww) -> None:
+    """Background thread: feed 16 kHz audio to openwakeword, set _wake_detected on hit.
+    Runs for the lifetime of the wake listener — stopped via _wake_thread_stop event.
+
+    `oww` is the pre-loaded Model instance (loaded by cmd_start_wake_listen on the
+    main thread so that the redirect_stdout suppression cannot race with the main
+    thread's JSON protocol writes).
+
+    Parity with stable Python app:
+      - backlog cap to avoid runaway catch-up after a slow predict
+      - oww.reset() after detection to clear stale model state
+      - time.sleep(0) between chunks to yield GIL to the main command thread
+    """
+    global _wake_detected
+    import numpy as np
+    _log("Wake loop: starting")
 
     buf: list = []        # accumulates int16 samples between poll cycles
     CHUNK_SAMPLES = 1280  # 80 ms at 16 kHz — openwakeword's expected frame size
+    # Backlog cap: ~3 seconds of 16 kHz audio = 3 × 16000 = 48000 int16 samples.
+    # If predict() falls behind, drop the oldest half rather than running a long
+    # catch-up loop that starves the main command thread.
+    BACKLOG_CAP = 48000
 
     while not _wake_thread_stop.is_set():
         # Grab all pending frames
@@ -537,11 +608,21 @@ def _wake_loop():
             audio_i16 = (audio * 32767).clip(-32768, 32767).astype(np.int16)
             buf.extend(audio_i16.tolist())
 
-            # Process 80 ms chunks
+            # Backlog guard: if more than ~3 s has accumulated, drop the oldest half.
+            if len(buf) > BACKLOG_CAP:
+                drop = len(buf) - BACKLOG_CAP // 2
+                buf = buf[drop:]
+                _log(f"Wake backlog trimmed: dropped {drop} samples, kept {len(buf)}")
+
+            # Process 80 ms chunks; yield GIL between each predict so the main
+            # command thread can respond to get_wake_status / stop_wake_listen.
+            triggered = False
             while len(buf) >= CHUNK_SAMPLES and not _wake_thread_stop.is_set():
                 chunk = np.array(buf[:CHUNK_SAMPLES], dtype=np.int16)
                 buf = buf[CHUNK_SAMPLES:]
                 try:
+                    import time as _time
+                    _time.sleep(0)  # yield GIL to main thread between predictions
                     scores = oww.predict(chunk)
                     # Model key may be "hey_jarvis" or "hey_jarvis_v0.1" depending on version
                     score = max(
@@ -552,12 +633,21 @@ def _wake_loop():
                         _log(f"Wake word detected — score={score:.3f}")
                         _wake_detected = True
                         buf.clear()
+                        triggered = True
+                        # Reset model state to clear stale prediction buffer (matches stable Python)
+                        try:
+                            oww.reset()
+                        except Exception:
+                            pass
                         # 1.5 s cooldown so a single wake phrase doesn't trigger twice
                         _wake_thread_stop.wait(1.5)
                         break
                 except Exception as e:
                     _log(f"Wake predict error: {e}")
+                    buf.clear()
                     break
+            if triggered:
+                continue
         else:
             # No new audio — sleep briefly
             _wake_thread_stop.wait(0.05)
@@ -613,6 +703,12 @@ def cmd_start_recording(_cmd: dict) -> dict:
         except Exception:
             pass
         _wake_stream = None
+        # Discard any audio that accumulated in the wake buffer before the stream
+        # closed.  The wake loop runs as a daemon thread and may still process
+        # these frames after the stream is paused, potentially re-detecting the
+        # wake word immediately when _resume_wake_stream() re-opens the stream.
+        with _wake_lock:
+            _wake_frames.clear()
         _log("Wake stream paused for recording")
 
     with _audio_lock:
@@ -625,12 +721,38 @@ def cmd_start_recording(_cmd: dict) -> dict:
 
     try:
         import sounddevice as sd
+        import numpy as _np  # captured in closure — avoids per-call import overhead
         device, channels = _resolve_input_device(mic_device, sample_rate)
 
         def _callback(indata, frames, time_info, status):
+            """Called by sounddevice on every audio block (~21 ms at 48 kHz / 1024 blocksize).
+
+            Responsibilities:
+              1. Append frame to _audio_frames for transcription.
+              2. Compute lightweight RMS and update the rolling noise floor + VAD flag.
+                 These are read by cmd_get_status to drive the HUD waveform and
+                 the wake auto-stop monitor in the frontend.
+
+            VAD logic (matches stable Python _silence_stop_monitor approach):
+              noise_floor adapts slowly to room ambience — only while NOT speaking.
+              voice_active = rms clearly exceeds noise_floor, so fan/AC noise
+              (steady, low-level) does not falsely trigger speech detection.
+            """
+            global _live_audio_rms, _noise_floor, _voice_active
             if _recording:
                 with _audio_lock:
                     _audio_frames.append(indata.copy())
+                try:
+                    rms = float(_np.sqrt(_np.mean(indata.astype("float32") ** 2)))
+                    _live_audio_rms = rms
+                    # Voice active when RMS is clearly above the noise floor.
+                    va = rms > max(_noise_floor * 2.5, 0.012)
+                    _voice_active = va
+                    # Only update floor when silent — speech must not raise the floor.
+                    if not va:
+                        _noise_floor = _noise_floor * 0.98 + rms * 0.02
+                except Exception:
+                    pass  # never let a frame error kill the audio stream
 
         _stream = sd.InputStream(
             samplerate=sample_rate,
@@ -665,7 +787,25 @@ def cmd_stop_recording(_cmd: dict) -> dict:
 
 
 def cmd_get_status(_cmd: dict) -> dict:
-    return {"ok": True, "recording": _recording, "has_audio": len(_audio_frames) > 0}
+    """Return sidecar recording state, live RMS, and voice-activity flag.
+
+    Values are read from module-level globals updated by the sounddevice callback
+    every ~21 ms — no lock or numpy computation needed here.
+
+    recording_rms : float | None — raw RMS of the most recent audio frame.
+                    Drives subtle waveform movement even during background noise.
+    voice_active  : bool — True only when RMS is clearly above the rolling noise
+                    floor (speech, not fan/AC).  Used by:
+                      • HudApp.tsx  — scales waveform bars up only during speech
+                      • useGlobalHotkey.ts wake monitor — resets silence window
+    """
+    return {
+        "ok": True,
+        "recording": _recording,
+        "has_audio": len(_audio_frames) > 0,
+        "recording_rms": _live_audio_rms if _recording else None,
+        "voice_active":  _voice_active  if _recording else False,
+    }
 
 
 def cmd_transcribe_last(cmd: dict) -> dict:
@@ -925,13 +1065,23 @@ def cmd_start_wake_listen(_cmd: dict) -> dict:
     if _wake_listening and _wake_thread and _wake_thread.is_alive():
         return {"ok": True, "status": "already_listening"}
 
-    # Fail fast if openwakeword is not installed
+    # Load the openwakeword model HERE, on the main thread, BEFORE opening the
+    # stream or writing the response.  _load_wake_model() uses redirect_stdout
+    # to suppress chatter — doing this on the main thread is safe because no
+    # other thread is writing to sys.stdout at this point.  If we loaded the
+    # model inside _wake_loop (a daemon thread), redirect_stdout would replace
+    # sys.stdout globally and silently eat JSON responses written by the main
+    # thread concurrently, corrupting the protocol.
     try:
         import openwakeword  # noqa: F401
     except ImportError:
         msg = "openwakeword not installed — run: pip install openwakeword"
         _log(f"start_wake_listen: {msg}")
         return {"ok": False, "error": msg}
+
+    oww = _load_wake_model()
+    if oww is None:
+        return {"ok": False, "error": "openwakeword model failed to load — check ~/jarvis_sidecar.log"}
 
     settings   = load_settings()
     mic_device = settings.get("mic_device", None)
@@ -962,9 +1112,9 @@ def cmd_start_wake_listen(_cmd: dict) -> dict:
             _log(f"Wake stream open error: {e}")
             return {"ok": False, "error": str(e)}
 
-    # (Re)start wake detection thread
+    # Start wake detection thread with the pre-loaded model
     _wake_thread_stop.clear()
-    _wake_thread = threading.Thread(target=_wake_loop, daemon=True, name="wake-loop")
+    _wake_thread = threading.Thread(target=_wake_loop, args=(oww,), daemon=True, name="wake-loop")
     _wake_thread.start()
     _log("Wake listener started")
     return {"ok": True, "status": "listening"}
