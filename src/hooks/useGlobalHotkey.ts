@@ -340,25 +340,37 @@ export function useGlobalHotkey() {
       }, 90_000);
 
       try {
-        console.log("[sidecar] start_recording →");
+        console.log("[sidecar] start_recording →  source=", source);
         await invokeWithTimeout("sidecar_start_recording", undefined, 10_000);
         console.log("[sidecar] start_recording ✓");
       } catch (e) {
-        console.error("[sidecar] start_recording FAILED:", e);
+        const errMsg = String(e);
+        console.error("[sidecar] start_recording FAILED  source=", source, " error=", errMsg);
         clearRecordingTimeout();
         pendingStopRef.current = false;
         isWakeRecordingRef.current = false;
         resumeMedia();
-        // Keep stateRef as "idle" (NOT "error") so the next wake detection or
-        // keypress can immediately start a new recording.  setError() would set
-        // stateRef to "error" and block retries for 4 s — not appropriate here.
-        stateRef.current = "idle";
-        hudEmit({ state: "error", subtext: String(e) });
-        const startFailCycle = cycleIdRef.current;
-        setTimeout(() => {
-          if (cycleIdRef.current === startFailCycle) hudEmit({ state: "idle" });
-        }, 2000);
-        return;
+
+        // "already recording" → the sidecar stream is already open from a stuck
+        // previous cycle (e.g. stop_recording timed out on the TS side but the
+        // Python sidecar never received the command).  We treat it as success:
+        // the sidecar IS recording, just with a stale buffer that the sidecar's
+        // idempotent start_recording will have cleared.  Fall through to the
+        // normal post-start path so the waveform appears and recording continues.
+        if (errMsg.includes("already recording")) {
+          console.warn("[sidecar] start_recording: already recording — recovering as normal start");
+          // continue below — do NOT return; waveform stays, recording proceeds
+        } else {
+          // Keep stateRef as "idle" (NOT "error") so the next wake detection or
+          // keypress can immediately start a new recording.
+          stateRef.current = "idle";
+          hudEmit({ state: "error", subtext: errMsg });
+          const startFailCycle = cycleIdRef.current;
+          setTimeout(() => {
+            if (cycleIdRef.current === startFailCycle) hudEmit({ state: "idle" });
+          }, 2000);
+          return;
+        }
       }
 
       // Check if a stop/cancel was requested while the start was in-flight
@@ -661,10 +673,13 @@ export function useGlobalHotkey() {
           return;
         }
 
-        if (result.ok && result.text) {
+        if (result.ok && result.text != null) {
           // ── SAFETY GUARD: never paste empty or whitespace-only text ────────
           // This prevents pasting stale clipboard contents when transcription
           // returns an empty result (e.g. audio too quiet, sidecar error).
+          // NOTE: result.text can be "" (empty string, falsy) — check != null
+          // rather than truthiness so empty strings are caught by the guard below
+          // instead of silently falling through to the error branch as "Transcription failed".
           const trimmed = result.text.trim();
           if (trimmed.length === 0) {
             console.log("[dictation] empty transcript — skipping paste");
@@ -752,8 +767,12 @@ export function useGlobalHotkey() {
 
           // HUD skipped/cleanup state — fire-and-forget AFTER insert
           // This replaces the blocking 1.5s setTimeout that was blocking paste.
+          // Cycle guard: if a new recording starts within 300 ms (e.g. rapid
+          // wake-word re-trigger), do NOT overwrite the new recording's HUD state.
           if (result.skipped_cleanup && result.skip_reason) {
+            const skippedCycle = cycleIdRef.current;
             setTimeout(() => {
+              if (cycleIdRef.current !== skippedCycle) return;
               hudEmit({ state: "skipped", subtext: result.skip_reason });
             }, 300);
           }

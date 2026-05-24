@@ -1044,8 +1044,22 @@ def _resolve_input_device(mic_device, sample_rate):
 
 def cmd_start_recording(_cmd: dict) -> dict:
     global _recording, _audio_frames, _stream, _wake_stream
-    if _recording:
-        return {"ok": False, "error": "already recording"}
+    if _recording and _stream is not None:
+        # Sidecar is already recording — the Tauri/TS side previously timed out or
+        # errored while the Python stream stayed open.  Reset the audio buffer so
+        # this recording starts from *now* (discarding any stale audio captured
+        # before this call), then return success.  No need to close/reopen the
+        # hardware stream — the callback is still running and will fill _audio_frames
+        # from this point forward.
+        with _audio_lock:
+            _audio_frames = []
+        _log("start_recording: stream already open — buffer cleared, returning ok")
+        return {"ok": True, "status": "recording"}
+    if _recording and _stream is None:
+        # Inconsistent state — _recording True but no stream. Reset and fall
+        # through to open a fresh stream.
+        _recording = False
+        _log("start_recording: _recording=True but no stream — resetting")
 
     # Close wake stream so the mic is free for recording.
     # _wake_listening stays True — the stream is re-opened by _resume_wake_stream()
