@@ -875,18 +875,6 @@ export function useGlobalHotkey() {
           });
           setTimeout(() => { if (cycleIdRef.current === insertCycle) hudEmit({ state: "idle" }); }, 1500);
 
-          // HUD skipped/cleanup state — fire-and-forget AFTER insert
-          // This replaces the blocking 1.5s setTimeout that was blocking paste.
-          // Cycle guard: if a new recording starts within 300 ms (e.g. rapid
-          // wake-word re-trigger), do NOT overwrite the new recording's HUD state.
-          if (result.skipped_cleanup && result.skip_reason) {
-            const skippedCycle = cycleIdRef.current;
-            setTimeout(() => {
-              if (cycleIdRef.current !== skippedCycle) return;
-              hudEmit({ state: "skipped", subtext: result.skip_reason });
-            }, 300);
-          }
-
           // ── Store last dictated text for "Add Correction" tray item ─────────
           try {
             const { emit } = await import("@tauri-apps/api/event");
