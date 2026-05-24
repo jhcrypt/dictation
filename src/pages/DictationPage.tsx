@@ -340,9 +340,15 @@ export default function DictationPage() {
               value={
                 dictTiming.cleanupStatus === "off"     ? "off" :
                 dictTiming.cleanupStatus === "skipped" ? "skipped" :
+                dictTiming.cleanupAccepted === false   ? `${fmtMs(dictTiming.cleanupMs)} (rejected)` :
                 fmtMs(dictTiming.cleanupMs)
               }
             />
+            {dictTiming.cleanupStatus === "skipped" && dictTiming.cleanupSkipReason && (
+              <div className="ml-3 border-l border-jarvis-border pl-3 mb-0.5">
+                <TimingRow label="  reason" value={dictTiming.cleanupSkipReason} />
+              </div>
+            )}
             {/* Paste row — expands to substeps when PasteTiming data is available */}
             <TimingRow label="Paste"               value={fmtMs(dictTiming.pasteMs, true)} />
             {dictTiming.paste_save_ms !== undefined && (

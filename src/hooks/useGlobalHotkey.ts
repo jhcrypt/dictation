@@ -89,6 +89,10 @@ export interface DictationTiming {
   cleanupMs?: number;
   /** "done" | "skipped" | "off" */
   cleanupStatus?: string;
+  /** Why cleanup was skipped (from skip_reason_cleanup in sidecar) */
+  cleanupSkipReason?: string;
+  /** true = safety filter passed, false = rejected, undefined = skipped */
+  cleanupAccepted?: boolean;
   /** paste_text total call duration */
   pasteMs?: number;
   /** Paste substeps — from PasteTiming returned by paste_text command */
@@ -497,6 +501,7 @@ export function useGlobalHotkey() {
           status?: string;
           skipped_cleanup?: boolean;
           skip_reason?: string;
+          ollama_accepted?: boolean | null;
           // History enrichment
           whisper_text?: string | null;
           ollama_text?: string | null;
@@ -714,6 +719,8 @@ export function useGlobalHotkey() {
             transcriptionMs:     result.timing.whisper,
             cleanupMs:           result.timing.ollama > 0 ? result.timing.ollama : undefined,
             cleanupStatus,
+            cleanupSkipReason:   result.skip_reason ?? undefined,
+            cleanupAccepted:     result.ollama_accepted ?? undefined,
             pasteMs:             s.safe_mode ? undefined : (t_pasteEnd - t_pasteStart),
             // Paste substeps (from Rust PasteTiming)
             paste_save_ms:          pasteTiming?.save_ms,

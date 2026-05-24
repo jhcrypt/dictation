@@ -63,6 +63,9 @@ pub struct TranscribeResult {
     pub ollama_text: Option<String>,
     #[serde(default)]
     pub active_app: Option<String>,
+    /// True = safety filter passed, False = rejected, None = cleanup was skipped
+    #[serde(default)]
+    pub ollama_accepted: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

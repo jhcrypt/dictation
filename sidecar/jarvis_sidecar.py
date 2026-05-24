@@ -1785,23 +1785,42 @@ def cmd_transcribe_last(cmd: dict) -> dict:
         # ── Ollama cleanup ─────────────────────────────────────────────────────
         t_ollama = 0
         ollama_text_raw: "str | None" = None   # raw Ollama output (before safety filter)
+        ollama_accepted: "bool | None" = None  # True/False after safety filter; None if skipped
+        ollama_reject_reason: "str | None" = None
         use_ollama   = settings.get("use_ollama", True)
         ai_mode      = settings.get("ai_cleanup_mode", "auto")
         strength     = settings.get("correction_strength", "Standard")
         safe_mode    = settings.get("safe_mode", False)
+        ollama_model = "qwen2.5:3b"
 
         # Determine profile (auto-detect or manual)
         profile = get_active_writing_profile(settings, active_app if active_app else None)
         _log(f"Profile: {profile} (app={active_app!r})")
 
-        skip_ollama = (
-            safe_mode
-            or not use_ollama
-            or ai_mode == "off"
-            or strength == "Off"
-            or not text
-            or len(_dictation_words(text)) <= 4
-            or (ai_mode == "auto" and len(_dictation_words(text)) < 10)
+        word_count = len(_dictation_words(text)) if text else 0
+
+        # Determine skip reason before deciding
+        skip_reason_cleanup: "str | None" = None
+        if safe_mode:
+            skip_reason_cleanup = "safe_mode"
+        elif not use_ollama:
+            skip_reason_cleanup = "use_ollama=false"
+        elif ai_mode == "off":
+            skip_reason_cleanup = "ai_cleanup=off"
+        elif strength == "Off":
+            skip_reason_cleanup = "strength=Off"
+        elif not text:
+            skip_reason_cleanup = "empty_text"
+        elif word_count <= 4:
+            skip_reason_cleanup = f"too_short ({word_count} words ≤ 4)"
+        elif ai_mode == "auto" and word_count < 10:
+            skip_reason_cleanup = f"auto_short ({word_count} words < 10)"
+
+        skip_ollama = skip_reason_cleanup is not None
+
+        _log(
+            f"[cleanup] mode={ai_mode} strength={strength} model={ollama_model} "
+            f"words={word_count} skip={skip_ollama} reason={skip_reason_cleanup!r}"
         )
 
         if not skip_ollama:
@@ -1809,15 +1828,17 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             try:
                 import requests
                 system_prompt = build_ollama_system_prompt(profile, strength)
+                t_request_start = time.time()
                 resp = requests.post(
                     "http://localhost:11434/api/chat",
                     json={
-                        "model": "qwen2.5:3b",
+                        "model": ollama_model,
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user",   "content": text},
                         ],
                         "stream": False,
+                        "keep_alive": "10m",
                         "options": {
                             "repeat_penalty": 1.15,
                             "num_predict":    180,
@@ -1827,20 +1848,36 @@ def cmd_transcribe_last(cmd: dict) -> dict:
                     },
                     timeout=12,
                 )
+                t_request_ms = int((time.time() - t_request_start) * 1000)
                 if resp.ok:
                     raw_ollama = resp.json().get("message", {}).get("content", "").strip()
                     if raw_ollama:
                         cleaned = strip_ollama_preamble(raw_ollama)
                         ollama_text_raw = cleaned  # capture before safety filter
                         ok, reason = ollama_result_is_safe(text, cleaned)
+                        ollama_accepted = ok
                         if ok:
                             text = cleaned
-                            _log(f"Ollama accepted: {text!r}")
+                            ollama_reject_reason = None
+                            _log(f"[cleanup] accepted  request={t_request_ms}ms  result={text!r}")
                         else:
-                            _log(f"Ollama rejected ({reason}): {cleaned!r}")
+                            ollama_accepted = False
+                            ollama_reject_reason = reason
+                            _log(f"[cleanup] REJECTED ({reason})  request={t_request_ms}ms  result={cleaned!r}")
+                    else:
+                        _log(f"[cleanup] empty response from Ollama  request={t_request_ms}ms")
+                else:
+                    _log(f"[cleanup] HTTP {resp.status_code}  request={t_request_ms}ms")
                 t_ollama = int((time.time() - t_ollama_start) * 1000)
+                _log(
+                    f"[cleanup] total={t_ollama}ms request={t_request_ms}ms "
+                    f"model={ollama_model} words={word_count} "
+                    f"accepted={ollama_accepted}"
+                )
             except Exception as e:
-                _log(f"Ollama skipped: {e}")
+                t_ollama = int((time.time() - t_ollama_start) * 1000)
+                skip_reason_cleanup = f"error: {e}"
+                _log(f"[cleanup] exception after {t_ollama}ms: {e}")
 
         # ── Translation ────────────────────────────────────────────────────────
         if translate_target and translate_target != "Off" and text:
@@ -1911,6 +1948,10 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             "action":      None,
             "timing":      {"whisper": t_whisper, "ollama": t_ollama, "total": t_total},
             "profile":     profile,
+            # Cleanup metadata — used by HUD skipped badge and timing card
+            "skipped_cleanup":  skip_ollama,
+            "skip_reason":      skip_reason_cleanup,
+            "ollama_accepted":  ollama_accepted,
             # History enrichment — only include when they differ from final text
             "whisper_text": raw_text if raw_text != text else None,
             "ollama_text":  ollama_text_raw,
