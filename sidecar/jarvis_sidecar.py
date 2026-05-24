@@ -909,15 +909,37 @@ def strip_ollama_preamble(text: str) -> str:
 # ── Whisper deduplication ─────────────────────────────────────────────────────
 
 def _deduplicate_whisper(text: str) -> str:
-    """Remove Whisper hallucination: exact duplicate adjacent sentences/phrases.
+    """Collapse Whisper hallucination loops (e.g. 'Testing. Testing. Testing…').
 
-    Whisper sometimes repeats the same sentence or phrase consecutively when
-    audio is quiet or the model is uncertain.  This function removes those
-    exact duplicates at sentence and word-chunk level.
+    Whisper sometimes gets stuck generating the same word or phrase many times
+    on short or noisy audio.  Two passes:
+
+    Pass 1 — word-window scan (matches Python reference exactly):
+      Detect a repeating window of 1–8 words at the start of the output and
+      return only the first occurrence when it repeats ≥ 3 times.
+      No minimum-length guard — short phrases like "Jarvis is not working"
+      repeated 3 × are collapsed to one.
+
+    Pass 2 — sentence-level dedup:
+      Remove consecutive identical sentences when Whisper emits the same
+      sentence twice separated by punctuation.
     """
     if not text:
         return text
-    # Sentence-level: split on ". " / "! " / "? " boundaries
+
+    # ── Pass 1: word-window repeat collapse ───────────────────────────────────
+    words = text.split()
+    for window in range(1, 9):
+        chunk = words[:window]
+        i, repeats = window, 1
+        while i + window <= len(words) and words[i:i + window] == chunk:
+            repeats += 1
+            i += window
+        if repeats >= 3:
+            _log(f"[dedup] hallucination collapsed: {len(words)} words → {window}")
+            return " ".join(chunk)
+
+    # ── Pass 2: sentence-level dedup (punctuation-delimited repetitions) ──────
     parts = re.split(r'(?<=[.!?])\s+', text.strip())
     deduped: list[str] = []
     for p in parts:
@@ -925,17 +947,7 @@ def _deduplicate_whisper(text: str) -> str:
         prev = deduped[-1].strip().lower().rstrip('.!?') if deduped else ""
         if not deduped or norm != prev:
             deduped.append(p)
-    result = ' '.join(deduped)
-    # Word-chunk level: catch "hello world hello world" (no punctuation boundary)
-    words = result.split()
-    n = len(words)
-    for half in range(n // 2, 3, -1):
-        first_h  = ' '.join(words[:half]).lower().rstrip(' .,!?')
-        second_h = ' '.join(words[half:half * 2]).lower().rstrip(' .,!?')
-        if first_h == second_h:
-            result = ' '.join(words[:half] + words[half * 2:])
-            break
-    return result
+    return ' '.join(deduped)
 
 
 # ── Snippet helpers ───────────────────────────────────────────────────────────

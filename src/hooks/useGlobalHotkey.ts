@@ -8,7 +8,7 @@
  *
  * Hold mode  (toggle_mode = false):
  *   key-down = start recording
- *   key-up   = stop + transcribe  (or tap_ignored if < hotkey_debounce_seconds)
+ *   key-up   = stop + transcribe  (or tap_ignored if < min_record_seconds)
  *
  * Toggle mode (toggle_mode = true):
  *   key-down when idle      = start recording
@@ -504,17 +504,15 @@ export function useGlobalHotkey() {
 
       // ── Short-hold guard ─────────────────────────────────────────────────────
       // Cancel without transcribing when the recording was shorter than the
-      // minimum useful duration. Hold mode already blocks short presses at
-      // hotkey-ropt-up (using the configurable debounce), but toggle mode and
-      // the button have no such gate — a quick double-tap goes straight here.
-      //
-      // IMPORTANT: use the fixed DEFAULT_DEBOUNCE_MS constant, NOT the
-      // user-configurable hotkey_debounce_seconds.  If we used the setting
-      // (e.g. 0.5 s), a user with a high debounce could say a short command
-      // word like "period" in toggle mode (~300 ms) and have it silently
-      // cancelled as a tap.  The fixed 180 ms floor is below any real speech.
+      // minimum useful duration (min_record_seconds, default 0.3 s).
+      // Matches Python _tap_record_stop: uses min_record_seconds, not debounce.
+      // A hard 180 ms floor is still enforced as the absolute minimum — no real
+      // speech can happen in under 180 ms, so this is never a false rejection.
       const holdMs    = Date.now() - recordStartRef.current;
-      const minHoldMs = DEFAULT_DEBOUNCE_MS; // fixed floor — no speech happens in < 180 ms
+      const minHoldMs = Math.max(
+        DEFAULT_DEBOUNCE_MS, // absolute floor — nothing useful in < 180 ms
+        (settingsRef.current.min_record_seconds ?? 0.3) * 1000,
+      );
       if (holdMs < minHoldMs) {
         console.log("[recording] too short (", holdMs, "ms < ", minHoldMs, "ms) — cancelling as tap");
         clearRecordingTimeout();
@@ -936,7 +934,7 @@ export function useGlobalHotkey() {
 
     /**
      * handleShortTap — hold mode only.
-     * Called when key is released within hotkey_debounce_seconds.
+     * Called when key is released within min_record_seconds.
      *
      * If state is "starting": the sidecar call is still in-flight.
      *   Set pendingStop so startRecording cancels after the call returns.
@@ -1047,16 +1045,20 @@ export function useGlobalHotkey() {
 
         // Hold mode: up = stop (unless it was a short tap)
         const elapsed = Date.now() - recordStartRef.current;
-        // Read threshold live from settings (matches Python _setting_float("hotkey_debounce_seconds"))
-        const debounceMs = (settingsRef.current.hotkey_debounce_seconds ?? DEFAULT_DEBOUNCE_MS / 1000) * 1000;
-        console.log("[hotkey] hold duration =", elapsed, "ms  threshold =", debounceMs, "ms");
+        // Use min_record_seconds as the minimum hold duration — same as Python reference.
+        // hotkey_debounce_seconds is ONLY for blocking duplicate hardware events
+        // (e.g. OS key-repeat sending multiple down/up events).  Using it here
+        // would break anyone who sets debounce > 0.3 s (e.g. 1.5 s), forcing
+        // them to hold the key for that long before any recording would be accepted.
+        const minRecordMs = (settingsRef.current.min_record_seconds ?? 0.3) * 1000;
+        console.log("[hotkey] hold duration =", elapsed, "ms  min_record =", minRecordMs, "ms");
 
         if (st === "starting") {
           // Start not yet complete — set pendingStop regardless of elapsed
           // (the user lifted before the sidecar even started; always treat as short tap)
           handleShortTap();
         } else if (st === "recording") {
-          if (elapsed < debounceMs) {
+          if (elapsed < minRecordMs) {
             handleShortTap();
           } else {
             stopAndTranscribe();
