@@ -62,40 +62,26 @@ const BAR_COLORS = Array.from({ length: WAVE_BARS }, (_, i) => {
 // Both run for the lifetime of the component (mounted only while recording).
 const WaveformBars = memo(function WaveformBars() {
   const barsRef    = useRef<(HTMLDivElement | null)[]>([]);
-  const targetRef  = useRef<number>(IDLE_LEVEL); // raw level from latest IPC poll
+  const targetRef  = useRef<number>(IDLE_LEVEL); // raw level from latest "audio-rms" event
   const displayRef = useRef<number>(IDLE_LEVEL); // smoothed display level (attack/decay)
   const phaseRef   = useRef<number>(0.0);        // traveling wave phase (radians)
   const rafRef     = useRef<number | null>(null);
-  const pollRef    = useRef<ReturnType<typeof setInterval> | null>(null);
-  const guardRef   = useRef<boolean>(false);     // prevents overlapping IPC calls
 
-  // ── IPC polling loop ───────────────────────────────────────────────────────
-  // Polls sidecar_get_status every 30 ms and writes the result directly to
-  // targetRef — bypassing React state entirely so there is zero scheduler
-  // overhead between the IPC response and the next rAF frame.
+  // ── Audio-RMS event listener ───────────────────────────────────────────────
+  // The main window's useGlobalHotkey polls sidecar_get_status every 30 ms
+  // during recording and emits "audio-rms" events to all windows.  Listening
+  // here is zero-IPC: the event arrives directly into the HUD webview without
+  // the HUD ever touching the sidecar Mutex.
+  //
+  // { level: 0.0–1.0 } matching Python: scale = min(1.0, rms * 18 + 0.15)
   useEffect(() => {
-    const poll = async () => {
-      if (guardRef.current) return;
-      guardRef.current = true;
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const raw = await invoke<string>("sidecar_get_status");
-        const status = JSON.parse(raw) as { ok: boolean; recording_rms?: number | null };
-        if (status.ok) {
-          // Python formula: scale = min(1.0, rms * 18 + 0.15)
-          const rms = status.recording_rms ?? 0;
-          targetRef.current = Math.min(1.0, rms * 18 + IDLE_LEVEL);
-        }
-      } catch {
-        // Non-critical — keep last value on IPC hiccup
-      } finally {
-        guardRef.current = false;
-      }
-    };
-    pollRef.current = setInterval(poll, 30);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    let unlisten: (() => void) | null = null;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<{ level: number }>("audio-rms", (event) => {
+        targetRef.current = event.payload.level;
+      }).then((fn) => { unlisten = fn; });
+    }).catch(() => {});
+    return () => { unlisten?.(); };
   }, []);
 
   // ── rAF rendering loop ─────────────────────────────────────────────────────

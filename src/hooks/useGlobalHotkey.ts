@@ -233,6 +233,44 @@ export function useGlobalHotkey() {
       if (wakeMonitorRef.current) { clearInterval(wakeMonitorRef.current); wakeMonitorRef.current = null; }
     };
 
+    // ── Waveform RMS push ────────────────────────────────────────────────────
+    // While recording the main window polls sidecar_get_status every 30 ms and
+    // emits an "audio-rms" event to ALL windows (including the HUD).  This
+    // push-from-main approach replaces HUD-initiated IPC polling, which was
+    // unreliable because the HUD is a second webview that must acquire the same
+    // sidecar Mutex — any contention or silent error left the bars frozen at idle.
+    //
+    // The event carries a single field: { level: 0.0–1.0 } matching Python:
+    //   scale = min(1.0, recording_rms * 18 + 0.15)
+    let rmsPollerTimer: ReturnType<typeof setInterval> | null = null;
+    let rmsGuard = false;
+
+    const startRmsPoller = () => {
+      if (rmsPollerTimer) return; // already running
+      rmsGuard = false;
+      rmsPollerTimer = setInterval(async () => {
+        if (rmsGuard) return;
+        rmsGuard = true;
+        try {
+          const raw = await invokeWithTimeout<string>("sidecar_get_status", undefined, 1_000);
+          const status = JSON.parse(raw) as { ok: boolean; recording_rms?: number | null };
+          if (status.ok && cachedEmit) {
+            const rms   = status.recording_rms ?? 0;
+            const level = Math.min(1.0, rms * 18 + 0.15);
+            cachedEmit("audio-rms", { level });
+          }
+        } catch { /* non-critical */ }
+        finally { rmsGuard = false; }
+      }, 30);
+    };
+
+    const stopRmsPoller = () => {
+      if (rmsPollerTimer) { clearInterval(rmsPollerTimer); rmsPollerTimer = null; }
+      rmsGuard = false;
+      // Send a final idle level so the HUD bars decay immediately
+      if (cachedEmit) cachedEmit("audio-rms", { level: 0.15 });
+    };
+
     const runCustomCommand = async (spokenText: string): Promise<{
       matched: boolean;
       pasteText?: string;
@@ -395,6 +433,11 @@ export function useGlobalHotkey() {
       console.log("[recording] → recording");
       stateRef.current = "recording";
 
+      // Start pushing RMS data to the HUD waveform via "audio-rms" events.
+      // Must be called AFTER sidecar_start_recording returns so recording_rms
+      // will be non-null on the first poll.
+      startRmsPoller();
+
       // ── Wake auto-stop monitor ─────────────────────────────────────────────
       // Only for wake-triggered recordings. Matches stable Python _silence_stop_monitor:
       //   1. grace period — never auto-stop before wake_dictation_grace_seconds
@@ -517,6 +560,7 @@ export function useGlobalHotkey() {
         console.log("[recording] too short (", holdMs, "ms < ", minHoldMs, "ms) — cancelling as tap");
         clearRecordingTimeout();
         clearWakeMonitor();
+        stopRmsPoller();
         isWakeRecordingRef.current = false;
         playSound("cancel");
         stateRef.current = "idle";
@@ -538,6 +582,7 @@ export function useGlobalHotkey() {
       console.log("[recording] → stopping  cycle=", myCycle);
       clearRecordingTimeout();
       clearWakeMonitor();
+      stopRmsPoller();
       isWakeRecordingRef.current = false;
       playSound("stop");
       stateRef.current = "stopping";
@@ -984,6 +1029,7 @@ export function useGlobalHotkey() {
       console.log("[recording] cancel — state was", st);
       clearRecordingTimeout();
       clearWakeMonitor();
+      stopRmsPoller();
       isWakeRecordingRef.current = false;
 
       if (st === "starting") {
