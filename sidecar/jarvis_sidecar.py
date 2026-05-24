@@ -1050,7 +1050,9 @@ def cmd_start_recording(_cmd: dict) -> dict:
     # Close wake stream so the mic is free for recording.
     # _wake_listening stays True — the stream is re-opened by _resume_wake_stream()
     # after recording ends.
+    wake_was_open = False
     if _wake_stream is not None:
+        wake_was_open = True
         try:
             _wake_stream.stop()
             _wake_stream.close()
@@ -1064,6 +1066,12 @@ def cmd_start_recording(_cmd: dict) -> dict:
         with _wake_lock:
             _wake_frames.clear()
         _log("Wake stream paused for recording")
+        # On macOS, CoreAudio can take a moment to fully release the audio device
+        # after a stream is closed.  Opening a new stream immediately (especially
+        # at a different sample rate) can fail with a PortAudio device-busy error.
+        # A brief pause lets CoreAudio complete the teardown.
+        import time as _time
+        _time.sleep(0.08)
 
     with _audio_lock:
         _audio_frames = []
@@ -1082,6 +1090,7 @@ def cmd_start_recording(_cmd: dict) -> dict:
     try:
         import sounddevice as sd
         import numpy as _np  # captured in closure — avoids per-call import overhead
+        import time as _time
         device, channels = _resolve_input_device(mic_device, sample_rate)
 
         def _callback(indata, frames, time_info, status):
@@ -1114,15 +1123,37 @@ def cmd_start_recording(_cmd: dict) -> dict:
                 except Exception:
                     pass  # never let a frame error kill the audio stream
 
-        _stream = sd.InputStream(
-            samplerate=sample_rate,
-            channels=channels,
-            dtype="float32",
-            device=device,
-            blocksize=CHUNK,
-            callback=_callback,
-        )
-        _stream.start()
+        # Open the recording stream — retry once on failure.
+        # On macOS, opening a new InputStream immediately after closing the wake
+        # stream can fail with a PortAudio device-busy error even with the 80 ms
+        # settle above (device-release latency varies with system load).
+        last_err = None
+        for attempt in range(2):
+            try:
+                _stream = sd.InputStream(
+                    samplerate=sample_rate,
+                    channels=channels,
+                    dtype="float32",
+                    device=device,
+                    blocksize=CHUNK,
+                    callback=_callback,
+                )
+                _stream.start()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if attempt == 0 and wake_was_open:
+                    _log(f"start_recording attempt {attempt+1} failed ({e}), retrying…")
+                    _time.sleep(0.12)  # extra settle before retry
+                else:
+                    break
+
+        if last_err is not None:
+            _recording = False
+            _log(f"start_recording error: {last_err}")
+            return {"ok": False, "error": str(last_err)}
+
         _log(f"Recording started: device={device} channels={channels} rate={sample_rate}")
         return {"ok": True, "status": "recording"}
     except Exception as e:

@@ -326,9 +326,16 @@ export function useGlobalHotkey() {
         clearRecordingTimeout();
         pendingStopRef.current = false;
         isWakeRecordingRef.current = false;
-        stateRef.current = "idle";
         resumeMedia();
-        setError(String(e));
+        // Keep stateRef as "idle" (NOT "error") so the next wake detection or
+        // keypress can immediately start a new recording.  setError() would set
+        // stateRef to "error" and block retries for 4 s — not appropriate here.
+        stateRef.current = "idle";
+        hudEmit({ state: "error", subtext: String(e) });
+        const startFailCycle = cycleIdRef.current;
+        setTimeout(() => {
+          if (cycleIdRef.current === startFailCycle) hudEmit({ state: "idle" });
+        }, 2000);
         return;
       }
 
