@@ -813,29 +813,43 @@ pub fn create_reminder(text: String) -> Result<(), String> {
 
 // ── Shottr screenshot ─────────────────────────────────────────────────────────
 // screenshot_type: "screen" | "window" | "area" | "scrolling" | "text"
-// Requires Shottr ≥ 1.3 at /Applications/Shottr.app.
-// Triggers Shottr's Control+key shortcuts (same approach as stable Python app).
-// Falls back with an Err if Shottr is not installed.
+//
+// Preferred: Shottr ≥ 1.3 via Control+key shortcuts.
+// Fallback: macOS native screenshot shortcuts when Shottr is not installed.
+//   Shift+Cmd+3 = full screen capture to file (screen / window)
+//   Shift+Cmd+4 = area selection cursor (area)
+//   Shift+Cmd+5 = screenshot toolbar, supports scrolling & annotation (scrolling / text)
 #[tauri::command]
 pub fn trigger_shottr(screenshot_type: String) -> Result<(), String> {
-    if !std::path::Path::new("/Applications/Shottr.app").exists() {
-        return Err(
-            "Shottr is not installed. Install it from shottr.cc to use screenshot voice commands."
-                .to_string(),
+    if std::path::Path::new("/Applications/Shottr.app").exists() {
+        // Shottr default Control-key shortcuts: W=screen, A=area, S=scroll, T=OCR
+        let key = match screenshot_type.as_str() {
+            "area"      => "a",
+            "scrolling" => "s",
+            "text"      => "t",
+            _           => "w", // screen / window
+        };
+        let script = format!(
+            "tell application \"System Events\"\n    keystroke \"{}\" using control down\nend tell",
+            key
         );
+        osa_spawn(&script);
+    } else {
+        // macOS native fallback — no third-party app required.
+        // key "3" → Shift+Cmd+3 (full screen)
+        // key "4" → Shift+Cmd+4 (area crosshair)
+        // key "5" → Shift+Cmd+5 (screenshot toolbar, supports scrolling capture)
+        let native_key = match screenshot_type.as_str() {
+            "area"                => "4",
+            "scrolling" | "text" => "5",
+            _                    => "3", // screen / window
+        };
+        let script = format!(
+            "tell application \"System Events\"\n    keystroke \"{}\" using {{shift down, command down}}\nend tell",
+            native_key
+        );
+        osa_spawn(&script);
     }
-    // Shottr default Control-key shortcuts: W=screen, A=area, S=scroll, T=OCR
-    let key = match screenshot_type.as_str() {
-        "area"      => "a",
-        "scrolling" => "s",
-        "text"      => "t",
-        _           => "w", // screen / window
-    };
-    let script = format!(
-        "tell application \"System Events\"\n    keystroke \"{}\" using control down\nend tell",
-        key
-    );
-    osa_spawn(&script);
     Ok(())
 }
 

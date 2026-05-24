@@ -1363,9 +1363,20 @@ def cmd_start_recording(_cmd: dict) -> dict:
                     # Voice active when RMS is clearly above the noise floor.
                     va = rms > max(_noise_floor * 2.5, 0.012)
                     _voice_active = va
-                    # Only update floor when silent — speech must not raise the floor.
+                    # Noise-floor adaptation:
+                    #   Silent frames → fast adapt DOWN so transients don't raise the floor.
+                    #   Voice frames  → very slow adapt UP to handle the catch-22 where
+                    #     _noise_floor starts at 0.01 but ambient is 0.03+: without upward
+                    #     adaptation the floor stays at 0.01, threshold stays at 0.025, and
+                    #     ambient 0.03 pins va=True forever so silence is never detected.
+                    #     The slow rate (0.5 %) ensures real speech (>>0.03) barely moves
+                    #     the floor while steady room noise pulls it up within ~5–10 s.
                     if not va:
                         _noise_floor = _noise_floor * 0.98 + rms * 0.02
+                    elif _noise_floor < rms * 0.8:
+                        # Only creep upward when floor is well below ambient (not during
+                        # genuine loud speech where the gap is intentional).
+                        _noise_floor = _noise_floor * 0.995 + rms * 0.005
                 except Exception:
                     pass  # never let a frame error kill the audio stream
 

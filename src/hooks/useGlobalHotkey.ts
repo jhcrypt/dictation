@@ -454,16 +454,21 @@ export function useGlobalHotkey() {
               return;
             }
 
-            // Use raw RMS vs absolute threshold — matches Python _silence_stop_monitor.
-            // The relative voice_active flag (rms > noise_floor*2.5) cannot detect
-            // silence in rooms where ambient noise is above the threshold (0.025),
-            // because the noise floor starts at 0.01 and can only adapt downward
-            // while silent — creating a catch-22 that pins voice_active=True forever.
-            // Comparing raw RMS to the same fixed threshold the Python app uses
-            // ensures silence detection works regardless of noise floor state.
+            // Use the sidecar's adaptive voice_active VAD flag as the primary signal.
+            //
+            // The sidecar noise floor now adapts bidirectionally (down when silent,
+            // slowly up when ambient noise is consistently above the floor).  This
+            // eliminates the catch-22 where floor=0.01, ambient=0.03, threshold=0.025
+            // would pin voice_active=True forever.  After ~5–10 s in a noisy room the
+            // floor rises and the VAD correctly reports silence once the user stops.
+            //
+            // Raw RMS fallback: if voice_active is absent (shouldn't happen with current
+            // sidecar builds) fall back to the configured absolute threshold.
             const silenceRmsThreshold = settingsRef.current.wake_dictation_silence_rms ?? 0.025;
             const rawRms = status.recording_rms ?? 0.0;
-            const voiceActive = rawRms >= silenceRmsThreshold;
+            const voiceActive = (status.voice_active != null)
+              ? status.voice_active === true
+              : rawRms >= silenceRmsThreshold;
 
             if (voiceActive) {
               // Voice detected — reset the silence window
