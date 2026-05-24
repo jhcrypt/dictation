@@ -1395,9 +1395,18 @@ def cmd_start_recording(_cmd: dict) -> dict:
                     #     the floor while steady room noise pulls it up within ~5–10 s.
                     if not va:
                         _noise_floor = _noise_floor * 0.98 + rms * 0.02
-                    elif _noise_floor < rms * 0.8:
-                        # Only creep upward when floor is well below ambient (not during
-                        # genuine loud speech where the gap is intentional).
+                    elif _noise_floor < 0.016:
+                        # Upward adaptation — ONLY to resolve the ambient catch-22:
+                        # floor=0.01, ambient=0.03 → threshold=0.025, 0.03>0.025 → va=True
+                        # forever (silence never detected).  We creep the floor up until
+                        # threshold (floor×2.5) exceeds ambient, then downward adaptation
+                        # during brief pauses takes over naturally.
+                        #
+                        # Cap at 0.016 (threshold → 0.04).  Speech RMS is typically 0.04+,
+                        # so staying below 0.016 keeps the threshold well below speech level.
+                        # The previous cap (rms×0.8) let the floor rise to 0.04–0.08 during
+                        # speech, making threshold = 0.10–0.20 and falsely flagging the user's
+                        # own voice as silence after ~5 seconds of continuous talking.
                         _noise_floor = _noise_floor * 0.995 + rms * 0.005
                 except Exception:
                     pass  # never let a frame error kill the audio stream
