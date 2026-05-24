@@ -347,6 +347,25 @@ export default function DictationPage() {
             {dictTiming.cleanupStatus === "skipped" && dictTiming.cleanupSkipReason && (
               <div className="ml-3 border-l border-jarvis-border pl-3 mb-0.5">
                 <TimingRow label="  reason" value={dictTiming.cleanupSkipReason} />
+                {dictTiming.cleanupWordCount !== undefined && (
+                  <TimingRow label="  words" value={String(dictTiming.cleanupWordCount)} />
+                )}
+              </div>
+            )}
+            {dictTiming.cleanupStatus === "done" && (
+              <div className="ml-3 border-l border-jarvis-border pl-3 mb-0.5">
+                {dictTiming.cleanupModel && (
+                  <TimingRow label="  model" value={dictTiming.cleanupModel} />
+                )}
+                {dictTiming.cleanupWordCount !== undefined && (
+                  <TimingRow label="  words" value={String(dictTiming.cleanupWordCount)} />
+                )}
+                {dictTiming.cleanupRequestMs !== undefined && (
+                  <TimingRow label="  http request" value={fmtMs(dictTiming.cleanupRequestMs)} />
+                )}
+                {dictTiming.cleanupAccepted === false && dictTiming.cleanupRejectReason && (
+                  <TimingRow label="  reject reason" value={dictTiming.cleanupRejectReason} />
+                )}
               </div>
             )}
             {/* Paste row — expands to substeps when PasteTiming data is available */}

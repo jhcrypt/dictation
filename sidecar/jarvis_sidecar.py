@@ -1854,6 +1854,7 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             f"words={word_count} skip={skip_ollama} reason={skip_reason_cleanup!r}"
         )
 
+        t_request_ms: int = 0  # Ollama HTTP round-trip only (0 if skipped)
         if not skip_ollama:
             t_ollama_start = time.time()
             try:
@@ -1869,7 +1870,7 @@ def cmd_transcribe_last(cmd: dict) -> dict:
                             {"role": "user",   "content": text},
                         ],
                         "stream": False,
-                        "keep_alive": "10m",
+                        "keep_alive": "30m",
                         "options": {
                             "repeat_penalty": 1.15,
                             "num_predict":    180,
@@ -1980,9 +1981,13 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             "timing":      {"whisper": t_whisper, "ollama": t_ollama, "total": t_total},
             "profile":     profile,
             # Cleanup metadata — used by HUD skipped badge and timing card
-            "skipped_cleanup":  skip_ollama,
-            "skip_reason":      skip_reason_cleanup,
-            "ollama_accepted":  ollama_accepted,
+            "skipped_cleanup":    skip_ollama,
+            "skip_reason":        skip_reason_cleanup,
+            "ollama_accepted":    ollama_accepted,
+            "ollama_reject_reason": ollama_reject_reason,
+            "ollama_request_ms":  t_request_ms,
+            "ollama_model":       ollama_model if not skip_ollama else None,
+            "word_count":         word_count,
             # History enrichment — only include when they differ from final text
             "whisper_text": raw_text if raw_text != text else None,
             "ollama_text":  ollama_text_raw,

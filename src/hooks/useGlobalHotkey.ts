@@ -87,12 +87,20 @@ export interface DictationTiming {
   transcriptionMs?: number;
   /** Ollama cleanup time ms (from sidecar); undefined if skipped */
   cleanupMs?: number;
+  /** Ollama HTTP request-only time ms (subset of cleanupMs) */
+  cleanupRequestMs?: number;
   /** "done" | "skipped" | "off" */
   cleanupStatus?: string;
   /** Why cleanup was skipped (from skip_reason_cleanup in sidecar) */
   cleanupSkipReason?: string;
   /** true = safety filter passed, false = rejected, undefined = skipped */
   cleanupAccepted?: boolean;
+  /** Reason the safety filter rejected the Ollama result */
+  cleanupRejectReason?: string;
+  /** Ollama model name used for cleanup */
+  cleanupModel?: string;
+  /** Word count of the raw transcript (used for skip decisions) */
+  cleanupWordCount?: number;
   /** paste_text total call duration */
   pasteMs?: number;
   /** Paste substeps — from PasteTiming returned by paste_text command */
@@ -523,6 +531,10 @@ export function useGlobalHotkey() {
           skipped_cleanup?: boolean;
           skip_reason?: string;
           ollama_accepted?: boolean | null;
+          ollama_reject_reason?: string | null;
+          ollama_request_ms?: number;
+          ollama_model?: string | null;
+          word_count?: number;
           // History enrichment
           whisper_text?: string | null;
           ollama_text?: string | null;
@@ -741,9 +753,13 @@ export function useGlobalHotkey() {
             stopMs:              t_stopDone.current   - t_stopCalled.current,
             transcriptionMs:     result.timing.whisper,
             cleanupMs:           result.timing.ollama > 0 ? result.timing.ollama : undefined,
+            cleanupRequestMs:    result.ollama_request_ms && result.ollama_request_ms > 0 ? result.ollama_request_ms : undefined,
             cleanupStatus,
             cleanupSkipReason:   result.skip_reason ?? undefined,
             cleanupAccepted:     result.ollama_accepted ?? undefined,
+            cleanupRejectReason: result.ollama_reject_reason ?? undefined,
+            cleanupModel:        result.ollama_model ?? undefined,
+            cleanupWordCount:    result.word_count,
             pasteMs:             s.safe_mode ? undefined : (t_pasteEnd - t_pasteStart),
             // Paste substeps (from Rust PasteTiming)
             paste_save_ms:          pasteTiming?.save_ms,
