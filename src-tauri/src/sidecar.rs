@@ -11,8 +11,9 @@ pub struct SidecarCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscribeResult {
     pub ok: bool,
+    // Option<String> so sidecar "text": null for action commands doesn't fail deserialization.
     #[serde(default)]
-    pub text: String,
+    pub text: Option<String>,
     #[serde(default)]
     pub timing: TranscribeTiming,
     #[serde(default)]
@@ -25,6 +26,43 @@ pub struct TranscribeResult {
     pub skipped_cleanup: Option<bool>,
     #[serde(default)]
     pub skip_reason: Option<String>,
+    // Voice command fields — absent for plain-text results, present for action commands.
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub backspace_count: Option<u32>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub with_shift: Option<bool>,
+    #[serde(default)]
+    pub repeat: Option<u32>,
+    #[serde(default)]
+    pub modifier: Option<String>,
+    #[serde(default)]
+    pub nav_target: Option<String>,
+    #[serde(default)]
+    pub app_name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub direction: Option<String>,
+    #[serde(default)]
+    pub level: Option<u32>,
+    #[serde(default)]
+    pub screenshot_type: Option<String>,
+    #[serde(default)]
+    pub force: Option<bool>,
+    #[serde(default)]
+    pub hud: Option<String>,
+    #[serde(default)]
+    pub hud_color: Option<String>,
+    #[serde(default)]
+    pub whisper_text: Option<String>,
+    #[serde(default)]
+    pub ollama_text: Option<String>,
+    #[serde(default)]
+    pub active_app: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

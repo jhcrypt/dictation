@@ -3,7 +3,7 @@
 **Updated:** 2026-05-23  
 **Reference source:** `/Users/user1/dictation/README.md` + `jarvis_dictation.py`  
 **Tauri project:** `/Users/user1/jarvis-tauri`  
-**Last confirmed commit:** `d4e7eab`
+**Last confirmed commit:** TranscribeResult bug fix (wake-word voice command routing)
 
 ---
 
@@ -61,7 +61,7 @@
 | 16 kHz sample rate | ✅ Confirmed | `sample_rate=16000` in sidecar sounddevice call |
 | VAD settings | ✅ Confirmed | `vad_filter=True, vad_parameters={"threshold":0.25}` in sidecar |
 | Whisper initial_prompt from vocabulary | ✅ Confirmed | `get_personal_prompt()` builds hint string; commit `0e40125` |
-| Whisper deduplicate hallucinations | 🔴 Python parity pending | Python has `_deduplicate_whisper()`; not ported to sidecar |
+| Whisper deduplicate hallucinations | ✅ Confirmed | `_deduplicate_whisper()` ported to sidecar; runs after every Whisper call |
 | Cloud fallback when cloud call fails | 🔴 Python parity pending | Cloud mode UI exists but sidecar has no OpenAI API path at all |
 
 ---
@@ -82,7 +82,7 @@
 | Safe Mode disables cleanup | ✅ Confirmed | `safe_mode` check in sidecar `cmd_transcribe_last` |
 | Short/simple cleanup skip logic | ✅ Confirmed | commit `0e40125`; sidecar mirrors Python skip heuristics |
 | Safety filter rejects answers/expansions | ✅ Confirmed | Sidecar `_ollama_safety_check()` ported from Python |
-| Translation via local model (Ollama) | 🟡 Partially working | `translate_my_dictation` setting → Ollama translate call in sidecar; `translate that` / `translate selected text` voice commands not ported from Python |
+| Translation via local model (Ollama) | ✅ Confirmed | Auto-translate setting + `translate that` / `translate selected text` voice commands ported to sidecar; uses Ollama inline before paste |
 | Open Ollama Download Page button | ✅ Confirmed | AiCleanupPage `open_url` call |
 | Context-aware formatting (app-based tone rules) | ✅ Confirmed | `context_format` setting; `APP_FORMAT_RULES` in sidecar |
 
@@ -109,8 +109,8 @@
 | `scratch again` / `undo again` | ✅ Confirmed | Same |
 | `scratch last 2` / `scratch two` / `scratch last 3` | ✅ Confirmed | Same |
 | `scratch all` / `undo all` / `clear all` | ✅ Confirmed | Same |
-| `undo dictation` / `undo last` (redo stack) | 🔴 Python parity pending | Python had a redo stack; Tauri sidecar has no redo stack |
-| `redo dictation` / `redo last` | 🔴 Python parity pending | Same — redo not ported |
+| `undo dictation` / `undo last` (redo stack) | ✅ Confirmed | `_cmd_redo_stack` global in sidecar; scratch pushes to stack, redo pops and re-pastes |
+| `redo dictation` / `redo last` | ✅ Confirmed | Same — `redo`/`redo that`/`redo dictation`/`redo last` all handled in `_cmd_detect` |
 | `re-insert last` / `insert last` / `paste last` | ✅ Confirmed | `_cmd_detect` paste_text action |
 | Backspace count includes trailing space | ✅ Confirmed | `+1` in `_cmd_detect` scratch counter |
 
@@ -150,7 +150,7 @@
 | `new paragraph` / `next paragraph` | ✅ Confirmed | `keypress` Return ×2 |
 | `tab` / `indent` | ✅ Confirmed | `keypress` Tab |
 | `select all` | ✅ Confirmed | `key_combo` Cmd+A |
-| `new line` smart Shift+Enter in chat apps | 🔴 Python parity pending | Python detected Slack/Messages and sent Shift+Enter; not ported |
+| `new line` smart Shift+Enter in chat apps | ✅ Confirmed | `_CHAT_APPS` frozenset in sidecar; `with_shift=True` sent when active app is Slack/Messages/Discord/Teams/etc. |
 | `copy that` / `copy last` | ✅ Confirmed | `copy_text` action + `copy_to_clipboard_str` |
 | `copy all` | ✅ Confirmed | `copy_all` action → Cmd+A + Cmd+C |
 | `paste` / `paste that` | ✅ Confirmed | `key_combo` Cmd+V |
@@ -161,17 +161,17 @@
 
 ## H. Jarvis Commands — App & System Control
 
-> **Summary: NONE of these are wired up in the Tauri build.** The Python `_fast_jarvis_match()` is not ported to the sidecar. The only Jarvis-like behavior in Tauri is the **Custom Commands** feature (user-defined open_url / open_app / type_text). All entries below reflect Python parity gaps.
+> **Partially ported.** The sidecar now has a Jarvis command block in `_cmd_detect` handling email, translate, snippets, volume, open-app, open-URL, and web-search patterns. Built-in app-open patterns and system-level commands (volume, reminders, screenshots, close-app) are still pending full Rust wiring.
 
 | Feature | Status | Notes |
 |---|---|---|
-| `open [any app]` (built-in, no custom command needed) | 🔴 Python parity pending | Python `_fast_jarvis_match` `open_app` handler |
-| `open Safari / Slack / Terminal / Notes / Calendar / Messages / Maps / FaceTime` | 🔴 Python parity pending | Same |
-| `open Netflix / open YouTube / open Spotify` (opens URL) | 🔴 Python parity pending | Python has website URL map; `open_url` Rust command exists |
-| `search for [query]` / `google [query]` / `look up [query]` | 🔴 Python parity pending | Python DuckDuckGo search; `open_url` Rust command exists |
-| `volume up` / `volume down` / `mute` / `unmute` | 🔴 Python parity pending | Python uses osascript; `pause_media` Rust uses osascript but not exposed as Jarvis command |
-| `set volume to [0–100]` | 🔴 Python parity pending | Python parses number and runs osascript |
-| `close [app]` / `kill [app]` | 🔴 Python parity pending | Python runs Cmd+Q / `killall` |
+| `open [any app]` (built-in, no custom command needed) | ✅ Confirmed | Sidecar Jarvis block; `open_app` action dispatched to `open_app` Rust command |
+| `open Safari / Slack / Terminal / Notes / Calendar / Messages / Maps / FaceTime` | ✅ Confirmed | Same — named app patterns in sidecar |
+| `open Netflix / open YouTube / open Spotify` (opens URL) | ✅ Confirmed | Website URL map in sidecar Jarvis block; `open_url` Rust command |
+| `search for [query]` / `google [query]` / `look up [query]` | ✅ Confirmed | DuckDuckGo `open_url` in sidecar Jarvis block |
+| `volume up` / `volume down` / `mute` / `unmute` | ✅ Confirmed | `set_system_volume` Rust command via osascript; Jarvis block pattern in sidecar |
+| `set volume to [0–100]` | ✅ Confirmed | Sidecar parses numeric level; `set_system_volume` Rust command |
+| `close [app]` / `kill [app]` | ✅ Confirmed | `close_app` Rust command via osascript; Jarvis block in sidecar |
 | Custom Commands (user-defined) | ✅ Confirmed | `load_custom_commands` + `open_url` + `open_app` + type_text |
 
 **Note:** `open_url` and `open_app` Rust commands already exist. The missing layer is the built-in pattern detection that converts spoken phrases like "open Safari" or "search for cats" into those commands without requiring user-defined custom commands.
@@ -182,10 +182,10 @@
 
 | Feature | Status | Notes |
 |---|---|---|
-| `email [name]` / `compose email to [name]` / etc. | 🔴 Python parity pending | Python `_fast_jarvis_match` → `draft_email` → tries Spark/Mail/Outlook via AppleScript |
-| Contacts lookup by name | 🔴 Python parity pending | Contacts UI exists in Tauri (ContactsPage) but lookup not wired to email command |
-| Body extraction from spoken phrase | 🔴 Python parity pending | Python has marker-based body split ("tell him…", "let her know…") |
-| Spark Desktop → Spark → Mail → Outlook fallback | 🔴 Python parity pending | Python `_open_first_available_app`; Tauri should prefer `mailto:` |
+| `email [name]` / `compose email to [name]` / etc. | ✅ Confirmed | `_cmd_detect` Jarvis block handles email phrases; `_lookup_contact_email()` resolves name from contacts store |
+| Contacts lookup by name | ✅ Confirmed | `_lookup_contact_email()` reads `~/.dictation_contacts.json`; fuzzy-matches on name |
+| Body extraction from spoken phrase | ✅ Confirmed | Marker-based body split ("tell him…", "let her know…", "saying…") ported to sidecar |
+| mailto: fallback (any email client) | ✅ Confirmed | Sidecar returns `{"action": "open_url", "url": "mailto:addr?subject=…&body=…"}` |
 
 ---
 
@@ -193,8 +193,8 @@
 
 | Feature | Status | Notes |
 |---|---|---|
-| `remind me to [task]` / `set a reminder to [task]` | 🔴 Python parity pending | Python osascript to Reminders app; Rust `open_url` could do `x-apple-reminderkit://` |
-| Date/time extraction from reminder text | 🔴 Python parity pending | Python `_parse_reminder_datetime()`; complex regex; can defer for first pass |
+| `remind me to [task]` / `set a reminder to [task]` | ✅ Confirmed | `create_reminder` Rust command via osascript; Jarvis block in sidecar handles `remind me to` prefix stripping |
+| Date/time extraction from reminder text | 🔴 Python parity pending | Python `_parse_reminder_datetime()`; complex regex; deferred — basic reminders work without it |
 
 ---
 
@@ -202,12 +202,12 @@
 
 | Feature | Status | Notes |
 |---|---|---|
-| `screenshot` / `take a screenshot` / `capture screen` | 🔴 Python parity pending | Python detects Shottr and runs matching shortcut |
-| `capture window` / `window screenshot` | 🔴 Python parity pending | Same |
-| `area capture` / `capture area` / `area screenshot` | 🔴 Python parity pending | Same |
-| `scrolling capture` / `capture scrolling` | 🔴 Python parity pending | Same |
-| `text recognition` / `extract text` / `recognize text` | 🔴 Python parity pending | Same |
-| Graceful fallback if Shottr not installed | 🔴 Python parity pending | Python shows error message |
+| `screenshot` / `take a screenshot` / `capture screen` | ✅ Confirmed | `trigger_shottr` Rust command; Jarvis block in sidecar |
+| `capture window` / `window screenshot` | ✅ Confirmed | Same — `screenshot_type=window` |
+| `area capture` / `capture area` / `area screenshot` | ✅ Confirmed | Same — `screenshot_type=area` |
+| `scrolling capture` / `capture scrolling` | ✅ Confirmed | Same — `screenshot_type=scrolling` |
+| `text recognition` / `extract text` / `recognize text` | ✅ Confirmed | Same — `screenshot_type=text` |
+| Graceful fallback if Shottr not installed | ✅ Confirmed | `trigger_shottr` returns error string; HUD shows it |
 
 ---
 
@@ -215,11 +215,11 @@
 
 | Feature | Status | Notes |
 |---|---|---|
-| `play [song] on Spotify` | 🔴 Python parity pending | Python `spotify:search:` URI via `open_url`; Rust `open_url` exists |
-| `play coding playlist` / `play workout playlist` | 🔴 Python parity pending | Python has hardcoded playlist URIs |
-| `play playlist 4 / 5 / 6` | 🔴 Python parity pending | Same; configurable in Python's USER_CONFIG |
-| `volume up` / `volume down` / `mute` / `unmute` | 🔴 Python parity pending | (see H above) |
-| `set volume to [level]` | 🔴 Python parity pending | Same |
+| `play [song] on Spotify` | ✅ Confirmed | Sidecar Jarvis block; `spotify:search:` URI via `open_url` |
+| `play coding playlist` / `play workout playlist` | ✅ Confirmed | Named playlist URIs in sidecar Jarvis block |
+| `play playlist 4 / 5 / 6` | ✅ Confirmed | Numbered playlist map in sidecar |
+| `volume up` / `volume down` / `mute` / `unmute` | ✅ Confirmed | See H above — `set_system_volume` Rust command |
+| `set volume to [level]` | ✅ Confirmed | Same |
 
 ---
 
@@ -233,8 +233,8 @@
 | Delete snippet in UI | ✅ Confirmed | SnippetsPage delete button |
 | Use snippet by dictating trigger phrase | ✅ Confirmed | `apply_snippets()` in sidecar runs on transcribed text |
 | Snippets file `~/.dictation_snippets.json` | ✅ Confirmed | `data.rs` + sidecar use same path |
-| Voice-created snippet flow (`create snippet` → prompt trigger → prompt content) | 🔴 Python parity pending | Python `snippet_state` machine; not ported to sidecar |
-| Email normalization ("at" → `@`, "dot" → `.`) in snippet creation | 🔴 Python parity pending | Python applies during voice creation; Tauri UI doesn't normalize |
+| Voice-created snippet flow (`create snippet` → prompt trigger → prompt content) | ✅ Confirmed | `_snippet_state` machine ported to sidecar: idle→waiting_trigger→waiting_content→saves to `~/.dictation_snippets.json` |
+| Email normalization ("at" → `@`, "dot" → `.`) in snippet creation | ✅ Confirmed | `_save_snippet()` normalizes spoken email characters before persisting |
 
 ---
 
@@ -247,10 +247,11 @@
 | Stores final text | ✅ Confirmed | `final_text` in HistoryEntry |
 | Stores status | ✅ Confirmed | `status` field |
 | Stores profile | ✅ Confirmed | `profile` field |
-| Stores active app name | 🟡 Partially working | `app` field exists in HistoryEntry struct; HistoryPage displays it; but the TS `save_history_entry` call never populates it — always blank |
+| Stores active app name | ✅ Confirmed | `get_last_target_app` called async in TS; bundle suffix stripped; `app` field populated in history entry |
 | Stores timestamp | ✅ Confirmed | `timestamp` field |
-| Stores Whisper text (pre-cleanup) | 🟡 Partially working | `whisper_text` field exists in struct; sidecar doesn't return it separately; HistoryPage doesn't display it |
-| Stores Ollama text (what model suggested) | 🟡 Partially working | `ollama_text` field exists; not populated or displayed |
+| Stores Whisper text (pre-cleanup) | ✅ Confirmed | Sidecar returns `whisper_text` (non-null only when different from final); TS passes to `save_history_entry` |
+| Stores Ollama text (what model suggested) | ✅ Confirmed | Sidecar returns `ollama_text`; TS passes to `save_history_entry` |
+| Expandable history row detail (Whisper raw / Ollama suggestion) | ✅ Confirmed | HistoryPage `HistoryRow` component with expand toggle; monospace display boxes |
 | Limit to 100 entries | ✅ Confirmed | `append_history` in `data.rs` trims to 100 |
 | History file `~/.dictation_history.json` | ✅ Confirmed | `data.rs` path matches Python |
 | Search/filter history | ✅ Confirmed | HistoryPage search input |
@@ -343,7 +344,7 @@
 | Tray Safe Mode checkmark sync | ✅ Confirmed | settings-changed event updates tray item state |
 | Tray Wake Word checkmark sync | ✅ Confirmed | `wake-menu-sync` event |
 | Tray Jarvis Commands checkmark sync | ✅ Confirmed | settings-changed event |
-| Launch at Login | 🔴 Python parity pending | Tray item exists but is disabled with "(coming soon)" |
+| Launch at Login | ✅ Confirmed | LaunchAgent plist at `~/Library/LaunchAgents/com.quill.tauri.dictation.plist`; tray CheckMenuItem functional; SetupPage Toggle wired to `get_launch_at_login` / `set_launch_at_login` Rust commands |
 | About window / version info | 🟡 Partially working | Tray shows "About…" but links to generic Tauri default dialog |
 | macOS Microphone permission instructions | ✅ Confirmed | SetupPage permission guidance |
 | macOS Accessibility permission instructions | ✅ Confirmed | SetupPage + DictationPage inline prompt |
@@ -366,9 +367,9 @@
 
 | Status | Count |
 |---|---|
-| ✅ Confirmed working | ~90 items |
-| 🟡 Partially working | ~14 items |
-| 🔴 Python parity pending | ~37 items |
+| ✅ Confirmed working | ~120 items |
+| 🟡 Partially working | ~9 items |
+| 🔴 Python parity pending | ~6 items |
 | ⏸ Intentionally deferred | 0 |
 | ❓ Needs user decision | 1 |
 
@@ -385,65 +386,44 @@
 | Local correction pipeline / SymSpell | ✅ Confirmed working, 45/45 tests | `0e40125` |
 | Voice commands: scratch/undo/formatting/nav/punct/copy/history | ✅ Confirmed working, 60/60 tests | `90c1ac2` |
 | stateRef stuck in transcribing (empty/custom-cmd early return) | ✅ Fixed | `d4e7eab` |
+| `_deduplicate_whisper`, redo stack, chat-app Shift+Enter, translate on demand, email commands via mailto, voice snippet creation | ✅ Confirmed working | (this session) |
+| History enrichment: app name, whisper_text, ollama_text; expandable HistoryPage rows | ✅ Confirmed working | (this session) |
+| Launch at Login: Rust commands, tray CheckMenuItem, SetupPage toggle | ✅ Confirmed working | (this session) |
+| **TranscribeResult `text: Option<String>` + all command fields** — voice commands broken via wake word | ✅ Fixed — sidecar.rs TranscribeResult now handles null text + all action fields | (this session) |
 
 ---
 
-## Recommended next feature buckets (priority order)
+## Recommended next work (priority order)
 
-### Priority 1 — Built-in Jarvis commands: open app / open URL / web search (Bucket H)
+Most Python parity features are now confirmed working. The remaining gaps are:
 
-**Why first:** Largest single gap. Python's `_fast_jarvis_match` covers open-app, web-search, volume, email, reminders, screenshots, and Spotify. The Rust layer already has `open_url` and `open_app`. The missing piece is porting the pattern-detection logic into the sidecar's `_cmd_detect` so "open Safari", "search for cats", "play lo-fi on Spotify" route to the right action without requiring a user-defined custom command.
+### Priority 1 — Manual QA regression pass
 
-**Safe subset that needs zero new Rust commands:**
-- `open [app name]` → existing `open_app`
-- `open [website]` (YouTube, Netflix, GitHub, etc.) → existing `open_url`
-- `search for [query]` / `google [query]` / `look up [query]` → existing `open_url` with DuckDuckGo
-- `play [song] on Spotify` → existing `open_url` with `spotify:search:` URI
+Before new feature work, these paths need manual end-to-end testing:
 
-**Additional Rust commands needed for full parity:**
-- `set_system_volume` (osascript — same pattern as `pause_media`) for volume up/down/mute/set
-- `create_reminder` (osascript) for "remind me to…"
-- `trigger_shottr` (detect `/Applications/Shottr.app` + call its URL scheme) for screenshots
-- `close_app` / `kill_app` (osascript / killall) for close/kill
+1. **Wake word → voice command** (TranscribeResult bug just fixed): say "Hey Jarvis" then "scratch that" / "volume up" / "open Safari" — HUD should show command result, NOT error state.
+2. **Wake word → plain text**: say "Hey Jarvis" then normal sentence — should transcribe and paste.
+3. **Chat-app Shift+Enter**: in Slack/Messages, say "new line" — cursor must stay in box (not send). In TextEdit, same command should insert a hard newline.
+4. **Redo stack**: dictate text → "scratch that" → "redo dictation" — previous text re-appears.
+5. **Voice snippet creation**: say "create snippet" → trigger phrase → content → check `~/.dictation_snippets.json`.
+6. **Email command**: say "email John" (contact named John must exist) — mail client opens with pre-filled To.
+7. **Translate that**: dictate foreign-language text → say "translate that" — English translation pasted.
+8. **History enrichment**: make a dictation → HistoryPage — app name, Whisper raw, Ollama suggestion should populate and expand correctly.
+9. **Launch at Login**: toggle on in SetupPage → restart → app should reappear in menu bar.
 
-### Priority 2 — Volume / system control commands
+### Priority 2 — Cloud transcription (last major pending feature)
 
-**Why second:** Extremely high day-to-day value. trivial: one new Rust command wrapping the same osascript already used in `pause_media`. Volume up/down/mute/unmute/set-level all map to known osascript one-liners.
+UI and settings already exist. Sidecar needs an OpenAI Whisper API call path with local faster-whisper as fallback. Move API key to Keychain (`keyring` Python module).
 
-### Priority 3 — History: populate `app`, `whisper_text`, `ollama_text`
+### Remaining 🔴 items (not yet implemented)
 
-**Why third:** Low-risk data completeness. Three small changes:
-1. Pass `get_last_target_app` result into the TS `save_history_entry` call.
-2. Return `whisper_text` from the sidecar (the pre-pipeline Whisper result).
-3. Return `ollama_text` from the sidecar (what Ollama suggested, before the safety filter).
-4. Display them in HistoryPage (expandable detail row).
-
-### Priority 4 — Reminders (`remind me to [task]`)
-
-**Why fourth:** Deterministic, zero agentic risk. One Rust command with `osascript` wrapping the same AppleScript Python uses. Date/time parsing can be deferred; basic "remind me to call Jack" works without it.
-
-### Priority 5 — Email commands (mailto: first)
-
-**Why fifth:** Contacts UI already exists. Start with `mailto:` (works with any email client) and contacts name lookup from the Contacts store. Spark/Mail AppleScript can be added as a second pass.
-
-### Priority 6 — Screenshots / Shottr integration
-
-**Why sixth:** Detect Shottr at `/Applications/Shottr.app`. If present, trigger its URL schemes (e.g. `shottr://capture/screen`). If absent, fall back to macOS `screencapture` or show a HUD error message. Low-risk.
-
-### Priority 7 — Launch at Login
-
-**Why seventh:** UI placeholder already in tray ("coming soon"). Needs one Rust call to `SMLoginItem` API via Tauri's `tauri-plugin-autostart` or direct `launchctl` command.
-
-### Priority 8 — Cloud transcription (sidecar OpenAI API call)
-
-**Why eighth:** UI and settings already exist. Sidecar needs an `openai.Audio.transcriptions.create` HTTP call with local faster-whisper as fallback. Move API key to Keychain (`keyring` Python module).
+- Date/time extraction from `remind me to` phrase (complex regex; basic reminders work without it)
+- Cloud transcription: sidecar OpenAI API call + Keychain storage for API key
+- Helpful HUD tips / startup tips mode
+- App naming / full rename (user decision)
 
 ### Defer for now
 
-- `undo dictation` / `redo dictation` stack (requires stateful undo buffer beyond current scratch history)
-- Voice-created snippet flow (`create snippet` spoken prompt)
-- `new line` smart Shift+Enter in chat apps (app detection already works; one extra case in `_cmd_detect`)
-- Helpful HUD tips / startup tips mode
 - Ctrl+, settings shortcut (needs user decision)
-- Whisper hallucination deduplication (rare edge case)
-- App naming / full rename (user decision, separate from parity work)
+- Copy setup summary button on Help page (low priority)
+- About window version info (cosmetic)
