@@ -111,6 +111,43 @@ pub fn clear_log() -> Result<(), String> {
 
 // ── Sidecar commands ──────────────────────────────────────────────────────────
 
+/// If `err_msg` looks like the Python sidecar process died (broken pipe or
+/// similar IO failure), kill the dead `Child`, spawn a fresh sidecar, and
+/// return `true`.  The new process is idle — the caller should surface the
+/// original error to the frontend; the *next* frontend request will land on
+/// the live sidecar without needing a manual "Save & Restart Engine".
+///
+/// Returns `false` when the error is unrelated to a dead process so the
+/// caller can propagate it as-is.
+fn try_restart_on_broken_pipe(guard: &mut Option<crate::sidecar::SidecarProcess>, err_msg: &str) -> bool {
+    let is_dead = err_msg.contains("Broken pipe")
+        || err_msg.contains("os error 32")   // EPIPE
+        || err_msg.contains("os error 9")    // EBADF — pipe fd closed
+        || err_msg.contains("failed to fill whole buffer"); // read on closed stdout
+
+    if !is_dead {
+        return false;
+    }
+
+    eprintln!("[sidecar] broken-pipe detected — auto-restarting sidecar process");
+
+    // Drop (and kill) the dead process so its zombie is reaped.
+    if let Some(mut p) = guard.take() {
+        p.kill();
+    }
+
+    match crate::sidecar::start_sidecar_process() {
+        Ok(new_proc) => {
+            *guard = Some(new_proc);
+            eprintln!("[sidecar] auto-restart OK — sidecar is live again");
+        }
+        Err(e) => {
+            eprintln!("[sidecar] auto-restart FAILED: {}", e);
+        }
+    }
+    true
+}
+
 #[tauri::command]
 pub fn sidecar_start(state: State<SidecarState>) -> Result<String, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -150,8 +187,17 @@ pub fn sidecar_ping(state: State<SidecarState>) -> Result<String, String> {
 #[tauri::command]
 pub fn sidecar_start_recording(state: State<SidecarState>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let proc = guard.as_mut().ok_or("Sidecar not running")?;
-    let resp = proc.send("start_recording").map_err(|e| e.to_string())?;
+    // Borrow `guard` through `proc`, call send, then free the borrow before
+    // the restart helper can take `&mut guard`.
+    let proc_result = match guard.as_mut() {
+        None       => return Err("Sidecar not running".to_string()),
+        Some(proc) => proc.send("start_recording").map_err(|e| e.to_string()),
+    };
+    // `proc` is out of scope here — `guard` is free for `try_restart_on_broken_pipe`.
+    let resp = match proc_result {
+        Err(msg) => { try_restart_on_broken_pipe(&mut guard, &msg); return Err(msg); }
+        Ok(v)    => v,
+    };
     if resp.get("ok").and_then(|v| v.as_bool()) == Some(false) {
         let msg = resp.get("error").and_then(|v| v.as_str()).unwrap_or("recording failed");
         return Err(msg.to_string());
@@ -162,9 +208,14 @@ pub fn sidecar_start_recording(state: State<SidecarState>) -> Result<(), String>
 #[tauri::command]
 pub fn sidecar_stop_recording(state: State<SidecarState>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let proc = guard.as_mut().ok_or("Sidecar not running")?;
-    proc.send("stop_recording").map_err(|e| e.to_string())?;
-    Ok(())
+    let proc_result = match guard.as_mut() {
+        None       => return Err("Sidecar not running".to_string()),
+        Some(proc) => proc.send("stop_recording").map_err(|e| e.to_string()),
+    };
+    match proc_result {
+        Err(msg) => { try_restart_on_broken_pipe(&mut guard, &msg); Err(msg) }
+        Ok(_)    => Ok(()),
+    }
 }
 
 #[tauri::command]
@@ -179,9 +230,15 @@ pub fn sidecar_transcribe_last(
     };
 
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let proc = guard.as_mut().ok_or("Sidecar not running")?;
     let cmd = json!({ "action": "transcribe_last", "active_app": active_app });
-    let resp = proc.send_value(cmd).map_err(|e| e.to_string())?;
+    let proc_result = match guard.as_mut() {
+        None       => return Err("Sidecar not running".to_string()),
+        Some(proc) => proc.send_value(cmd).map_err(|e| e.to_string()),
+    };
+    let resp = match proc_result {
+        Err(msg) => { try_restart_on_broken_pipe(&mut guard, &msg); return Err(msg); }
+        Ok(v)    => v,
+    };
     let result: TranscribeResult = serde_json::from_value(resp).map_err(|e| e.to_string())?;
     Ok(result)
 }
@@ -189,9 +246,14 @@ pub fn sidecar_transcribe_last(
 #[tauri::command]
 pub fn sidecar_get_status(state: State<SidecarState>) -> Result<String, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let proc = guard.as_mut().ok_or("Sidecar not running")?;
-    let resp = proc.send("get_status").map_err(|e| e.to_string())?;
-    Ok(resp.to_string())
+    let proc_result = match guard.as_mut() {
+        None       => return Err("Sidecar not running".to_string()),
+        Some(proc) => proc.send("get_status").map_err(|e| e.to_string()),
+    };
+    match proc_result {
+        Err(msg) => { try_restart_on_broken_pipe(&mut guard, &msg); Err(msg) }
+        Ok(v)    => Ok(v.to_string()),
+    }
 }
 
 #[tauri::command]

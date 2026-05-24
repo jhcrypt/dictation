@@ -1093,13 +1093,23 @@ def _wake_audio_callback(indata, frames, time_info, status):
 def _resume_wake_stream():
     """Re-open the wake stream after recording ends (if wake_listening is still active).
     Called from cmd_stop_recording and cmd_cancel_recording (via background thread).
-    Guard: returns immediately if recording restarted before this fires."""
+    Guards:
+      • returns immediately if recording restarted before this fires
+      • returns immediately if a wake stream is already open (prevents duplicate
+        streams when cmd_stop_recording is called more than once, e.g. from
+        accumulated Tauri IPC handlers queued during a long transcription)
+    """
     global _wake_stream
     if not _wake_listening:
         return
     if _recording:
         # A new recording started before this deferred resume could run.
         # cmd_start_recording already closed the wake stream, so nothing to do.
+        return
+    if _wake_stream is not None:
+        # Stream already open — another _resume_wake_stream thread beat us here.
+        # Opening a second InputStream for the same device would cause device-
+        # busy errors and potentially crash PortAudio.
         return
     # Flush any audio that built up while the stream was paused.
     # The wake loop processes _wake_frames in its next iteration — without this
@@ -1434,6 +1444,7 @@ def cmd_start_recording(_cmd: dict) -> dict:
 def cmd_stop_recording(_cmd: dict) -> dict:
     global _recording, _stream
     _recording = False
+    stream_was_open = _stream is not None
     if _stream:
         try:
             _stream.stop()
@@ -1445,7 +1456,10 @@ def cmd_stop_recording(_cmd: dict) -> dict:
     # Defer wake-stream resume to a background thread so this command returns
     # immediately and sidecar_transcribe_last can start without waiting for
     # CoreAudio to open the wake-word stream (~200–300 ms on macOS).
-    if _wake_listening:
+    # Only spawn the thread if we actually had a stream open — prevents
+    # multiple concurrent resume attempts when stop_recording is called more
+    # than once (e.g. from accumulated IPC handlers during long transcriptions).
+    if _wake_listening and stream_was_open:
         threading.Thread(target=_resume_wake_stream, daemon=True).start()
     return {"ok": True, "status": "stopped"}
 
@@ -2558,6 +2572,7 @@ def cmd_transcribe_last(cmd: dict) -> dict:
 def cmd_cancel_recording(_cmd: dict) -> dict:
     global _recording, _stream, _audio_frames
     _recording = False
+    stream_was_open = _stream is not None
     if _stream:
         try:
             _stream.stop()
@@ -2568,7 +2583,9 @@ def cmd_cancel_recording(_cmd: dict) -> dict:
     with _audio_lock:
         _audio_frames = []
     _log("Recording cancelled and buffer cleared")
-    if _wake_listening:
+    # Only spawn resume thread if we had an active stream (prevents duplicate
+    # resume attempts when cancel is called multiple times concurrently).
+    if _wake_listening and stream_was_open:
         threading.Thread(target=_resume_wake_stream, daemon=True).start()
     return {"ok": True, "status": "cancelled"}
 
@@ -2756,8 +2773,17 @@ def main():
         except Exception as e:
             resp = {"ok": False, "error": str(e)}
 
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            # Tauri closed the stdout pipe (app quit or restarted).
+            # Exit cleanly so the process doesn't linger as a zombie.
+            _log("Sidecar stdout broken pipe — exiting cleanly")
+            break
+        except Exception as e:
+            _log(f"Sidecar stdout write error: {e}")
+            break
 
     _log("Sidecar stdin closed, exiting")
 

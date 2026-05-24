@@ -36,18 +36,44 @@ pub fn start_wake_poll_thread(
                         Ok(g)  => g,
                         Err(_) => { error_backoff = true; continue; }
                     };
-                    match guard.as_mut() {
-                        None => false, // sidecar not yet running
+                    let get_result = match guard.as_mut() {
+                        None => Ok(false), // sidecar not yet running
                         Some(proc) => match proc.send("get_wake_status") {
-                            Ok(v) => v.get("detected")
-                                       .and_then(|d| d.as_bool())
-                                       .unwrap_or(false),
-                            Err(e) => {
-                                eprintln!("[wake-poll] get_wake_status error: {}", e);
-                                error_backoff = true;
-                                false
-                            }
+                            Ok(v) => Ok(v.get("detected")
+                                          .and_then(|d| d.as_bool())
+                                          .unwrap_or(false)),
+                            Err(e) => Err(e.to_string()),
                         },
+                    };
+                    match get_result {
+                        Ok(det) => det,
+                        Err(msg) => {
+                            eprintln!("[wake-poll] get_wake_status error: {}", &msg);
+                            // Broken pipe / EBADF → sidecar process died.
+                            // Auto-restart so the next recording cycle works
+                            // without a manual "Save & Restart Engine".
+                            let is_pipe_err = msg.contains("Broken pipe")
+                                || msg.contains("os error 32")
+                                || msg.contains("os error 9")
+                                || msg.contains("failed to fill whole buffer");
+                            if is_pipe_err {
+                                eprintln!("[wake-poll] broken pipe — auto-restarting sidecar");
+                                if let Some(mut p) = guard.take() { p.kill(); }
+                                match crate::sidecar::start_sidecar_process() {
+                                    Ok(mut new_proc) => {
+                                        // Wait briefly for the sidecar's import phase.
+                                        std::thread::sleep(Duration::from_millis(2500));
+                                        // Restore wake listening on the new sidecar.
+                                        let _ = new_proc.send("start_wake_listen");
+                                        *guard = Some(new_proc);
+                                        eprintln!("[wake-poll] sidecar auto-restarted with wake listening");
+                                    }
+                                    Err(e2) => eprintln!("[wake-poll] sidecar restart failed: {}", e2),
+                                }
+                            }
+                            error_backoff = true;
+                            false
+                        }
                     }
                     // guard (and mutex lock) dropped here, before emit
                 };

@@ -249,17 +249,30 @@ export function useGlobalHotkey() {
       if (rmsPollerTimer) return; // already running
       rmsGuard = false;
       rmsPollerTimer = setInterval(async () => {
+        // Hard state guard: bail immediately if we're no longer recording.
+        // This handles the case where stopRmsPoller() was called but one
+        // interval tick slipped through before clearInterval took effect.
+        if (stateRef.current !== "recording") return;
         if (rmsGuard) return;
         rmsGuard = true;
         try {
-          const raw = await invokeWithTimeout<string>("sidecar_get_status", undefined, 1_000);
-          const status = JSON.parse(raw) as { ok: boolean; recording_rms?: number | null };
-          if (status.ok && cachedEmit) {
-            const rms   = status.recording_rms ?? 0;
-            const level = Math.min(1.0, rms * 18 + 0.15);
-            cachedEmit("audio-rms", { level });
+          // No JS-side timeout here.  A timeout shorter than the Mutex hold
+          // time (e.g. transcribe_last 5-30 s) would cause JS to reset
+          // rmsGuard=false while the Rust handler is still blocking on the
+          // Mutex, allowing another handler to start — accumulating blocked
+          // Rust threads.  Instead we use a long safety net (8 s) and rely on
+          // rmsGuard to ensure only one Rust handler is ever in-flight.
+          const { invoke: inv } = await import("@tauri-apps/api/core");
+          const raw = await inv<string>("sidecar_get_status");
+          if (stateRef.current === "recording" && cachedEmit) {
+            const status = JSON.parse(raw) as { ok: boolean; recording_rms?: number | null };
+            if (status.ok) {
+              const rms   = status.recording_rms ?? 0;
+              const level = Math.min(1.0, rms * 18 + 0.15);
+              cachedEmit("audio-rms", { level });
+            }
           }
-        } catch { /* non-critical */ }
+        } catch { /* non-critical — sidecar may be busy, miss this frame */ }
         finally { rmsGuard = false; }
       }, 30);
     };
