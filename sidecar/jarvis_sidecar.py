@@ -1819,7 +1819,7 @@ def _cmd_detect(
                 if _raw_rest_email:
                     _raw_marker_m = _EMAIL_BODY_MARKER.search(_raw_rest_email)
                     if _raw_marker_m:
-                        _body = _raw_rest_email[_raw_marker_m.end():].strip().rstrip(".")
+                        _body = _raw_rest_email[_raw_marker_m.end():].strip()
                         # Strip any residual leading punctuation (e.g. Whisper adds comma
                         # after "tell him" → "Tell him, the meeting..." → body=", the meeting...")
                         _body = re.sub(r'^[\s,\.!\?;:-]+', '', _body).strip()
@@ -1846,6 +1846,13 @@ def _cmd_detect(
                     _rest_no_body = _rest
                     _body = ""
 
+            # Step 3: Polish body — capitalize first letter, ensure ends with period.
+            # Port of Python reference _polish_email_body() basic fallback.
+            if _body:
+                _body = _body[0].upper() + _body[1:]
+                if _body and _body[-1] not in ".!?":
+                    _body += "."
+
             # Step 2: Extract subject from "about …" keyword.
             _subj_kw_m = re.search(r"\s+about\s+(.+)$", _rest_no_body)
             _subject = _subj_kw_m.group(1).strip() if _subj_kw_m else ""
@@ -1855,6 +1862,20 @@ def _cmd_detect(
                 else _rest_no_body
             ).rstrip(".")
 
+            # Step 4: Auto-generate subject from first sentence if not set.
+            # Port of Python reference _generate_email_subject() fallback.
+            if not _subject and _body:
+                _subj_first = re.split(r"[.!?]", _body)[0].strip()
+                _subj_first = re.sub(
+                    r"(?i)^(that|which|how|just|so|and|but|or)\s+", "", _subj_first
+                ).strip()
+                if _subj_first:
+                    _subject = _subj_first[0].upper() + _subj_first[1:]
+                    if len(_subject) > 60:
+                        _subject = _subject[:57].rsplit(" ", 1)[0] + "..."
+                else:
+                    _subject = "Following up"
+
             if not _ename:
                 # Malformed — fall through to plain dictation
                 pass
@@ -1863,13 +1884,16 @@ def _cmd_detect(
                 _found = bool(_contact_email)
                 _to = _contact_email if _found else _ename.replace(" ", "%20")
 
-                # Build mailto: URL
+                # Build mailto: URL — always include subject (fallback "Following up").
+                # Port of Python reference _open_email_draft() URL construction.
+                # Use safe="" for body/subject so all special chars are encoded.
                 _params: list[str] = []
-                if _subject:
-                    _cap_subject = _subject[0].upper() + _subject[1:] if _subject else ""
-                    _params.append(f"subject={_urlquote(_cap_subject)}")
+                _final_subject = _subject or "Following up"
+                _params.append(
+                    f"subject={_urlquote(_final_subject[0].upper() + _final_subject[1:], safe='')}"
+                )
                 if _body:
-                    _params.append(f"body={_urlquote(_body)}")
+                    _params.append(f"body={_urlquote(_body, safe='')}")
                 _mailto = "mailto:" + _to + ("?" + "&".join(_params) if _params else "")
 
                 # HUD message — always surface what was parsed; annotate contact-not-found

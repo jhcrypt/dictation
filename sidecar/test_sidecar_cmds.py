@@ -417,8 +417,11 @@ class TestEmailCommands(unittest.TestCase):
         url = r["url"]
         # recipient is in the URL (either resolved email or encoded name)
         self.assertIn("jack", url.lower())
-        # no query parameters (no body, no subject)
-        self.assertNotIn("?", url)
+        # subject is always included (defaulting to "Following up" when no body)
+        self.assertIn("subject=", url)
+        self.assertIn("Following", url.replace("%20", " "))
+        # no body param — no body was dictated
+        self.assertNotIn("body=", url)
         # HUD must direct user to click body (contact-not-found prefix is OK too)
         self.assertIn("click body", r.get("hud", "").lower())
 
@@ -452,7 +455,7 @@ class TestEmailCommands(unittest.TestCase):
         self.assertNotIn("body=", url)
         self.assertIn("subject", r.get("hud", "").lower())
 
-    # 6. "email Jack saying I will call you tomorrow" — body extracted
+    # 6. "email Jack saying I will call you tomorrow" — body extracted, subject auto-generated
     def test_email_with_body_saying(self):
         r = detect("email Jack saying I will call you tomorrow", jarvis=True)
         self._assert_draft_only(r)
@@ -460,8 +463,8 @@ class TestEmailCommands(unittest.TestCase):
         self.assertIn("body=", url)
         decoded = url.replace("%20", " ").replace("+", " ")
         self.assertIn("call", decoded.lower())
-        # no subject param
-        self.assertNotIn("subject=", url)
+        # subject is auto-generated from first sentence of body
+        self.assertIn("subject=", url)
         self.assertIn("body filled", r.get("hud", "").lower())
 
     # 7. "compose email to Jack saying I will call you tomorrow" — prefix + body
