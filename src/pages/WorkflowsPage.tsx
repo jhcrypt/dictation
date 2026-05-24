@@ -3,24 +3,31 @@ import Card from "../components/ui/Card";
 
 interface WorkflowCardProps {
   title: string;
-  status: "Available in Tauri" | "Python parity pending" | "Paused in Tauri";
+  status: "Available" | "Requires Jarvis Commands" | "Deferred";
   examples: string[];
   note: string;
 }
 
 function WorkflowCard({ title, status, examples, note }: WorkflowCardProps) {
   const statusClass =
-    status === "Available in Tauri"
+    status === "Available"
       ? "bg-jarvis-accent/10 text-jarvis-accent"
-      : status === "Python parity pending"
-        ? "bg-amber-500/10 text-amber-300 border border-amber-500/20"
+      : status === "Requires Jarvis Commands"
+        ? "bg-purple-500/10 text-purple-300 border border-purple-500/20"
         : "bg-jarvis-surface text-jarvis-muted border border-jarvis-border";
+
+  const statusLabel =
+    status === "Available"
+      ? "Available"
+      : status === "Requires Jarvis Commands"
+        ? "Requires Jarvis Commands"
+        : "Deferred";
 
   return (
     <Card title={title}>
       <div className="mb-2">
         <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${statusClass}`}>
-          {status}
+          {statusLabel}
         </span>
       </div>
 
@@ -46,139 +53,217 @@ export default function WorkflowsPage() {
       <div>
         <h2 className="text-lg font-semibold text-jarvis-text">Workflows</h2>
         <p className="text-sm text-jarvis-hint mt-1 leading-relaxed">
-          Workflows are voice-triggered actions that go beyond normal dictation. The stable Python app already
-          supported many of these workflows. The Tauri version is being brought back to feature parity carefully,
-          one workflow at a time.
+          Workflows are voice-triggered actions beyond plain dictation — opening apps, composing emails,
+          controlling volume, taking screenshots, and more. Most are available now. Commands marked
+          "Requires Jarvis Commands" only activate when Jarvis Commands is enabled in the Jarvis settings page.
         </p>
       </div>
 
-      <Card title="Workflow status guide">
-        <div className="space-y-2 text-sm text-jarvis-muted leading-relaxed">
-          <p>
-            <span className="text-jarvis-accent font-medium">Available in Tauri:</span>{" "}
-            Confirmed working in the current Tauri build.
-          </p>
-          <p>
-            <span className="text-amber-300 font-medium">Python parity pending:</span>{" "}
-            Worked in the stable Python app and needs to be restored or verified in Tauri.
-          </p>
-          <p>
-            <span className="text-jarvis-muted font-medium">Paused in Tauri:</span>{" "}
-            Known unsafe or intentionally disabled while the Tauri rebuild stabilizes.
-          </p>
-        </div>
-      </Card>
+      {/* ── Always-on workflows ─────────────────────────────────────── */}
 
       <WorkflowCard
-        title="Custom Commands"
-        status="Available in Tauri"
-        examples={["open my email", "open client portal", "insert follow up message"]}
-        note="Create these in Custom Commands. Supported actions are open URL, open app, and type text. They work through the Option-key workflow when Jarvis Commands is enabled."
+        title="Scratch, Undo & Redo"
+        status="Available"
+        examples={[
+          "scratch that",
+          "undo that",
+          "scratch last 2",
+          "scratch all",
+          "redo dictation",
+        ]}
+        note="Scratch/undo deletes your last dictation and sends the matching number of backspaces. Redo re-inserts whatever was last scratched. These always work regardless of Safe Mode or Jarvis Commands settings."
       />
 
       <WorkflowCard
-        title="Open URLs"
-        status="Available in Tauri"
-        examples={["open release docs", "open insurance quote form", "open calendar"]}
-        note="Available through Custom Commands. Add a short trigger phrase and the URL you want to open."
+        title="Formatting"
+        status="Available"
+        examples={[
+          "make bold",
+          "all caps",
+          "format as code",
+          "make heading",
+          "make bullet",
+          "italic that",
+          "strikethrough that",
+        ]}
+        note="Works both inline (say the command right after your text) and standalone (formats the last dictation). Always available — Safe Mode does not block formatting commands."
       />
 
       <WorkflowCard
-        title="Open Apps"
-        status="Available in Tauri"
-        examples={["open Safari", "open Finder", "open Terminal"]}
-        note="Available through Custom Commands. Launch installed macOS apps by name."
+        title="Punctuation & Navigation"
+        status="Available"
+        examples={[
+          "period",
+          "comma",
+          "new line",
+          "new paragraph",
+          "tab",
+          "select all",
+        ]}
+        note="Punctuation commands insert the symbol directly. 'New line' sends Shift+Enter in chat apps (Slack, Messages, Discord, Teams) so your message isn't accidentally sent, and a plain Return everywhere else."
       />
 
       <WorkflowCard
-        title="Type Saved Text"
-        status="Available in Tauri"
-        examples={["insert meeting follow up", "type my disclaimer", "insert support reply"]}
-        note="Available through Custom Commands. Useful for reusable replies, signatures, disclaimers, and short templates."
+        title="Copy & Paste"
+        status="Available"
+        examples={[
+          "copy that",
+          "copy last",
+          "copy all",
+          "paste",
+        ]}
+        note="'Copy that' / 'copy last' copies the last dictation to clipboard. 'Copy all' selects everything and copies. 'Paste' sends Cmd+V."
       />
 
       <WorkflowCard
-        title="Email Drafts"
-        status="Python parity pending"
-        examples={["email Jack", "send email to Val", "compose email to King"]}
-        note="Worked in the stable Python app. Tauri should restore this without assuming Apple Mail, since users may use Spark, Outlook, or another default email client."
-      />
-
-      <WorkflowCard
-        title="Open Apps & Websites"
-        status="Available in Tauri"
-        examples={["open Safari", "open Terminal", "open YouTube", "open Netflix"]}
-        note="Say 'open [app name]' to launch any installed app. Say 'open [site]' for YouTube, Netflix, GitHub, Claude, and other popular sites. Requires Jarvis Commands to be enabled."
-      />
-
-      <WorkflowCard
-        title="Web Search"
-        status="Available in Tauri"
-        examples={["search for machine learning", "google Python tutorials", "look up recursion"]}
-        note="Opens a DuckDuckGo search in your default browser. Works with 'search for', 'google', 'look up', and 'find'. Requires Jarvis Commands to be enabled."
-      />
-
-      <WorkflowCard
-        title="System Volume"
-        status="Available in Tauri"
-        examples={["volume up", "volume down", "mute", "set volume to 50"]}
-        note="Controls macOS system volume. 'Volume up/down' adjusts by 10%. 'Set volume to N' sets an exact level 0–100. Requires Jarvis Commands to be enabled."
-      />
-
-      <WorkflowCard
-        title="Reminders"
-        status="Available in Tauri"
-        examples={["remind me to call Jack", "set a reminder to buy milk", "add reminder to review the report"]}
-        note="Creates a reminder in the Apple Reminders app. Requires Jarvis Commands to be enabled."
-      />
-
-      <WorkflowCard
-        title="Screenshots"
-        status="Available in Tauri"
-        examples={["screenshot", "area capture", "scrolling capture", "text recognition"]}
-        note="Triggers Shottr shortcuts (Control+W/A/S/T). Requires Shottr installed at /Applications/Shottr.app. If Shottr is missing, a HUD error message appears. Requires Jarvis Commands to be enabled."
-      />
-
-      <WorkflowCard
-        title="Spotify & Playlists"
-        status="Available in Tauri"
-        examples={["play lo-fi music on Spotify", "play coding playlist", "play workout playlist"]}
-        note="Opens Spotify with a search or a specific playlist URI. Requires Spotify to be installed and Jarvis Commands to be enabled."
-      />
-
-      <WorkflowCard
-        title="Close & Quit Apps"
-        status="Available in Tauri"
-        examples={["close Safari", "kill Chrome", "force quit Slack"]}
-        note="'Close [app]' sends a graceful quit. 'Kill [app]' or 'force quit [app]' force-terminates the process. Requires Jarvis Commands to be enabled."
-      />
-
-      <WorkflowCard
-        title="Scratch, Undo, and Formatting"
-        status="Available in Tauri"
-        examples={["scratch that", "make bold", "all caps"]}
-        note="Scratch/undo deletes the last dictation. Formatting commands (bold, italic, code, heading, bullet, quote, strikethrough) work both inline and standalone. These always work — Safe Mode does not block them."
-      />
-
-      <WorkflowCard
-        title="Email Drafts"
-        status="Python parity pending"
-        examples={["email Jack", "send email to Val", "compose email to King"]}
-        note="Worked in the stable Python app. Tauri should restore this without assuming Apple Mail, since users may use Spark, Outlook, or another default email client."
-      />
-
-      <WorkflowCard
-        title="Translation"
-        status="Python parity pending"
-        examples={["translate that", "translate selected text", "translate to French"]}
-        note="Translate My Dictation (auto-translate every dictation) is already available in Audio & Language settings. On-demand 'translate that' voice command is still pending."
+        title="Snippets"
+        status="Available"
+        examples={[
+          "insert follow up message",
+          "type my disclaimer",
+          "support reply",
+          "create snippet",
+        ]}
+        note="Say any snippet trigger phrase to instantly insert saved text. To create a snippet by voice, say 'create snippet', then speak the trigger phrase, then speak the content. Manage snippets in Settings → Snippets."
       />
 
       <WorkflowCard
         title="Wake Word"
-        status="Available in Tauri"
+        status="Available"
         examples={["Hey Jarvis"]}
-        note="Say 'Hey Jarvis' to start recording hands-free. Enable in Settings → Jarvis. Timing parameters (grace, silence, max) are adjustable."
+        note="Say 'Hey Jarvis' to start recording hands-free — no button press needed. Enable in Settings → Jarvis. Grace period and silence timeout are adjustable."
+      />
+
+      <WorkflowCard
+        title="Translation"
+        status="Available"
+        examples={[
+          "translate that",
+          "translate selected text",
+        ]}
+        note="'Translate that' sends the last dictation through Ollama and pastes the English translation. Requires Ollama with a capable model (qwen2.5:3b or larger). You can also turn on Translate My Dictation in Audio & Language to auto-translate every dictation."
+      />
+
+      <WorkflowCard
+        title="History & Navigation"
+        status="Available"
+        examples={[
+          "show history",
+          "dictation history",
+          "correct that",
+          "add correction",
+        ]}
+        note="'Show history' opens the History page. 'Correct that' / 'add correction' opens the Vocabulary page so you can add the misheard word."
+      />
+
+      {/* ── Jarvis Commands workflows ────────────────────────────────── */}
+
+      <WorkflowCard
+        title="Custom Commands"
+        status="Requires Jarvis Commands"
+        examples={[
+          "open my email",
+          "open client portal",
+          "insert follow up message",
+        ]}
+        note="Create your own trigger phrases in Settings → Custom Commands. Supported actions: open URL, open app, and type text."
+      />
+
+      <WorkflowCard
+        title="Open Apps & Websites"
+        status="Requires Jarvis Commands"
+        examples={[
+          "open Safari",
+          "open Terminal",
+          "open Slack",
+          "open YouTube",
+          "open Netflix",
+          "open GitHub",
+        ]}
+        note="Say 'open [app name]' to launch any installed macOS app. Say 'open [site]' for popular websites (YouTube, Netflix, GitHub, Claude, Spotify, and more)."
+      />
+
+      <WorkflowCard
+        title="Web Search"
+        status="Requires Jarvis Commands"
+        examples={[
+          "search for machine learning",
+          "google Python tutorials",
+          "look up recursion",
+          "find best coffee grinders",
+        ]}
+        note="Opens a DuckDuckGo search in your default browser. Works with 'search for', 'google', 'look up', and 'find'."
+      />
+
+      <WorkflowCard
+        title="System Volume"
+        status="Requires Jarvis Commands"
+        examples={[
+          "volume up",
+          "volume down",
+          "mute",
+          "unmute",
+          "set volume to 50",
+        ]}
+        note="'Volume up / down' adjusts system volume by 10%. 'Set volume to N' sets an exact level from 0 to 100."
+      />
+
+      <WorkflowCard
+        title="Reminders"
+        status="Requires Jarvis Commands"
+        examples={[
+          "remind me to call Jack",
+          "set a reminder to buy milk",
+          "add reminder to review the report",
+        ]}
+        note="Creates a reminder in the Apple Reminders app immediately. The full spoken phrase (minus the 'remind me to' prefix) becomes the reminder title."
+      />
+
+      <WorkflowCard
+        title="Email Drafts"
+        status="Requires Jarvis Commands"
+        examples={[
+          "email Jack",
+          "send email to Val",
+          "compose email to the team saying we're on for Thursday",
+        ]}
+        note="Opens your default mail client with the To field pre-filled from your Contacts. Add a body by saying 'telling them…', 'saying…', or 'letting them know…' after the name. Manage contacts in Settings → Contacts."
+      />
+
+      <WorkflowCard
+        title="Screenshots"
+        status="Requires Jarvis Commands"
+        examples={[
+          "screenshot",
+          "capture window",
+          "area capture",
+          "scrolling capture",
+          "text recognition",
+        ]}
+        note="Triggers Shottr shortcuts (full screen, window, area, scrolling, and OCR). Requires Shottr installed at /Applications/Shottr.app. If Shottr is missing, a HUD error appears."
+      />
+
+      <WorkflowCard
+        title="Spotify & Playlists"
+        status="Requires Jarvis Commands"
+        examples={[
+          "play lo-fi music on Spotify",
+          "play coding playlist",
+          "play workout playlist",
+          "play playlist 4",
+        ]}
+        note="Opens Spotify with a search URI or a named playlist. Requires Spotify installed."
+      />
+
+      <WorkflowCard
+        title="Close & Quit Apps"
+        status="Requires Jarvis Commands"
+        examples={[
+          "close Safari",
+          "quit Chrome",
+          "force quit Slack",
+        ]}
+        note="'Close [app]' or 'quit [app]' sends a graceful quit. 'Force quit [app]' terminates the process immediately."
       />
     </div>
   );
