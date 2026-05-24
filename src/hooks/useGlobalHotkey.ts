@@ -58,6 +58,7 @@
 import { useEffect, useRef } from "react";
 import { useSettings } from "../context/SettingsContext";
 import type { HudPayload } from "../HudApp";
+import { classifyTranscribeResult } from "./commandRouting";
 
 type RecState =
   | "idle"         // nothing happening
@@ -493,14 +494,17 @@ export function useGlobalHotkey() {
 
       // ── Short-hold guard ─────────────────────────────────────────────────────
       // Cancel without transcribing when the recording was shorter than the
-      // debounce threshold. Hold mode already blocks short presses at hotkey-
-      // ropt-up, but toggle mode and the button have no such gate — a quick
-      // double-tap goes straight to stopAndTranscribe with nearly no audio.
-      // recordStartRef is set at the top of startRecording (before sidecar call),
-      // so holdMs includes sidecar start latency; using the same threshold as the
-      // hotkey debounce is conservative and correct.
+      // minimum useful duration. Hold mode already blocks short presses at
+      // hotkey-ropt-up (using the configurable debounce), but toggle mode and
+      // the button have no such gate — a quick double-tap goes straight here.
+      //
+      // IMPORTANT: use the fixed DEFAULT_DEBOUNCE_MS constant, NOT the
+      // user-configurable hotkey_debounce_seconds.  If we used the setting
+      // (e.g. 0.5 s), a user with a high debounce could say a short command
+      // word like "period" in toggle mode (~300 ms) and have it silently
+      // cancelled as a tap.  The fixed 180 ms floor is below any real speech.
       const holdMs    = Date.now() - recordStartRef.current;
-      const minHoldMs = (settingsRef.current.hotkey_debounce_seconds ?? DEFAULT_DEBOUNCE_MS / 1000) * 1000;
+      const minHoldMs = DEFAULT_DEBOUNCE_MS; // fixed floor — no speech happens in < 180 ms
       if (holdMs < minHoldMs) {
         console.log("[recording] too short (", holdMs, "ms < ", minHoldMs, "ms) — cancelling as tap");
         clearRecordingTimeout();
@@ -604,13 +608,23 @@ export function useGlobalHotkey() {
           return;
         }
 
+        // ── Classify result — pure function, tested in commandRouting.test.ts ──
+        // Determines outcome type without touching HUD or state.  All routing
+        // decisions below are driven by outcome.type so a single source of
+        // truth exists for "what counts as a command vs text vs tap vs error".
+        const outcome = classifyTranscribeResult(result);
+        console.log("[recording] outcome=", outcome.type,
+                    outcome.type === "command" ? `action=${outcome.action}` : "");
+
         // ── Voice command dispatch ──────────────────────────────────────────
-        // The sidecar detects command phrases (scratch, punct, format, nav…)
-        // before the correction pipeline and returns action != null.
-        if (result.ok && result.action) {
+        // outcome.type === "command" means result.action was a non-empty string.
+        // The command dispatch runs BEFORE text handling so command responses
+        // that carry a text field (e.g. paste_text with text=".") are executed
+        // as commands and never reach the paste path a second time.
+        if (outcome.type === "command") {
           const { invoke: inv } = await import("@tauri-apps/api/core");
           const { emit: ev }   = await import("@tauri-apps/api/event");
-          const act = result.action;
+          const act = outcome.action; // from classifyTranscribeResult — guaranteed non-empty
           console.log("[cmd] dispatching action=", act);
 
           try {
@@ -702,26 +716,23 @@ export function useGlobalHotkey() {
           return;
         }
 
-        if (result.ok && result.text != null) {
-          // ── SAFETY GUARD: never paste empty or whitespace-only text ────────
-          // This prevents pasting stale clipboard contents when transcription
-          // returns an empty result (e.g. audio too quiet, sidecar error).
-          // NOTE: result.text can be "" (empty string, falsy) — check != null
-          // rather than truthiness so empty strings are caught by the guard below
-          // instead of silently falling through to the error branch as "Transcription failed".
-          const trimmed = result.text.trim();
-          if (trimmed.length === 0) {
-            // Whisper heard nothing — the user likely said nothing or released
-            // just barely over the debounce threshold.  Show the same friendly
-            // orange "tap ignored" instead of a red error so it's clear no
-            // transcription failure occurred — the user just didn't speak.
-            console.log("[dictation] empty transcript — nothing heard, treating as tap");
-            stateRef.current = "idle";
-            hudEmit({ state: "tap_ignored" });
-            const emptyCycle = cycleIdRef.current;
-            setTimeout(() => { if (cycleIdRef.current === emptyCycle) hudEmit({ state: "idle" }); }, 2500);
-            return;
-          }
+        if (outcome.type === "tap_ignored") {
+          // Silence, no audio, or empty transcript — friendly orange message.
+          // classifyTranscribeResult covers: error="no audio recorded",
+          // text="" or whitespace-only, and (for future-proofing) any other
+          // benign "nothing was said" case.
+          console.log("[dictation] tap_ignored — nothing heard or short hold");
+          stateRef.current = "idle";
+          hudEmit({ state: "tap_ignored" });
+          const tapIgnCycle = cycleIdRef.current;
+          setTimeout(() => { if (cycleIdRef.current === tapIgnCycle) hudEmit({ state: "idle" }); }, 2500);
+          return;
+        }
+
+        if (outcome.type === "text") {
+          // ── Plain dictation: trimmed non-empty text to paste ───────────────
+          // outcome.trimmed is already .trim()'d by classifyTranscribeResult.
+          const trimmed = outcome.trimmed;
 
           const s = settingsRef.current;
 
@@ -886,26 +897,17 @@ export function useGlobalHotkey() {
           }).catch(() => {});
 
         } else {
-          // Guard before showing error: don't clobber a new cycle's HUD
+          // outcome.type === "error" — real transcription failure.
+          // Guard before showing error: don't clobber a new cycle's HUD.
           if (cycleIdRef.current !== myCycle) {
-            console.log("[recording] transcription failed result discarded — stale cycle", myCycle);
+            console.log("[recording] error result discarded — stale cycle", myCycle);
             return;
           }
-          const errMsg = result.error ?? "Transcription failed";
+          const errMsg = outcome.type === "error" ? outcome.message : "Transcription failed";
           console.error("[sidecar] transcription failed:", errMsg);
-
-          // "no audio recorded" means the user tapped too briefly — show the
-          // same friendly orange message the old Python HUD shows for short taps,
-          // not a red error that implies something broke.
-          if (result.error === "no audio recorded") {
-            hudEmit({ state: "tap_ignored" });
-            const tapCycle = cycleIdRef.current;
-            setTimeout(() => { if (cycleIdRef.current === tapCycle) hudEmit({ state: "idle" }); }, 2500);
-          } else {
-            hudEmit({ state: "error", subtext: errMsg });
-            const failCycle = cycleIdRef.current;
-            setTimeout(() => { if (cycleIdRef.current === failCycle) hudEmit({ state: "idle" }); }, 4000);
-          }
+          hudEmit({ state: "error", subtext: errMsg });
+          const failCycle = cycleIdRef.current;
+          setTimeout(() => { if (cycleIdRef.current === failCycle) hudEmit({ state: "idle" }); }, 4000);
         }
       } catch (e) {
         // Guard before showing error: don't clobber a new cycle's HUD
