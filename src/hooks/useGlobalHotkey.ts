@@ -491,6 +491,35 @@ export function useGlobalHotkey() {
         return;
       }
 
+      // ── Short-hold guard ─────────────────────────────────────────────────────
+      // Cancel without transcribing when the recording was shorter than the
+      // debounce threshold. Hold mode already blocks short presses at hotkey-
+      // ropt-up, but toggle mode and the button have no such gate — a quick
+      // double-tap goes straight to stopAndTranscribe with nearly no audio.
+      // recordStartRef is set at the top of startRecording (before sidecar call),
+      // so holdMs includes sidecar start latency; using the same threshold as the
+      // hotkey debounce is conservative and correct.
+      const holdMs    = Date.now() - recordStartRef.current;
+      const minHoldMs = (settingsRef.current.hotkey_debounce_seconds ?? DEFAULT_DEBOUNCE_MS / 1000) * 1000;
+      if (holdMs < minHoldMs) {
+        console.log("[recording] too short (", holdMs, "ms < ", minHoldMs, "ms) — cancelling as tap");
+        clearRecordingTimeout();
+        clearWakeMonitor();
+        isWakeRecordingRef.current = false;
+        playSound("cancel");
+        stateRef.current = "idle";
+        hudEmit({ state: "tap_ignored" });
+        const shortTapCycle = cycleIdRef.current;
+        setTimeout(() => { if (cycleIdRef.current === shortTapCycle) hudEmit({ state: "idle" }); }, 2500);
+        try {
+          await invokeWithTimeout("sidecar_cancel_recording", undefined, 5_000);
+        } catch (e) {
+          console.warn("[sidecar] cancel_recording error (tap-guard, ignored):", e);
+        }
+        resumeMedia();
+        return;
+      }
+
       // Capture cycle ID before first await — any change means this result is stale.
       const myCycle = cycleIdRef.current;
 
@@ -682,11 +711,15 @@ export function useGlobalHotkey() {
           // instead of silently falling through to the error branch as "Transcription failed".
           const trimmed = result.text.trim();
           if (trimmed.length === 0) {
-            console.log("[dictation] empty transcript — skipping paste");
+            // Whisper heard nothing — the user likely said nothing or released
+            // just barely over the debounce threshold.  Show the same friendly
+            // orange "tap ignored" instead of a red error so it's clear no
+            // transcription failure occurred — the user just didn't speak.
+            console.log("[dictation] empty transcript — nothing heard, treating as tap");
             stateRef.current = "idle";
-            hudEmit({ state: "error", subtext: "Empty transcription" });
+            hudEmit({ state: "tap_ignored" });
             const emptyCycle = cycleIdRef.current;
-            setTimeout(() => { if (cycleIdRef.current === emptyCycle) hudEmit({ state: "idle" }); }, 3000);
+            setTimeout(() => { if (cycleIdRef.current === emptyCycle) hudEmit({ state: "idle" }); }, 2500);
             return;
           }
 
