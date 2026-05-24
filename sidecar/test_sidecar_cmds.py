@@ -222,6 +222,81 @@ class TestJarvisSystemCommands(unittest.TestCase):
         self.assertIsNone(r_volume,  "set_volume must be blocked when jarvis_enabled=False")
 
 
+class TestCustomCommandPriority(unittest.TestCase):
+    """Regression: custom commands must be checked BEFORE built-in open_app.
+
+    Bug: "open photoshop" was intercepted by the built-in open_app handler
+    (which would try `open -a Photoshop`) before the JS could check the custom
+    command list (which has target "Adobe Photoshop 2024").  The fix moves custom
+    command checking into _cmd_detect FIRST, exactly matching Python reference.
+    """
+
+    def setUp(self):
+        """Inject a fake custom commands file for the duration of the test."""
+        import json as _json, tempfile as _tmp, os as _os
+        self._tmp = _tmp.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        )
+        _json.dump([
+            {"trigger": "open photoshop",   "action": "open_app",  "target": "Adobe Photoshop 2024"},
+            {"trigger": "open movies",      "action": "open_url",  "target": "https://fmoviess.org/home/"},
+            {"trigger": "user email",       "action": "type_text", "target": "Dear User,\n\nTest body."},
+            {"trigger": "lets play chess",  "action": "open_url",  "target": "https://www.chess.com/play/online"},
+        ], self._tmp)
+        self._tmp.close()
+        g = globals()
+        self._old_file = g.get("CUSTOM_COMMANDS_FILE", "")
+        g["CUSTOM_COMMANDS_FILE"] = self._tmp.name
+
+    def tearDown(self):
+        import os as _os
+        globals()["CUSTOM_COMMANDS_FILE"] = self._old_file
+        _os.unlink(self._tmp.name)
+
+    def test_open_photoshop_uses_custom_not_builtin(self):
+        """open photoshop → custom app_name 'Adobe Photoshop 2024', not builtin 'photoshop'."""
+        r = detect("open photoshop", jarvis=True)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["action"], "open_app")
+        self.assertEqual(r.get("app_name"), "Adobe Photoshop 2024",
+                         f"Expected 'Adobe Photoshop 2024' but got {r.get('app_name')!r}")
+
+    def test_open_movies_custom_url(self):
+        """open movies → custom open_url, not builtin open_app."""
+        r = detect("open movies", jarvis=True)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["action"], "open_url")
+        self.assertIn("fmoviess", r.get("url", ""))
+
+    def test_type_text_custom_command(self):
+        """user email → paste_text with custom body."""
+        r = detect("user email", jarvis=True)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["action"], "paste_text")
+        self.assertIn("Dear User", r.get("text", ""))
+
+    def test_open_url_custom_command(self):
+        """lets play chess → open_url with chess.com."""
+        r = detect("lets play chess", jarvis=True)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["action"], "open_url")
+        self.assertIn("chess.com", r.get("url", ""))
+
+    def test_custom_commands_blocked_when_jarvis_off(self):
+        """Custom commands must not fire when jarvis_enabled=False."""
+        r = detect("open photoshop", jarvis=False)
+        self.assertIsNone(r, "custom commands must be blocked when jarvis_enabled=False")
+
+    def test_single_word_trigger_not_matched(self):
+        """Single-word custom triggers are skipped (matches Python reference)."""
+        import json as _j, os as _o
+        with open(self._tmp.name, "w") as f:
+            _j.dump([{"trigger": "chess", "action": "open_url", "target": "https://chess.com"}], f)
+        r = detect("chess", jarvis=True)
+        # Should NOT match — single-word triggers are skipped
+        self.assertIsNone(r, "single-word custom triggers must be skipped")
+
+
 class TestNonCommands(unittest.TestCase):
     """Phrases that should NOT be detected as commands."""
 
@@ -463,6 +538,23 @@ class TestEmailCommands(unittest.TestCase):
         self.assertIn("late", url.replace("%20", " ").lower())
         # "tell him" must not be in the To field
         self.assertNotIn("tell", url.lower().split("?")[0])
+
+    # 14b. Regression: "Tell him, <body>" — trailing comma after marker stripped from body.
+    #      Whisper often transcribes "Tell him, the meeting is cancelled" with a comma
+    #      after the marker.  Without [.,:;-]?\s* at the end of _EMAIL_BODY_MARKER,
+    #      the body starts with ", the meeting..." (leading comma visible in email draft).
+    def test_email_tell_him_comma_not_in_body(self):
+        raw = "Send email to King. Tell him, the meeting is cancelled for tomorrow, we will resume next week."
+        r = detect(raw, raw=raw, jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        self.assertIn("body=", url, f"Body must be present: {url!r}")
+        decoded = url.replace("%20", " ").replace("%2C", ",").replace("+", " ")
+        body_part = decoded.split("body=", 1)[1] if "body=" in decoded else ""
+        # Body must NOT start with a comma
+        self.assertFalse(body_part.startswith(","),
+                         f"Body must not start with comma: {body_part!r}")
+        self.assertIn("meeting", body_part.lower(), f"'meeting' missing from body: {body_part!r}")
 
     # 15. "say" body keyword (short form)
     def test_email_say(self):

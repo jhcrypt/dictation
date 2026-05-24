@@ -56,9 +56,10 @@ def _log(msg: str):
         pass
 
 # ── Settings ──────────────────────────────────────────────────────────────────
-SETTINGS_FILE  = os.path.expanduser("~/.dictation_settings.json")
-VOCAB_FILE     = os.path.expanduser("~/.dictation_vocabulary.json")
-SNIPPETS_FILE  = os.path.expanduser("~/.dictation_snippets.json")
+SETTINGS_FILE         = os.path.expanduser("~/.dictation_settings.json")
+VOCAB_FILE            = os.path.expanduser("~/.dictation_vocabulary.json")
+SNIPPETS_FILE         = os.path.expanduser("~/.dictation_snippets.json")
+CUSTOM_COMMANDS_FILE  = os.path.expanduser("~/.dictation_custom_commands.json")
 
 def load_settings() -> dict:
     try:
@@ -66,6 +67,21 @@ def load_settings() -> dict:
             return json.load(f)
     except Exception:
         return {}
+
+
+def _load_custom_commands() -> list:
+    """Load user-defined custom commands from disk.
+    Called from _cmd_detect to check custom commands BEFORE built-ins,
+    matching the Python reference's priority order.
+    Returns [] on any error so callers never crash.
+    """
+    try:
+        with open(CUSTOM_COMMANDS_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
 
 # ── Writing profiles (ported from jarvis_dictation.py) ───────────────────────
 WRITING_PROFILES = {
@@ -1377,13 +1393,16 @@ def cmd_get_status(_cmd: dict) -> dict:
 #   "email Val ask them about the invoice"
 # Operates on the punctuation-stripped lowercase input (lower) so no punct handling needed.
 _EMAIL_BODY_MARKER = re.compile(
-    r"\s+(?:tell\s+(?:him|her|them|me|it)"
+    # Optional punct/space BEFORE marker — matches Python reference exactly.
+    r"\s*(?:[.,:;-]\s*)?"
+    r"(?:tell\s+(?:him|her|them|me|it)"
     r"|let\s+(?:him|her|them)\s+know"
     r"|say(?:ing)?"
     r"|telling\s+(?:him|her|them)?"
     r"|letting\s+(?:him|her|them)\s+know"
     r"|ask(?:ing)?(?:\s+(?:him|her|them))?)"
-    r"\s*",
+    # Optional punct/space AFTER marker — consumes ", " in "Tell him, the meeting..."
+    r"[.,:;-]?\s*",
     re.IGNORECASE,
 )
 
@@ -1583,6 +1602,30 @@ def _cmd_detect(
     # ── Jarvis system commands ────────────────────────────────────────────────
     # Gated by jarvis_enabled. Safe Mode already blocks at the call site.
     if jarvis_enabled:
+        # ── Custom user commands — checked FIRST, before all built-ins ────────
+        # Matches Python reference priority: custom commands win over built-ins.
+        # Without this, "open photoshop" is intercepted by the generic open_app
+        # handler before the JS can match the custom trigger "open photoshop"
+        # (which has target "Adobe Photoshop 2024" — the correct full app name).
+        for _cc in _load_custom_commands():
+            _cc_trigger = str(_cc.get("trigger", "")).lower().strip()
+            # Skip single-word triggers (too ambiguous) — matches Python reference.
+            if not _cc_trigger or len(_cc_trigger.split()) < 2:
+                continue
+            if lower == _cc_trigger:
+                _cc_action = str(_cc.get("action", ""))
+                _cc_target = str(_cc.get("target", ""))
+                _cc_hud    = _cc_trigger.title()
+                if _cc_action == "open_url" and _cc_target:
+                    return {"action": "open_url", "url": _cc_target,
+                            "hud": _cc_hud, "hud_color": "#0a84ff"}
+                if _cc_action == "open_app" and _cc_target:
+                    return {"action": "open_app", "app_name": _cc_target,
+                            "hud": _cc_hud, "hud_color": "#0a84ff"}
+                if _cc_action == "type_text":
+                    return {"action": "paste_text", "text": _cc_target,
+                            "hud": _cc_hud[:55], "hud_color": "#0a84ff"}
+
         # Website → URL map (checked before generic open-app)
         _WEBSITE_MAP = {
             "youtube":    "https://www.youtube.com",
@@ -1777,6 +1820,9 @@ def _cmd_detect(
                     _raw_marker_m = _EMAIL_BODY_MARKER.search(_raw_rest_email)
                     if _raw_marker_m:
                         _body = _raw_rest_email[_raw_marker_m.end():].strip().rstrip(".")
+                        # Strip any residual leading punctuation (e.g. Whisper adds comma
+                        # after "tell him" → "Tell him, the meeting..." → body=", the meeting...")
+                        _body = re.sub(r'^[\s,\.!\?;:-]+', '', _body).strip()
                 if not _body and _body_lower:
                     _body = _body_lower[0].upper() + _body_lower[1:]
             else:
