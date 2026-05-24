@@ -567,6 +567,7 @@ export function useGlobalHotkey() {
           const trimmed = result.text.trim();
           if (trimmed.length === 0) {
             console.log("[dictation] empty transcript — skipping paste");
+            stateRef.current = "idle";
             hudEmit({ state: "error", subtext: "Empty transcription" });
             setTimeout(() => hudEmit({ state: "idle" }), 3000);
             return;
@@ -578,6 +579,7 @@ export function useGlobalHotkey() {
           if (settingsRef.current.jarvis_enabled === true) {
             custom = await runCustomCommand(trimmed);
             if (custom.matched && !custom.pasteText) {
+              stateRef.current = "idle";
               hudEmit({ state: "inserted", subtext: custom.subtext ?? trimmed.slice(0, 55), status: custom.status ?? "custom_command" })
                 .then(() => setTimeout(() => hudEmit({ state: "idle" }), 1200))
                 .catch(() => {});
