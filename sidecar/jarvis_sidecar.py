@@ -901,6 +901,35 @@ def _lookup_contact_email(name: str) -> "str | None":
     return None
 
 
+def _email_contact_split(rest_lower: str, raw_rest: str) -> "tuple[str, str, str]":
+    """Split 'email <rest>' into (ename_lower, body_lower, raw_body) by trying to
+    match a known contact at the start of rest_lower.
+
+    Tries 1, 2, then 3-word prefixes via EXACT contact/alias match.  Returns the
+    longest prefix that matches a known contact and the remaining text as the body.
+
+    Falls back to (rest_lower, "", "") if no contact is found — the caller keeps
+    the original no-body logic (full rest = recipient attempt, no body).
+
+    Why this matters: users say "email Bob hey Bob everything is fine" without a
+    body marker.  Without this, _ename becomes the whole sentence and the body is
+    lost (or the full sentence lands in the To field when Bob isn't in contacts).
+    """
+    words = rest_lower.split()
+    raw_words = raw_rest.split() if raw_rest else []
+
+    for n in (3, 2, 1):
+        if len(words) <= n:
+            continue  # need at least one word of body after the name
+        candidate = " ".join(words[:n])
+        if _lookup_contact_email(candidate):
+            body_lower = " ".join(words[n:]).strip()
+            raw_body   = " ".join(raw_words[n:]).strip() if len(raw_words) > n else body_lower
+            return candidate, body_lower, raw_body
+
+    return rest_lower, "", ""
+
+
 # ── Audio state ───────────────────────────────────────────────────────────────
 _recording     = False
 _audio_frames: list = []
@@ -1727,6 +1756,13 @@ def _cmd_detect(
         if _email_m:
             _rest = _email_m.group(1).strip()
 
+            # Extract raw_rest for capitalization-preserving body extraction.
+            _raw_rest_email = ""
+            if raw_text:
+                _rp = _EMAIL_PREFIX_RE.match(raw_text.strip())
+                if _rp:
+                    _raw_rest_email = _rp.group(1).strip()
+
             # Step 1: Extract body using the full Python-ported marker set.
             # Handles: tell him/her/them, let him/her/them know, say/saying,
             #   telling him/her/them, letting him/her/them know, ask/asking.
@@ -1737,18 +1773,32 @@ def _cmd_detect(
 
                 # Prefer body from raw text (preserves Whisper's capitalization).
                 _body = ""
-                if raw_text:
-                    _raw_prefix_m = _EMAIL_PREFIX_RE.match(raw_text.strip())
-                    if _raw_prefix_m:
-                        _raw_rest = _raw_prefix_m.group(1).strip()
-                        _raw_marker_m = _EMAIL_BODY_MARKER.search(_raw_rest)
-                        if _raw_marker_m:
-                            _body = _raw_rest[_raw_marker_m.end():].strip().rstrip(".")
+                if _raw_rest_email:
+                    _raw_marker_m = _EMAIL_BODY_MARKER.search(_raw_rest_email)
+                    if _raw_marker_m:
+                        _body = _raw_rest_email[_raw_marker_m.end():].strip().rstrip(".")
                 if not _body and _body_lower:
                     _body = _body_lower[0].upper() + _body_lower[1:]
             else:
-                _rest_no_body = _rest
-                _body = ""
+                # No explicit body marker (e.g. "email Bob hey Bob everything is good").
+                # Try to recover body by splitting on a known contact name prefix.
+                # This handles the natural "email <name> <body>" pattern without a marker.
+                _split_ename, _split_body_lower, _split_raw_body = _email_contact_split(
+                    _rest, _raw_rest_email
+                )
+                if _split_body_lower:
+                    # Contact prefix found — split succeeded.
+                    _rest_no_body = _split_ename
+                    _body_lower   = _split_body_lower
+                    _body = (
+                        _split_raw_body[0].upper() + _split_raw_body[1:]
+                        if _split_raw_body
+                        else _body_lower[0].upper() + _body_lower[1:]
+                    )
+                else:
+                    # No contact prefix found — full rest is the recipient, no body.
+                    _rest_no_body = _rest
+                    _body = ""
 
             # Step 2: Extract subject from "about …" keyword.
             _subj_kw_m = re.search(r"\s+about\s+(.+)$", _rest_no_body)

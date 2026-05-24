@@ -472,6 +472,43 @@ class TestEmailCommands(unittest.TestCase):
         self.assertIn("body=", url)
         self.assertIn("hi", url.replace("%20", " ").lower())
 
+    # 16. Regression: no-marker body — "email Bob hey Bob everything is good"
+    #     The user speaks the body directly after the recipient name WITHOUT a
+    #     body marker (tell him / say / let her know).  The contact-prefix split
+    #     must recover: recipient=Bob, body="hey Bob everything is good".
+    #     Previously the entire sentence became the recipient → To field got
+    #     the whole text when the contact wasn't found, or body was silently dropped
+    #     when the contact WAS found via partial match.
+    def test_email_no_marker_body_contact_prefix_split(self):
+        raw = "email Bob hey Bob everything is good for tomorrow"
+        r = detect(raw, raw=raw, jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        # Body MUST be present — the greeting/message is the email content
+        self.assertIn("body=", url, f"Body missing from URL: {url!r}")
+        decoded_url = url.replace("%20", " ").replace("%2C", ",")
+        self.assertIn("hey", decoded_url.lower(), f"'hey' not in body: {url!r}")
+        self.assertIn("everything", decoded_url.lower(), f"'everything' not in body: {url!r}")
+        # The entire sentence must NOT be the recipient
+        # (if contact found, To should be just the email; if not found, encoded name only)
+        to_part = url.split("?")[0]
+        self.assertNotIn("everything", to_part.lower(),
+                         f"'everything' must not be in To field: {to_part!r}")
+
+    # 17. Regression: no-marker body with unknown contact — message still not lost
+    #     "email Alice hey Alice the meeting is at 3" — Alice not in contacts.
+    #     Contact-prefix split tries "alice" → no match → falls back to full rest
+    #     as recipient, body empty.  Body will be empty (can't guess split) but
+    #     the To field gets only the name "Alice", not the whole sentence.
+    def test_email_no_marker_unknown_contact_no_body_split(self):
+        raw = "email Alice everything is fine"
+        r = detect(raw, raw=raw, jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        # Without a contact match, no body is extracted (graceful degradation).
+        # The important thing is the HUD mentions "contact not found".
+        self.assertIn("not found", r.get("hud", "").lower())
+
 
 # ---------------------------------------------------------------------------
 # Disfluency cleanup tests
