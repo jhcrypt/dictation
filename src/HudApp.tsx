@@ -25,88 +25,76 @@ export interface HudPayload {
 }
 
 // ── Waveform — 22 bars × 2px + 21 gaps × 1px = 65px, matching Python spec ───
+//
+// Animation matches jarvis_dictation.py _animate_wave exactly:
+//   scale    = min(1.0, rms * 18 + 0.15)
+//   phase   += 0.18 rad/30ms frame  →  6 rad/s
+//   height   = MAX_H * scale * (sin(phase + i*0.45)*0.5+0.5) * (1 - dist*0.5)
+//   color    = rgb(brightness, brightness*0.18, brightness*0.12)
+//              where brightness = 255 * (1 - dist*0.65)
+//   (dist = |i - mid| / mid,  mid = NUM_BARS/2 = 11)
+//
+// Phase advances at 0.1 rad per rAF frame (≈60 fps → 6 rad/s = same speed as
+// Python's 0.18 rad per 30 ms call).  Bars are centered vertically via flexbox
+// so they grow symmetrically from the midline, matching the Python tkinter
+// canvas draw of (cx-height, cx+height).
 
 const WAVE_BARS = 22;
-const WAVEFORM_HEIGHTS = [4, 6, 8, 11, 14, 17, 20, 22, 22, 20, 17, 14, 10, 7, 5, 4, 6, 9, 13, 10, 7, 4];
+const WAVE_MID  = WAVE_BARS / 2;        // 11 — matches Python mid = _NUM_BARS/2
+const MAX_BAR_H = 20;                   // matches Python (cx-6) where cx=26, H=52
 
-// Per-bar CSS animation periods (seconds) — slight variation makes bars feel
-// independent rather than all pulsing in lock-step.
-const BAR_PERIODS = Array.from(
-  { length: WAVE_BARS },
-  (_, i) => (0.18 + (i % 7) * 0.018).toFixed(3),
-);
+// Precompute per-bar colors (static — dist from center never changes).
+// Python: brightness = 255*(1-dist*0.65); fill = #{br:02x}{br*0.18:02x}{br*0.12:02x}
+const BAR_COLORS = Array.from({ length: WAVE_BARS }, (_, i) => {
+  const dist = Math.abs(i - WAVE_MID) / WAVE_MID;
+  const br   = Math.round(255 * (1 - dist * 0.65));
+  return `rgb(${br},${Math.round(br * 0.18)},${Math.round(br * 0.12)})`;
+});
 
-// WaveformBars uses requestAnimationFrame + direct DOM writes so bar heights
-// update at ~60 fps without triggering React re-renders.
-//
-// audioLevel: 0.0–1.0 (matches stable Python scale = min(1.0, rms * 18 + 0.15)).
-//   Polled every 30 ms from outside; synced to levelRef inside.
-//   Attack/decay smoothing is applied in the rAF loop so visual transitions
-//   are fluid even between poll frames.
-//
-// Per-bar "energy" values drift independently (randomised each few frames) so
-// adjacent bars have different heights — like a real spectrum analyser —
-// instead of all scaling uniformly together.
 const WaveformBars = memo(function WaveformBars({
-  color = "#ff453a",
   audioLevel = 0.15,
 }: {
-  color?: string;
   audioLevel?: number;
 }) {
   const barsRef    = useRef<(HTMLDivElement | null)[]>([]);
   const levelRef   = useRef<number>(audioLevel);
   const displayRef = useRef<number>(audioLevel); // smoothed display level
-  // Per-bar energy multipliers (0.6–1.4); drift toward new random targets.
-  const energyRef  = useRef<number[]>(
-    Array.from({ length: WAVE_BARS }, () => 0.85 + Math.random() * 0.3),
-  );
-  const rafRef = useRef<number | null>(null);
+  const phaseRef   = useRef<number>(0.0);        // traveling wave phase (radians)
+  const rafRef     = useRef<number | null>(null);
 
   // Sync incoming prop to ref — no re-render needed.
-  useEffect(() => {
-    levelRef.current = audioLevel;
-  });
+  useEffect(() => { levelRef.current = audioLevel; });
 
   // rAF rendering loop — runs once on mount, never re-creates.
   useEffect(() => {
-    let tick = 0;
-    const energy = energyRef.current;
-
     const frame = () => {
+      // ── Advance traveling wave phase ───────────────────────────────────────
+      // 0.1 rad/frame at 60 fps = 6 rad/s — same angular speed as Python's
+      // 0.18 rad/frame at 30 fps (0.18/0.030 = 6 rad/s).
+      phaseRef.current += 0.1;
+      const phase = phaseRef.current;
+
       // ── Attack/decay smoothing ─────────────────────────────────────────────
-      // Attack fast (~50ms to 95%) so bars jump up with your voice.
-      // Decay slower (~200ms to 95%) so they fall gracefully.
       const target = levelRef.current;
       const prev   = displayRef.current;
       displayRef.current = target > prev
-        ? prev + (target - prev) * 0.70   // ~3 frames at 60fps
-        : prev + (target - prev) * 0.22;  // ~12 frames at 60fps
+        ? prev + (target - prev) * 0.70   // fast attack  (~3 frames)
+        : prev + (target - prev) * 0.22;  // slow decay  (~12 frames)
+      const scale = displayRef.current;
 
-      const level = displayRef.current;
-
-      // ── Per-bar energy drift ───────────────────────────────────────────────
-      // Every 3 frames, nudge ~3 random bars toward a new target.
-      // Drift range scales with level so bars spread more when speaking loudly.
-      if (tick % 3 === 0) {
-        const spread = 0.25 + level * 0.45; // 0.25 at silence → 0.70 at full
-        for (let j = 0; j < 3; j++) {
-          const i      = Math.floor(Math.random() * WAVE_BARS);
-          const target = 1.0 + (Math.random() * 2 - 1) * spread;
-          energy[i]   += (Math.max(0.35, Math.min(1.65, target)) - energy[i]) * 0.4;
-        }
-      }
-
-      // ── Write bar heights directly to DOM ─────────────────────────────────
+      // ── Write bar heights directly to DOM (no React re-render) ────────────
+      // Python formula: height = (cx-6)*scale*(sin(phase+i*0.45)*0.5+0.5)*(1-dist*0.5)
+      // bars[i].style.height = total bar height (2×radius, grows from center via flexbox)
       const bars = barsRef.current;
       for (let i = 0; i < WAVE_BARS; i++) {
         const bar = bars[i];
         if (!bar) continue;
-        const h = Math.max(2, Math.round(WAVEFORM_HEIGHTS[i] * level * energy[i]));
-        bar.style.height = `${h}px`;
+        const dist   = Math.abs(i - WAVE_MID) / WAVE_MID;
+        const sinVal = Math.sin(phase + i * 0.45) * 0.5 + 0.5; // 0..1
+        const h      = Math.max(2, Math.round(MAX_BAR_H * scale * sinVal * (1 - dist * 0.5)));
+        bar.style.height = `${h * 2}px`;  // ×2 because flexbox centers → grows ±h
       }
 
-      tick++;
       rafRef.current = requestAnimationFrame(frame);
     };
 
@@ -119,21 +107,18 @@ const WaveformBars = memo(function WaveformBars({
   return (
     <div
       className="flex items-center flex-shrink-0"
-      style={{ gap: 1, height: 24, width: 65 }}
+      style={{ gap: 1, height: 40, width: 65 }}
     >
       {Array.from({ length: WAVE_BARS }, (_, i) => (
         <div
           key={i}
           ref={el => { barsRef.current[i] = el; }}
           style={{
-            width:           2,
-            height:          Math.max(2, Math.round(WAVEFORM_HEIGHTS[i] * 0.15)),
-            background:      color,
-            opacity:         0.9,
-            borderRadius:    1,
-            transformOrigin: "center center",
-            animation:       `hud-wave ${BAR_PERIODS[i]}s ease-in-out infinite`,
-            animationDelay:  `-${((i * 0.023) % parseFloat(BAR_PERIODS[i])).toFixed(3)}s`,
+            width:        2,
+            height:       4,   // initial height — rAF animates from first frame
+            background:   BAR_COLORS[i],
+            opacity:      0.9,
+            borderRadius: 1,
           }}
         />
       ))}
@@ -187,15 +172,15 @@ function getConfig(state: HudState, payload: HudPayload, audioLevel: number): St
       };
     case "recording":
       return {
-        icon:       <WaveformBars color={RED} audioLevel={audioLevel} />,
+        icon:       <WaveformBars audioLevel={audioLevel} />,
         label:      "Recording…",
         labelColor: FG,
         subColor:   DIM,
       };
     case "wake_recording":
       return {
-        icon:       <WaveformBars color={RED} audioLevel={audioLevel} />,
-        label:      "Keep speaking",
+        icon:       <WaveformBars audioLevel={audioLevel} />,
+        label:      "Keep speaking · press ⌥ to stop",
         labelColor: FG,
         subColor:   DIM,
       };
@@ -269,7 +254,7 @@ function getSubtext(state: HudState, payload: HudPayload): string {
       // Match Python: "press to stop" (toggle) or "release to stop" (hold)
       if (payload.subtext) return payload.subtext;
       return payload.toggleMode ? "Press ⌥ again to stop" : "Release ⌥ to stop";
-    case "wake_recording": return "Press ⌥ to stop";
+    case "wake_recording": return "";  // instruction is in the label itself
     case "transcribing":   return "";
     case "cleanup":        return "Ollama AI cleanup running…";
     case "skipped":        return "";  // label already contains the message

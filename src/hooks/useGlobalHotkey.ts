@@ -830,9 +830,19 @@ export function useGlobalHotkey() {
           }
           const errMsg = result.error ?? "Transcription failed";
           console.error("[sidecar] transcription failed:", errMsg);
-          hudEmit({ state: "error", subtext: errMsg });
-          const failCycle = cycleIdRef.current;
-          setTimeout(() => { if (cycleIdRef.current === failCycle) hudEmit({ state: "idle" }); }, 4000);
+
+          // "no audio recorded" means the user tapped too briefly — show the
+          // same friendly orange message the old Python HUD shows for short taps,
+          // not a red error that implies something broke.
+          if (result.error === "no audio recorded") {
+            hudEmit({ state: "tap_ignored" });
+            const tapCycle = cycleIdRef.current;
+            setTimeout(() => { if (cycleIdRef.current === tapCycle) hudEmit({ state: "idle" }); }, 2500);
+          } else {
+            hudEmit({ state: "error", subtext: errMsg });
+            const failCycle = cycleIdRef.current;
+            setTimeout(() => { if (cycleIdRef.current === failCycle) hudEmit({ state: "idle" }); }, 4000);
+          }
         }
       } catch (e) {
         // Guard before showing error: don't clobber a new cycle's HUD

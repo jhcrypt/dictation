@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import Card from "../components/ui/Card";
 import { useSettings } from "../context/SettingsContext";
 import type { DictationTiming } from "../hooks/useGlobalHotkey";
@@ -41,12 +41,17 @@ export default function DictationPage() {
   const [axGranted,     setAxGranted]     = useState<boolean | null>(null);
   const [copied,        setCopied]        = useState(false);
   const [targetApp,     setTargetApp]     = useState<string | null>(null);
+  // Pre-cached Tauri emit — avoids dynamic import on every button click.
+  // Populated on mount so the first click has zero import overhead.
+  const emitRef = useRef<((event: string, payload: unknown) => void) | null>(null);
 
   useEffect(() => {
     checkSidecar();
     checkAccessibility();
     pollTargetApp();
     const interval = setInterval(pollTargetApp, 2000);
+    // Warm emit cache so the first button click has no dynamic-import latency.
+    import("@tauri-apps/api/event").then(({ emit }) => { emitRef.current = emit; }).catch(() => {});
     return () => clearInterval(interval);
   }, []);
 
@@ -149,22 +154,28 @@ export default function DictationPage() {
   //
   // ui-start-recording → useGlobalHotkey.startRecording()
   // ui-stop-recording  → useGlobalHotkey.stopAndTranscribe() or cancelRecording()
+  //
+  // Performance: emitRef is pre-cached on mount so handleButtonClick is fully
+  // synchronous — no dynamic import on the hot path.  We also optimistically
+  // emit hud-state immediately (same IPC round-trip) so the waveform appears
+  // in one hop instead of waiting for the full event-routing chain.
 
   const effectiveRecording = hudState === "recording" || hudState === "wake_recording";
   const effectiveBusy      = hudState === "transcribing" || hudState === "cleanup" || hudState === "skipped";
 
-  const handleButtonClick = async () => {
+  const handleButtonClick = () => {
     console.log("[dictation-button] click  hudState=", hudState, " sidecarStatus=", sidecarStatus);
-    try {
-      const { emit } = await import("@tauri-apps/api/event");
-      if (effectiveRecording) {
-        console.log("[dictation-button] stop requested");
-        await emit("ui-stop-recording", {});
-      } else {
-        console.log("[dictation-button] start requested");
-        await emit("ui-start-recording", {});
-      }
-    } catch { /* browser preview */ }
+    const emit = emitRef.current;
+    if (!emit) return;
+    if (effectiveRecording) {
+      console.log("[dictation-button] stop requested");
+      emit("hud-state", { state: "transcribing" });   // optimistic: show spinner immediately
+      emit("ui-stop-recording", {});
+    } else {
+      console.log("[dictation-button] start requested");
+      emit("hud-state", { state: "recording" });       // optimistic: show waveform immediately
+      emit("ui-start-recording", {});
+    }
   };
 
   // ── UI ────────────────────────────────────────────────────────────────────
