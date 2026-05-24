@@ -288,43 +288,53 @@ export default function DictationPage() {
             <p className="text-xs text-jarvis-muted mb-2 pb-2 border-b border-jarvis-border">
               Timing will appear here after your first dictation.
             </p>
-            <TimingRow label="Model"              value="—" />
-            <TimingRow label="Recording"          value="—" />
-            <TimingRow label="Stop processing"    value="—" />
-            <TimingRow label="Transcription"      value="—" />
-            <TimingRow label="Cleanup"            value="—" />
-            <TimingRow label="Paste"              value="—" />
+            <TimingRow label="Recording duration"        value="—" />
+            <TimingRow label="Stop processing"           value="—" />
+            <TimingRow label="Transcription"             value="—" />
+            <TimingRow label="Cleanup"                   value="—" />
+            <TimingRow label="Paste"                     value="—" />
             <div className="border-t border-jarvis-border my-1.5" />
-            <TimingRow label="Total after release" value="—" bold />
-            <TimingRow label="Total cycle"         value="—" bold />
+            <TimingRow label="Time after I stopped talking" value="—" bold />
+            <TimingRow label="Total including recording"    value="—" />
           </div>
         ) : (
           <div className="flex flex-col gap-0">
-            {/* Header row: model + profile + status */}
-            <div className="flex items-center gap-3 mb-2 pb-2 border-b border-jarvis-border">
-              {dictTiming.model && (
-                <span className="text-xs font-mono bg-jarvis-sidebar border border-jarvis-border rounded px-2 py-0.5 text-jarvis-text">
-                  {dictTiming.model}
-                </span>
-              )}
-              {dictTiming.profile && (
-                <span className="text-xs text-jarvis-muted">{dictTiming.profile}</span>
-              )}
-              {dictTiming.status && (
-                <span className={`ml-auto text-xs font-medium ${
-                  dictTiming.status === "pasted"       ? "text-green-400" :
-                  dictTiming.status === "paste_failed" ? "text-red-400"   :
-                  "text-jarvis-muted"
-                }`}>
-                  {dictTiming.status}
-                </span>
-              )}
-            </div>
+            {/* Hero: "Ready in Xs" — the number that matters */}
+            {dictTiming.totalAfterReleaseMs !== undefined && (
+              <div className="flex items-center justify-between mb-3 pb-3 border-b border-jarvis-border">
+                <div>
+                  <span className="text-xs text-jarvis-muted">Ready in</span>
+                  <span className="ml-2 text-lg font-semibold text-jarvis-text font-mono">
+                    {fmtMs(dictTiming.totalAfterReleaseMs)}
+                  </span>
+                  <span className="ml-1.5 text-xs text-jarvis-muted">after release</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {dictTiming.model && (
+                    <span className="text-xs font-mono bg-jarvis-sidebar border border-jarvis-border rounded px-2 py-0.5 text-jarvis-text">
+                      {dictTiming.model}
+                    </span>
+                  )}
+                  {dictTiming.profile && (
+                    <span className="text-xs text-jarvis-muted">{dictTiming.profile}</span>
+                  )}
+                  {dictTiming.status && (
+                    <span className={`text-xs font-medium ${
+                      dictTiming.status === "pasted"       ? "text-green-400" :
+                      dictTiming.status === "paste_failed" ? "text-red-400"   :
+                      "text-jarvis-muted"
+                    }`}>
+                      {dictTiming.status}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
 
-            {/* Timing rows — Python label convention */}
-            <TimingRow label="Recording"          value={fmtMs(dictTiming.recordingMs, true)} />
-            <TimingRow label="Stop processing"    value={fmtMs(dictTiming.stopMs)} />
-            <TimingRow label="Transcription"      value={fmtMs(dictTiming.transcriptionMs)} />
+            {/* Detail rows */}
+            <TimingRow label="Recording duration"  value={fmtMs(dictTiming.recordingMs, true)} />
+            <TimingRow label="Stop processing"     value={fmtMs(dictTiming.stopMs)} />
+            <TimingRow label="Transcription"       value={fmtMs(dictTiming.transcriptionMs)} />
             <TimingRow
               label="Cleanup"
               value={
@@ -334,15 +344,10 @@ export default function DictationPage() {
               }
             />
             {/* Paste row — expands to substeps when PasteTiming data is available */}
-            <TimingRow label="Paste"              value={fmtMs(dictTiming.pasteMs, true)} />
+            <TimingRow label="Paste"               value={fmtMs(dictTiming.pasteMs, true)} />
             {dictTiming.paste_save_ms !== undefined && (
               <div className="ml-3 border-l border-jarvis-border pl-3 mb-0.5">
-                {dictTiming.paste_skipped_activate === false && (
-                  <TimingRow label="  activate app"  value={fmtMs(dictTiming.paste_activate_ms)} />
-                )}
-                {dictTiming.paste_skipped_activate === true && (
-                  <TimingRow label="  activate app"  value="skipped" />
-                )}
+                <TimingRow label="  activate app"   value={dictTiming.paste_skipped_activate ? "skipped" : fmtMs(dictTiming.paste_activate_ms)} />
                 <TimingRow label="  clipboard save" value={fmtMs(dictTiming.paste_save_ms)} />
                 <TimingRow label="  pbcopy write"   value={fmtMs(dictTiming.paste_write_ms)} />
                 <TimingRow label="  Cmd+V"          value={fmtMs(dictTiming.paste_cmd_v_ms)} />
@@ -351,8 +356,8 @@ export default function DictationPage() {
               </div>
             )}
             <div className="border-t border-jarvis-border my-1.5" />
-            <TimingRow label="Total after release" value={fmtMs(dictTiming.totalAfterReleaseMs)} bold />
-            <TimingRow label="Total cycle"         value={fmtMs(dictTiming.totalCycleMs, true)} bold />
+            <TimingRow label="Time after I stopped talking" value={fmtMs(dictTiming.totalAfterReleaseMs)} bold />
+            <TimingRow label="Total including recording"    value={fmtMs(dictTiming.totalCycleMs, true)} />
           </div>
         )}
       </Card>
