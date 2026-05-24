@@ -34,14 +34,20 @@ export interface HudPayload {
 //              where brightness = 255 * (1 - dist*0.65)
 //   (dist = |i - mid| / mid,  mid = NUM_BARS/2 = 11)
 //
+// Architecture: WaveformBars owns its own IPC polling and never touches React
+// state during animation.  The Python reference reads _live_audio_rms from a
+// shared in-process variable every 30 ms — zero latency.  We replicate that by
+// storing the latest poll result in a plain ref (targetRef) that the rAF loop
+// reads on every frame.  No React state, no re-renders, no scheduler delay.
+//
 // Phase advances at 0.1 rad per rAF frame (≈60 fps → 6 rad/s = same speed as
-// Python's 0.18 rad per 30 ms call).  Bars are centered vertically via flexbox
-// so they grow symmetrically from the midline, matching the Python tkinter
-// canvas draw of (cx-height, cx+height).
+// Python's 0.18 rad per 30 ms call).  Bars grow symmetrically from the midline
+// via flexbox align-items:center, matching Python canvas.coords(x1,cx-h,x2,cx+h).
 
 const WAVE_BARS = 22;
-const WAVE_MID  = WAVE_BARS / 2;        // 11 — matches Python mid = _NUM_BARS/2
-const MAX_BAR_H = 20;                   // matches Python (cx-6) where cx=26, H=52
+const WAVE_MID  = WAVE_BARS / 2;   // 11 — matches Python mid = _NUM_BARS/2
+const MAX_BAR_H = 20;              // matches Python (cx-6) where cx=26, H=52
+const IDLE_LEVEL = 0.15;           // minimum scale when mic is silent
 
 // Precompute per-bar colors (static — dist from center never changes).
 // Python: brightness = 255*(1-dist*0.65); fill = #{br:02x}{br*0.18:02x}{br*0.12:02x}
@@ -51,48 +57,77 @@ const BAR_COLORS = Array.from({ length: WAVE_BARS }, (_, i) => {
   return `rgb(${br},${Math.round(br * 0.18)},${Math.round(br * 0.12)})`;
 });
 
-const WaveformBars = memo(function WaveformBars({
-  audioLevel = 0.15,
-}: {
-  audioLevel?: number;
-}) {
+// WaveformBars — fully self-contained, no props needed.
+// Owns its own IPC polling loop AND its own rAF animation loop.
+// Both run for the lifetime of the component (mounted only while recording).
+const WaveformBars = memo(function WaveformBars() {
   const barsRef    = useRef<(HTMLDivElement | null)[]>([]);
-  const levelRef   = useRef<number>(audioLevel);
-  const displayRef = useRef<number>(audioLevel); // smoothed display level
+  const targetRef  = useRef<number>(IDLE_LEVEL); // raw level from latest IPC poll
+  const displayRef = useRef<number>(IDLE_LEVEL); // smoothed display level (attack/decay)
   const phaseRef   = useRef<number>(0.0);        // traveling wave phase (radians)
   const rafRef     = useRef<number | null>(null);
+  const pollRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  const guardRef   = useRef<boolean>(false);     // prevents overlapping IPC calls
 
-  // Sync incoming prop to ref — no re-render needed.
-  useEffect(() => { levelRef.current = audioLevel; });
+  // ── IPC polling loop ───────────────────────────────────────────────────────
+  // Polls sidecar_get_status every 30 ms and writes the result directly to
+  // targetRef — bypassing React state entirely so there is zero scheduler
+  // overhead between the IPC response and the next rAF frame.
+  useEffect(() => {
+    const poll = async () => {
+      if (guardRef.current) return;
+      guardRef.current = true;
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const raw = await invoke<string>("sidecar_get_status");
+        const status = JSON.parse(raw) as { ok: boolean; recording_rms?: number | null };
+        if (status.ok) {
+          // Python formula: scale = min(1.0, rms * 18 + 0.15)
+          const rms = status.recording_rms ?? 0;
+          targetRef.current = Math.min(1.0, rms * 18 + IDLE_LEVEL);
+        }
+      } catch {
+        // Non-critical — keep last value on IPC hiccup
+      } finally {
+        guardRef.current = false;
+      }
+    };
+    pollRef.current = setInterval(poll, 30);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
 
-  // rAF rendering loop — runs once on mount, never re-creates.
+  // ── rAF rendering loop ─────────────────────────────────────────────────────
+  // Runs at the display frame rate (~60 fps).  Reads targetRef directly —
+  // no React state in the hot path.
   useEffect(() => {
     const frame = () => {
-      // ── Advance traveling wave phase ───────────────────────────────────────
-      // 0.1 rad/frame at 60 fps = 6 rad/s — same angular speed as Python's
-      // 0.18 rad/frame at 30 fps (0.18/0.030 = 6 rad/s).
+      // Phase advances 0.1 rad/frame at 60 fps = 6 rad/s — same as Python
+      // 0.18 rad/frame at 30 fps (0.18 / 0.030 = 6 rad/s).
       phaseRef.current += 0.1;
       const phase = phaseRef.current;
 
-      // ── Attack/decay smoothing ─────────────────────────────────────────────
-      const target = levelRef.current;
+      // Attack/decay smoothing matches Python: immediate on attack, gradual on decay.
+      // Fast attack (~3 frames) so voice peaks appear instantly.
+      // Slow decay (~12 frames) so bars fall naturally after speech ends.
+      const target = targetRef.current;
       const prev   = displayRef.current;
       displayRef.current = target > prev
-        ? prev + (target - prev) * 0.70   // fast attack  (~3 frames)
-        : prev + (target - prev) * 0.22;  // slow decay  (~12 frames)
+        ? prev + (target - prev) * 0.70   // fast attack
+        : prev + (target - prev) * 0.22;  // slow decay
       const scale = displayRef.current;
 
-      // ── Write bar heights directly to DOM (no React re-render) ────────────
-      // Python formula: height = (cx-6)*scale*(sin(phase+i*0.45)*0.5+0.5)*(1-dist*0.5)
-      // bars[i].style.height = total bar height (2×radius, grows from center via flexbox)
+      // Write bar heights directly to DOM — no React re-render, no Virtual DOM.
+      // Python: height = (cx-6)*scale*(sin(phase+i*0.45)*0.5+0.5)*(1-dist*0.5)
       const bars = barsRef.current;
       for (let i = 0; i < WAVE_BARS; i++) {
         const bar = bars[i];
         if (!bar) continue;
         const dist   = Math.abs(i - WAVE_MID) / WAVE_MID;
-        const sinVal = Math.sin(phase + i * 0.45) * 0.5 + 0.5; // 0..1
+        const sinVal = Math.sin(phase + i * 0.45) * 0.5 + 0.5;
         const h      = Math.max(2, Math.round(MAX_BAR_H * scale * sinVal * (1 - dist * 0.5)));
-        bar.style.height = `${h * 2}px`;  // ×2 because flexbox centers → grows ±h
+        bar.style.height = `${h * 2}px`; // ×2: flexbox centers bar → grows ±h
       }
 
       rafRef.current = requestAnimationFrame(frame);
@@ -102,7 +137,7 @@ const WaveformBars = memo(function WaveformBars({
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, []); // intentionally empty — loop runs for component lifetime
+  }, []);
 
   return (
     <div
@@ -146,7 +181,7 @@ interface StateConfig {
   subColor: string;
 }
 
-function getConfig(state: HudState, payload: HudPayload, audioLevel: number): StateConfig {
+function getConfig(state: HudState, payload: HudPayload): StateConfig {
   const DIM    = "#4a4a4a";   // Python TEXT_DIM
   const FG     = "#ffffff";   // Python TEXT_WHITE
   const BLUE   = "#0a84ff";
@@ -172,14 +207,14 @@ function getConfig(state: HudState, payload: HudPayload, audioLevel: number): St
       };
     case "recording":
       return {
-        icon:       <WaveformBars audioLevel={audioLevel} />,
+        icon:       <WaveformBars />,
         label:      "Recording…",
         labelColor: FG,
         subColor:   DIM,
       };
     case "wake_recording":
       return {
-        icon:       <WaveformBars audioLevel={audioLevel} />,
+        icon:       <WaveformBars />,
         label:      "Keep speaking · press ⌥ to stop",
         labelColor: FG,
         subColor:   DIM,
@@ -325,13 +360,10 @@ export default function HudApp() {
   const [payload,    setPayload]    = useState<HudPayload>({ state: "idle" });
   const [appIcon,    setAppIcon]    = useState<string | null>(null);
   const [iconColor,  setIconColor]  = useState<string | null>(null);
-  // audioLevel: 0.0–1.0, matches Python scale = min(1.0, rms * 18 + 0.15).
-  // Polled from sidecar at ~16 FPS while recording; reset to 0.15 when idle.
-  const [audioLevel, setAudioLevel] = useState<number>(0.15);
-  const saveTimer      = useRef<ReturnType<typeof setTimeout>  | null>(null);
-  const iconTimer      = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioTimer     = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioPollGuard = useRef<boolean>(false); // prevent overlapping fetch calls
+  // audioLevel state removed — WaveformBars now owns its own IPC polling loop
+  // and writes directly to a ref, bypassing React state entirely.
+  const saveTimer = useRef<ReturnType<typeof setTimeout>  | null>(null);
+  const iconTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const savePosition = useCallback((x: number, y: number) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -383,55 +415,7 @@ export default function HudApp() {
     };
   }, [savePosition, refreshIcon]);
 
-  // ── Live audio level polling ──────────────────────────────────────────────────
-  // While recording (hotkey or wake), poll sidecar_get_status every 60 ms (~16 FPS)
-  // to read recording_rms and scale WaveformBars heights — matching stable Python
-  // _animate_wave which called get_current_rms() every 30 ms.
-  //
-  // Uses an in-flight guard so slow sidecar responses never stack up.
-  // The existing sidecar get_status command already returns recording_rms
-  // (added for the wake auto-stop monitor — reused here for free).
-  useEffect(() => {
-    const isDictatingNow = state === "recording" || state === "wake_recording";
-
-    if (!isDictatingNow) {
-      if (audioTimer.current) { clearInterval(audioTimer.current); audioTimer.current = null; }
-      setAudioLevel(0.15);
-      audioPollGuard.current = false;
-      return;
-    }
-
-    const poll = async () => {
-      if (audioPollGuard.current) return; // previous call still in-flight
-      audioPollGuard.current = true;
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const raw = await invoke<string>("sidecar_get_status");
-        const status = JSON.parse(raw) as {
-          ok: boolean;
-          recording_rms?: number | null;
-        };
-        if (status.ok) {
-          // Python formula: min(1.0, rms * 18 + 0.15).
-          // No voice_active gate — bars always reflect actual mic level.
-          // Attack/decay smoothing is applied in WaveformBars' rAF loop.
-          const rms   = status.recording_rms ?? 0;
-          const level = Math.min(1.0, rms * 18 + 0.15);
-          setAudioLevel(level);
-        }
-      } catch {
-        // Non-critical — sidecar may be momentarily busy; keep last value
-      } finally {
-        audioPollGuard.current = false;
-      }
-    };
-
-    // 30 ms matches stable Python _animate_wave interval (was 60 ms — halved).
-    audioTimer.current = setInterval(poll, 30);
-    return () => {
-      if (audioTimer.current) { clearInterval(audioTimer.current); audioTimer.current = null; }
-    };
-  }, [state]);
+  // Audio level polling removed from HudApp — WaveformBars handles it internally.
 
   const handleMouseDown = async (e: React.MouseEvent) => {
     if (e.button !== 0) return;
@@ -441,7 +425,7 @@ export default function HudApp() {
     } catch { /* browser preview */ }
   };
 
-  const cfg     = getConfig(state, payload, audioLevel);
+  const cfg     = getConfig(state, payload);
   const subtext = getSubtext(state, payload);
   const label   = cfg.label.length > 58 ? cfg.label.slice(0, 58) + "…" : cfg.label;
 
