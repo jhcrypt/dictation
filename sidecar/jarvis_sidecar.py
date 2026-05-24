@@ -32,6 +32,8 @@ import time
 import threading
 import wave
 import tempfile
+import glob as _glob
+import subprocess as _subprocess
 from urllib.parse import quote as _urlquote
 
 # ── Environment guards (must be set BEFORE importing faster_whisper / onnxruntime)
@@ -60,6 +62,72 @@ SETTINGS_FILE         = os.path.expanduser("~/.dictation_settings.json")
 VOCAB_FILE            = os.path.expanduser("~/.dictation_vocabulary.json")
 SNIPPETS_FILE         = os.path.expanduser("~/.dictation_snippets.json")
 CUSTOM_COMMANDS_FILE  = os.path.expanduser("~/.dictation_custom_commands.json")
+
+# ── App keyword map ───────────────────────────────────────────────────────────
+# Maps spoken keywords → correct macOS app name.
+# Port of Python reference _fast_jarvis_match app_keywords dict.
+# Built once at startup so glob calls for Adobe apps run only once.
+
+def _find_adobe(name: str) -> str:
+    """Return the exact name of the installed Adobe app (version-agnostic)."""
+    matches = sorted(_glob.glob(f"/Applications/Adobe {name}*.app"), reverse=True)
+    if matches:
+        return matches[0].split("/")[-1].replace(".app", "")
+    return f"Adobe {name}"
+
+_APP_KEYWORDS: dict = {
+    # macOS built-ins & common apps
+    "notes":           "Notes",
+    "messages":        "Messages",
+    "slack":           "Slack",
+    "finder":          "Finder",
+    "terminal":        "Terminal",
+    "system settings": "System Settings",
+    "music":           "Music",
+    "photos":          "Photos",
+    "facetime":        "FaceTime",
+    "maps":            "Maps",
+    "reminders":       "Reminders",
+    "calculator":      "Calculator",
+    "safari":          "Safari",
+    "chrome":          "Google Chrome",
+    "firefox":         "Firefox",
+    "vs code":         "Visual Studio Code",
+    "vscode":          "Visual Studio Code",
+    "xcode":           "Xcode",
+    "textedit":        "TextEdit",
+    "zoom":            "Zoom",
+    "teams":           "Microsoft Teams",
+    "word":            "Microsoft Word",
+    "excel":           "Microsoft Excel",
+    "powerpoint":      "Microsoft PowerPoint",
+    "outlook":         "Microsoft Outlook",
+    "notion":          "Notion",
+    "obsidian":        "Obsidian",
+    "discord":         "Discord",
+    "whatsapp":        "WhatsApp",
+    "telegram":        "Telegram",
+    "1password":       "1Password 7",
+    "screenflow":      "ScreenFlow",
+    "quicktime":       "QuickTime Player",
+    "vlc":             "VLC",
+    "iterm":           "iTerm",
+    "app store":       "App Store",
+    "figma":           "Figma",
+    "sketch":          "Sketch",
+}
+# Adobe — detect installed year-versioned apps at startup
+_APP_KEYWORDS.update({
+    "photoshop":    _find_adobe("Photoshop"),
+    "illustrator":  _find_adobe("Illustrator"),
+    "premiere":     _find_adobe("Premiere Pro"),
+    "after effects":_find_adobe("After Effects"),
+    "lightroom":    _find_adobe("Lightroom Classic"),
+    "acrobat":      _find_adobe("Acrobat"),
+    "media encoder":_find_adobe("Media Encoder"),
+    "encoder":      _find_adobe("Media Encoder"),
+    "indesign":     _find_adobe("InDesign"),
+})
 
 def load_settings() -> dict:
     try:
@@ -1664,8 +1732,31 @@ def _cmd_detect(
             if target in _WEBSITE_MAP:
                 return {"action": "open_url", "url": _WEBSITE_MAP[target],
                         "hud": f"Opening {target.capitalize()}…", "hud_color": "#30d158"}
-            return {"action": "open_app", "app_name": target.title(),
-                    "hud": f"Opening {target.title()}…", "hud_color": "#30d158"}
+            # Keyword normalisation: "chrome" → "Google Chrome", etc.
+            # Port of Python reference app_keywords map — exact match first,
+            # then partial (e.g. "photoshop 2024" still matches "photoshop").
+            _resolved_app = _APP_KEYWORDS.get(target)
+            if not _resolved_app:
+                for _kw, _kname in _APP_KEYWORDS.items():
+                    if _kw in target:
+                        _resolved_app = _kname
+                        break
+            _final_app = _resolved_app or target.title()
+            return {"action": "open_app", "app_name": _final_app,
+                    "hud": f"Opening {_final_app}…", "hud_color": "#30d158"}
+
+        # ── Direct app name (no "open" prefix) ───────────────────────────────
+        # "photoshop", "safari", "chrome" etc. without saying "open".
+        # Port of Python reference direct app name match.
+        if lower in _APP_KEYWORDS:
+            _dapp = _APP_KEYWORDS[lower]
+            return {"action": "open_app", "app_name": _dapp,
+                    "hud": f"Opening {_dapp}…", "hud_color": "#30d158"}
+        # Partial match for multi-word keyword said without "open"
+        for _kw, _kapp in _APP_KEYWORDS.items():
+            if lower == _kw:
+                return {"action": "open_app", "app_name": _kapp,
+                        "hud": f"Opening {_kapp}…", "hud_color": "#30d158"}
 
         # ── Web search ────────────────────────────────────────────────────────
         for _pfx in ("search for ", "search ", "google ", "look up ", "find "):
@@ -1676,7 +1767,7 @@ def _cmd_detect(
                     return {"action": "open_url", "url": _url,
                             "hud": f"Searching: {_query[:30]}…", "hud_color": "#0a84ff"}
 
-        # ── Spotify / playlists ───────────────────────────────────────────────
+        # ── Spotify / playlists / YouTube ────────────────────────────────────
         if lower.startswith("play "):
             _tail = lower[5:].strip()
             for _kw, _uri in _PLAYLIST_MAP.items():
@@ -1688,12 +1779,32 @@ def _cmd_detect(
                 _uri = f"spotify:search:{_song.replace(' ', '%20')}"
                 return {"action": "open_url", "url": _uri,
                         "hud": f"Spotify: {_song[:25]}…", "hud_color": "#30d158"}
+            if _tail.endswith(" on apple music"):
+                _song = _tail[:-15].strip()
+                return {"action": "open_url",
+                        "url": f"https://music.apple.com/search?term={_song.replace(' ', '+')}",
+                        "hud": f"Apple Music: {_song[:25]}…", "hud_color": "#fa2d55"}
+            if _tail:
+                # Default: search YouTube (matches Python reference behaviour)
+                return {"action": "open_url",
+                        "url": f"https://www.youtube.com/results?search_query={_tail.replace(' ', '+')}",
+                        "hud": f"YouTube: {_tail[:25]}…", "hud_color": "#ff0000"}
+
+        # ── Watch X → YouTube ─────────────────────────────────────────────────
+        if lower.startswith("watch "):
+            _wtail = lower[6:].strip()
+            if _wtail:
+                return {"action": "open_url",
+                        "url": f"https://www.youtube.com/results?search_query={_wtail.replace(' ', '+')}",
+                        "hud": f"YouTube: {_wtail[:25]}…", "hud_color": "#ff0000"}
 
         # ── System volume ─────────────────────────────────────────────────────
-        if lower in ("volume up", "turn volume up", "increase volume", "louder"):
+        if lower in ("volume up", "turn volume up", "increase volume",
+                     "raise volume", "louder"):
             return {"action": "set_volume", "direction": "up",
                     "hud": "Volume up", "hud_color": "#30d158"}
-        if lower in ("volume down", "turn volume down", "decrease volume", "quieter"):
+        if lower in ("volume down", "turn volume down", "decrease volume",
+                     "lower volume", "quieter"):
             return {"action": "set_volume", "direction": "down",
                     "hud": "Volume down", "hud_color": "#30d158"}
         if lower in ("mute", "mute volume", "turn off sound"):
@@ -1725,6 +1836,49 @@ def _cmd_detect(
             return {"action": "take_screenshot", "screenshot_type": "screen",
                     "hud": "Screenshot…", "hud_color": "#0a84ff"}
 
+        # ── Brightness ────────────────────────────────────────────────────────
+        # Port of Python reference set_brightness handler.
+        # Uses osascript key codes: 144=brightness up, 145=brightness down.
+        # Handled directly in sidecar (no Rust command needed).
+        if lower in ("brightness up", "increase brightness", "brighter"):
+            try:
+                _subprocess.Popen(
+                    ["osascript", "-e",
+                     'tell application "System Events" to key code 144']
+                )
+            except Exception:
+                pass
+            return {"action": "noop", "hud": "Brightness up", "hud_color": "#30d158"}
+        if lower in ("brightness down", "decrease brightness", "dimmer", "dim screen"):
+            try:
+                _subprocess.Popen(
+                    ["osascript", "-e",
+                     'tell application "System Events" to key code 145']
+                )
+            except Exception:
+                pass
+            return {"action": "noop", "hud": "Brightness down", "hud_color": "#30d158"}
+        _bright_m = re.match(r"^set brightness to (\d+)$", lower)
+        if _bright_m:
+            _bval = min(100, max(0, int(_bright_m.group(1))))
+            _steps = max(0, min(16, round(_bval / 100 * 16)))
+            _bscript = (
+                'tell application "System Events"\n'
+                '    repeat 16 times\n'
+                '        key code 145\n'
+                '    end repeat\n'
+                f'    repeat {_steps} times\n'
+                '        key code 144\n'
+                '    end repeat\n'
+                'end tell'
+            )
+            try:
+                _subprocess.Popen(["osascript", "-e", _bscript])
+            except Exception:
+                pass
+            return {"action": "noop", "hud": f"Brightness: {_bval}%",
+                    "hud_color": "#30d158"}
+
         # ── Weather ───────────────────────────────────────────────────────────
         if any(p in lower for p in ("check weather", "whats the weather",
                                      "weather today", "what is the weather")):
@@ -1745,14 +1899,25 @@ def _cmd_detect(
                     "hud": "Opening Calendar…", "hud_color": "#30d158"}
 
         # ── Reminders ─────────────────────────────────────────────────────────
+        # Port of Python reference reminder trigger — matches same set of phrases.
         _remind_m = re.match(
-            r"^(?:remind me (?:to )?|set (?:a )?reminder (?:to )?|add (?:a )?reminder (?:to )?)(.+)",
+            r"^(?:"
+            r"remind me (?:to )?"
+            r"|set (?:a )?reminder (?:to )?"
+            r"|create (?:a )?(?:task|reminder) (?:to )?"
+            r"|add (?:a )?(?:task|reminder) (?:to )?"
+            r")(.+)",
             lower,
         )
         if _remind_m:
             # Use raw Whisper text for proper capitalisation
             _raw_remind = re.match(
-                r"(?i)^(?:remind me (?:to )?|set (?:a )?reminder (?:to )?|add (?:a )?reminder (?:to )?)(.+)",
+                r"(?i)^(?:"
+                r"remind me (?:to )?"
+                r"|set (?:a )?reminder (?:to )?"
+                r"|create (?:a )?(?:task|reminder) (?:to )?"
+                r"|add (?:a )?(?:task|reminder) (?:to )?"
+                r")(.+)",
                 raw_text.strip(),
             )
             _task = (_raw_remind.group(1).strip().rstrip(".") if _raw_remind
