@@ -187,11 +187,20 @@ export function useGlobalHotkey() {
         .catch(() => {});
     };
 
-    const hudEmit = async (payload: HudPayload) => {
-      try {
-        const { emit } = await import("@tauri-apps/api/event");
-        emit("hud-state", payload);
-      } catch { /* browser preview */ }
+    // Pre-cache the Tauri emit function so hudEmit is synchronous on the hot
+    // path.  Before the module resolves (first render), calls fall back to an
+    // async import; after that every call is a direct function call with no
+    // async overhead — critical for keeping key-press → HUD latency minimal.
+    let cachedEmit: ((event: string, payload: unknown) => void) | null = null;
+
+    const hudEmit = (payload: HudPayload): void => {
+      if (cachedEmit) {
+        cachedEmit("hud-state", payload);
+        return;
+      }
+      import("@tauri-apps/api/event")
+        .then(({ emit }) => { cachedEmit = emit; emit("hud-state", payload); })
+        .catch(() => {});
     };
 
     const invokeWithTimeout = async <T>(
@@ -261,10 +270,14 @@ export function useGlobalHotkey() {
       stateRef.current === "starting" || stateRef.current === "recording";
 
     const setError = (msg: string) => {
+      const errCycle = cycleIdRef.current;
       stateRef.current = "error";
       hudEmit({ state: "error", subtext: msg });
       setTimeout(() => {
-        if (stateRef.current === "error") stateRef.current = "idle";
+        // If a new recording cycle started during the error window, leave the
+        // HUD alone — the new cycle already set its own state.
+        if (cycleIdRef.current !== errCycle) return;
+        stateRef.current = "idle";
         hudEmit({ state: "idle" });
       }, 4000);
     };
@@ -327,7 +340,8 @@ export function useGlobalHotkey() {
         clearRecordingTimeout();
         stateRef.current = "idle";
         hudEmit({ state: "tap_ignored" });
-        setTimeout(() => hudEmit({ state: "idle" }), 2500);
+        const tapCycle1 = cycleIdRef.current;
+        setTimeout(() => { if (cycleIdRef.current === tapCycle1) hudEmit({ state: "idle" }); }, 2500);
         try {
           await invokeWithTimeout("sidecar_cancel_recording", undefined, 5_000);
         } catch (e) {
@@ -596,17 +610,18 @@ export function useGlobalHotkey() {
             const errMsg = String(ce);
             stateRef.current = "idle";
             hudEmit({ state: "error", subtext: errMsg });
-            setTimeout(() => hudEmit({ state: "idle" }), 4500);
+            const cmdErrCycle = cycleIdRef.current;
+            setTimeout(() => { if (cycleIdRef.current === cmdErrCycle) hudEmit({ state: "idle" }); }, 4500);
             return;
           }
 
           // HUD notification for command (fire-and-forget)
           if (result.hud) {
-            hudEmit({ state: "command", subtext: result.hud })
-              .then(() => setTimeout(() => hudEmit({ state: "idle" }), 1800))
-              .catch(() => {});
+            const cmdCycle = cycleIdRef.current;
+            hudEmit({ state: "command", subtext: result.hud });
+            setTimeout(() => { if (cycleIdRef.current === cmdCycle) hudEmit({ state: "idle" }); }, 1800);
           } else {
-            hudEmit({ state: "idle" }).catch(() => {});
+            hudEmit({ state: "idle" });
           }
 
           stateRef.current = "idle";
@@ -622,7 +637,8 @@ export function useGlobalHotkey() {
             console.log("[dictation] empty transcript — skipping paste");
             stateRef.current = "idle";
             hudEmit({ state: "error", subtext: "Empty transcription" });
-            setTimeout(() => hudEmit({ state: "idle" }), 3000);
+            const emptyCycle = cycleIdRef.current;
+            setTimeout(() => { if (cycleIdRef.current === emptyCycle) hudEmit({ state: "idle" }); }, 3000);
             return;
           }
 
@@ -633,9 +649,9 @@ export function useGlobalHotkey() {
             custom = await runCustomCommand(trimmed);
             if (custom.matched && !custom.pasteText) {
               stateRef.current = "idle";
-              hudEmit({ state: "inserted", subtext: custom.subtext ?? trimmed.slice(0, 55), status: custom.status ?? "custom_command" })
-                .then(() => setTimeout(() => hudEmit({ state: "idle" }), 1200))
-                .catch(() => {});
+              const customCycle = cycleIdRef.current;
+              hudEmit({ state: "inserted", subtext: custom.subtext ?? trimmed.slice(0, 55), status: custom.status ?? "custom_command" });
+              setTimeout(() => { if (cycleIdRef.current === customCycle) hudEmit({ state: "idle" }); }, 1200);
               return;
             }
           }
@@ -683,20 +699,20 @@ export function useGlobalHotkey() {
           const profile = result.profile ?? s.writing_profile ?? "General";
 
           // HUD "inserted" state — fire-and-forget
+          const insertCycle = cycleIdRef.current;
           hudEmit({
             state:   "inserted",
             subtext: textToPaste.slice(0, 55),
             status:  custom.status ?? pasteStatus,
             profile: s.show_active_profile ? profile : undefined,
-          }).then(() => {
-            setTimeout(() => hudEmit({ state: "idle" }), 1500);
-          }).catch(() => {});
+          });
+          setTimeout(() => { if (cycleIdRef.current === insertCycle) hudEmit({ state: "idle" }); }, 1500);
 
           // HUD skipped/cleanup state — fire-and-forget AFTER insert
           // This replaces the blocking 1.5s setTimeout that was blocking paste.
           if (result.skipped_cleanup && result.skip_reason) {
             setTimeout(() => {
-              hudEmit({ state: "skipped", subtext: result.skip_reason }).catch(() => {});
+              hudEmit({ state: "skipped", subtext: result.skip_reason });
             }, 300);
           }
 
@@ -780,7 +796,8 @@ export function useGlobalHotkey() {
           const errMsg = result.error ?? "Transcription failed";
           console.error("[sidecar] transcription failed:", errMsg);
           hudEmit({ state: "error", subtext: errMsg });
-          setTimeout(() => hudEmit({ state: "idle" }), 4000);
+          const failCycle = cycleIdRef.current;
+          setTimeout(() => { if (cycleIdRef.current === failCycle) hudEmit({ state: "idle" }); }, 4000);
         }
       } catch (e) {
         // Guard before showing error: don't clobber a new cycle's HUD
@@ -790,7 +807,8 @@ export function useGlobalHotkey() {
         }
         console.error("[sidecar] transcribe error:", e);
         hudEmit({ state: "error", subtext: String(e) });
-        setTimeout(() => hudEmit({ state: "idle" }), 4000);
+        const excCycle = cycleIdRef.current;
+        setTimeout(() => { if (cycleIdRef.current === excCycle) hudEmit({ state: "idle" }); }, 4000);
       }
 
       stateRef.current = "idle";
@@ -818,7 +836,8 @@ export function useGlobalHotkey() {
         // Can't cancel mid-start safely — mark pending, startRecording will cancel
         pendingStopRef.current = true;
         hudEmit({ state: "tap_ignored" });
-        setTimeout(() => hudEmit({ state: "idle" }), 2500);
+        const tapStartCycle = cycleIdRef.current;
+        setTimeout(() => { if (cycleIdRef.current === tapStartCycle) hudEmit({ state: "idle" }); }, 2500);
         return;
       }
 
@@ -826,7 +845,8 @@ export function useGlobalHotkey() {
       playSound("cancel");
       stateRef.current = "idle";
       hudEmit({ state: "tap_ignored" });
-      setTimeout(() => hudEmit({ state: "idle" }), 2500);
+      const tapRecCycle = cycleIdRef.current;
+      setTimeout(() => { if (cycleIdRef.current === tapRecCycle) hudEmit({ state: "idle" }); }, 2500);
       try {
         await invokeWithTimeout("sidecar_cancel_recording", undefined, 5_000);
         console.log("[sidecar] cancel_recording ✓");
@@ -870,7 +890,8 @@ export function useGlobalHotkey() {
 
     const unlisteners: Array<() => void> = [];
 
-    import("@tauri-apps/api/event").then(({ listen }) => {
+    import("@tauri-apps/api/event").then(({ listen, emit }) => {
+      cachedEmit = emit; // warm the cache before any keypress arrives
 
       // Right Option DOWN
       listen("hotkey-ropt-down", () => {
