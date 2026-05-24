@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, memo } from "react";
 import { Mic, Check, Zap, AlertCircle, Loader2, Sparkles, AlertTriangle } from "lucide-react";
 import quillAppIcon from "./assets/quill_app_icon.png";
 
@@ -29,40 +29,117 @@ export interface HudPayload {
 const WAVE_BARS = 22;
 const WAVEFORM_HEIGHTS = [4, 6, 8, 11, 14, 17, 20, 22, 22, 20, 17, 14, 10, 7, 5, 4, 6, 9, 13, 10, 7, 4];
 
+// Per-bar CSS animation periods (seconds) — slight variation makes bars feel
+// independent rather than all pulsing in lock-step.
+const BAR_PERIODS = Array.from(
+  { length: WAVE_BARS },
+  (_, i) => (0.18 + (i % 7) * 0.018).toFixed(3),
+);
+
+// WaveformBars uses requestAnimationFrame + direct DOM writes so bar heights
+// update at ~60 fps without triggering React re-renders.
+//
 // audioLevel: 0.0–1.0 (matches stable Python scale = min(1.0, rms * 18 + 0.15)).
-// Bar heights are scaled by audioLevel so bars grow taller when the mic is louder.
-// The CSS hud-wave animation (scaleY 0.25→1.0) provides organic motion on top.
-// Default 0.15 = minimum visible level (matches Python's +0.15 floor).
-function WaveformBars({ color = "#ff453a", audioLevel = 0.15 }: { color?: string; audioLevel?: number }) {
+//   Polled every 30 ms from outside; synced to levelRef inside.
+//   Attack/decay smoothing is applied in the rAF loop so visual transitions
+//   are fluid even between poll frames.
+//
+// Per-bar "energy" values drift independently (randomised each few frames) so
+// adjacent bars have different heights — like a real spectrum analyser —
+// instead of all scaling uniformly together.
+const WaveformBars = memo(function WaveformBars({
+  color = "#ff453a",
+  audioLevel = 0.15,
+}: {
+  color?: string;
+  audioLevel?: number;
+}) {
+  const barsRef    = useRef<(HTMLDivElement | null)[]>([]);
+  const levelRef   = useRef<number>(audioLevel);
+  const displayRef = useRef<number>(audioLevel); // smoothed display level
+  // Per-bar energy multipliers (0.6–1.4); drift toward new random targets.
+  const energyRef  = useRef<number[]>(
+    Array.from({ length: WAVE_BARS }, () => 0.85 + Math.random() * 0.3),
+  );
+  const rafRef = useRef<number | null>(null);
+
+  // Sync incoming prop to ref — no re-render needed.
+  useEffect(() => {
+    levelRef.current = audioLevel;
+  });
+
+  // rAF rendering loop — runs once on mount, never re-creates.
+  useEffect(() => {
+    let tick = 0;
+    const energy = energyRef.current;
+
+    const frame = () => {
+      // ── Attack/decay smoothing ─────────────────────────────────────────────
+      // Attack fast (~50ms to 95%) so bars jump up with your voice.
+      // Decay slower (~200ms to 95%) so they fall gracefully.
+      const target = levelRef.current;
+      const prev   = displayRef.current;
+      displayRef.current = target > prev
+        ? prev + (target - prev) * 0.70   // ~3 frames at 60fps
+        : prev + (target - prev) * 0.22;  // ~12 frames at 60fps
+
+      const level = displayRef.current;
+
+      // ── Per-bar energy drift ───────────────────────────────────────────────
+      // Every 3 frames, nudge ~3 random bars toward a new target.
+      // Drift range scales with level so bars spread more when speaking loudly.
+      if (tick % 3 === 0) {
+        const spread = 0.25 + level * 0.45; // 0.25 at silence → 0.70 at full
+        for (let j = 0; j < 3; j++) {
+          const i      = Math.floor(Math.random() * WAVE_BARS);
+          const target = 1.0 + (Math.random() * 2 - 1) * spread;
+          energy[i]   += (Math.max(0.35, Math.min(1.65, target)) - energy[i]) * 0.4;
+        }
+      }
+
+      // ── Write bar heights directly to DOM ─────────────────────────────────
+      const bars = barsRef.current;
+      for (let i = 0; i < WAVE_BARS; i++) {
+        const bar = bars[i];
+        if (!bar) continue;
+        const h = Math.max(2, Math.round(WAVEFORM_HEIGHTS[i] * level * energy[i]));
+        bar.style.height = `${h}px`;
+      }
+
+      tick++;
+      rafRef.current = requestAnimationFrame(frame);
+    };
+
+    rafRef.current = requestAnimationFrame(frame);
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
+  }, []); // intentionally empty — loop runs for component lifetime
+
   return (
     <div
       className="flex items-center flex-shrink-0"
       style={{ gap: 1, height: 24, width: 65 }}
     >
-      {Array.from({ length: WAVE_BARS }, (_, i) => {
-        const baseH = WAVEFORM_HEIGHTS[i % WAVEFORM_HEIGHTS.length];
-        // Scale height by audio level; floor at 2px so bars are always visible.
-        const h = Math.max(2, Math.round(baseH * audioLevel));
-
-        return (
-          <div
-            key={i}
-            style={{
-              width: 2,
-              height: h,
-              background: color,
-              opacity: 0.92,
-              borderRadius: 1,
-              transformOrigin: "center center",
-              animation: "hud-wave 0.38s ease-in-out infinite",
-              animationDelay: `-${((i * 0.031) % 0.38).toFixed(3)}s`,
-            }}
-          />
-        );
-      })}
+      {Array.from({ length: WAVE_BARS }, (_, i) => (
+        <div
+          key={i}
+          ref={el => { barsRef.current[i] = el; }}
+          style={{
+            width:           2,
+            height:          Math.max(2, Math.round(WAVEFORM_HEIGHTS[i] * 0.15)),
+            background:      color,
+            opacity:         0.9,
+            borderRadius:    1,
+            transformOrigin: "center center",
+            animation:       `hud-wave ${BAR_PERIODS[i]}s ease-in-out infinite`,
+            animationDelay:  `-${((i * 0.023) % parseFloat(BAR_PERIODS[i])).toFixed(3)}s`,
+          }}
+        />
+      ))}
     </div>
   );
-}
+});
 
 function Spinner() {
   return (
@@ -348,17 +425,14 @@ export default function HudApp() {
         const status = JSON.parse(raw) as {
           ok: boolean;
           recording_rms?: number | null;
-          voice_active?: boolean;
         };
         if (status.ok) {
-          const rms = status.recording_rms ?? 0;
-          const voiceActive = status.voice_active ?? false;
-          // voice_active=true  → full Python formula: bars grow with speech volume
-          // voice_active=false → subtle low-level movement; fan/AC noise stays quiet
-          const scale = voiceActive
-            ? Math.min(1.0, rms * 18 + 0.15)
-            : Math.min(0.22, rms * 3 + 0.10);
-          setAudioLevel(scale);
+          // Python formula: min(1.0, rms * 18 + 0.15).
+          // No voice_active gate — bars always reflect actual mic level.
+          // Attack/decay smoothing is applied in WaveformBars' rAF loop.
+          const rms   = status.recording_rms ?? 0;
+          const level = Math.min(1.0, rms * 18 + 0.15);
+          setAudioLevel(level);
         }
       } catch {
         // Non-critical — sidecar may be momentarily busy; keep last value
@@ -367,7 +441,8 @@ export default function HudApp() {
       }
     };
 
-    audioTimer.current = setInterval(poll, 60);
+    // 30 ms matches stable Python _animate_wave interval (was 60 ms — halved).
+    audioTimer.current = setInterval(poll, 30);
     return () => {
       if (audioTimer.current) { clearInterval(audioTimer.current); audioTimer.current = null; }
     };
