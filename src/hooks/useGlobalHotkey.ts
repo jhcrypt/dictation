@@ -233,7 +233,9 @@ export function useGlobalHotkey() {
     };
 
     const normalizeTrigger = (text: string) =>
-      text.trim().toLowerCase().replace(/[.,!?]+$/g, "");
+      text.trim().toLowerCase()
+        .replace(/[.,!?]+$/g, "")    // trailing punctuation
+        .replace(/['’]/g, "");  // apostrophes: "let's" → "lets", "don't" → "dont"
 
     const runCustomCommand = async (spokenText: string): Promise<{
       matched: boolean;
@@ -249,7 +251,7 @@ export function useGlobalHotkey() {
         const lower = normalizeTrigger(spokenText);
         const match = cmds.find((cmd) => {
           const trig = normalizeTrigger(String(cmd?.trigger ?? ""));
-          return trig.length > 0 && trig.split(/\s+/).length >= 2 && trig === lower;
+          return trig.length > 0 && trig === lower;
         });
         if (!match) return { matched: false };
 
@@ -678,6 +680,15 @@ export function useGlobalHotkey() {
           let custom: { matched: boolean; pasteText?: string; status?: string; subtext?: string } = { matched: false };
           if (settingsRef.current.jarvis_enabled === true) {
             custom = await runCustomCommand(trimmed);
+            // Fallback: if the pipeline-corrected text didn't match, try the
+            // raw Whisper output before SymSpell / Ollama rewrote it.
+            // Example: Whisper says "let's play chess" → normalizeTrigger strips
+            // the apostrophe → "lets play chess" → matches stored trigger.
+            // The corrected text may have been further changed (capitalised,
+            // punctuated, etc.) so the raw text is a better match candidate.
+            if (!custom.matched && result.whisper_text) {
+              custom = await runCustomCommand(result.whisper_text.trim());
+            }
             if (custom.matched && !custom.pasteText) {
               stateRef.current = "idle";
               const customCycle = cycleIdRef.current;
