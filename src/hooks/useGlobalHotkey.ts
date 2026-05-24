@@ -346,15 +346,8 @@ export function useGlobalHotkey() {
       if (source === "wake") {
         const wakeStartMs = Date.now();
         let silenceSinceMs: number | null = null;
-        // IMPORTANT: silence countdown only begins after the user has spoken at
-        // least one voice_active=true frame.  Without this gate, the monitor
-        // would immediately start counting silence right after the grace period
-        // (if the user hasn't started speaking yet), fire a premature auto-stop,
-        // return to idle, and a stale wake frame would re-trigger a new recording
-        // — causing the next Option-key press to see "already recording".
-        let hasHeardVoice = false;
-        const graceMs   = (settingsRef.current.wake_dictation_grace_seconds   ?? 3.5)  * 1000;
-        const silenceMs = (settingsRef.current.wake_dictation_silence_seconds ?? 4.5)  * 1000;
+        const graceMs   = (settingsRef.current.wake_dictation_grace_seconds   ?? 3.5) * 1000;
+        const silenceMs = (settingsRef.current.wake_dictation_silence_seconds ?? 2.5) * 1000;
         const maxMs     = (settingsRef.current.wake_dictation_max_seconds     ?? 45.0) * 1000;
 
         clearWakeMonitor(); // defensive: clear any stale monitor
@@ -375,7 +368,8 @@ export function useGlobalHotkey() {
             return;
           }
 
-          // Grace period: user may still be forming their sentence
+          // Grace period: silence detection is completely disabled for the first
+          // graceMs so the opening words are never cut off.
           if (elapsed < graceMs) {
             silenceSinceMs = null;
             return;
@@ -398,12 +392,16 @@ export function useGlobalHotkey() {
 
             const voiceActive = status.voice_active ?? false;
 
-            if (!voiceActive) {
-              // No speech detected.
-              // Don't start the silence window until the user has spoken at
-              // least once — this prevents premature auto-stop when the user
-              // hasn't begun their sentence yet after the wake word.
-              if (!hasHeardVoice) return;
+            if (voiceActive) {
+              // Voice detected — reset the silence window
+              silenceSinceMs = null;
+            } else {
+              // Silent. The grace period above already guarantees we won't fire
+              // before the user has had time to begin speaking, so there is no
+              // need for a separate "has-ever-heard-voice" gate.  That gate made
+              // wake_dictation_silence_seconds completely ineffective whenever
+              // the VAD threshold wasn't crossed (quiet mic, noisy floor, etc.)
+              // causing recordings to always run to the 45-second max cap.
               if (silenceSinceMs === null) silenceSinceMs = Date.now();
               else if (Date.now() - silenceSinceMs >= silenceMs) {
                 console.log(
@@ -412,9 +410,6 @@ export function useGlobalHotkey() {
                 clearWakeMonitor();
                 stopAndTranscribe();
               }
-            } else {
-              hasHeardVoice = true;      // latch: once set, never cleared
-              silenceSinceMs = null;     // voice detected — reset silence window
             }
           } catch (e) {
             console.warn("[wake-monitor] get_status error (ignored):", e);

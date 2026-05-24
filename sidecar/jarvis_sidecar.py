@@ -1067,6 +1067,12 @@ def cmd_start_recording(_cmd: dict) -> dict:
 
     with _audio_lock:
         _audio_frames = []
+    # Reset VAD state so a stale high noise floor from a previous session
+    # (e.g. recorded in a noisy room) doesn't prevent voice detection in this one.
+    global _noise_floor, _voice_active, _live_audio_rms
+    _noise_floor    = 0.01
+    _voice_active   = False
+    _live_audio_rms = 0.0
     _recording = True
 
     settings    = load_settings()

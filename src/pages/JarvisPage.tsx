@@ -150,7 +150,7 @@ export default function JarvisPage() {
         <div className="flex items-center justify-between gap-4 py-2">
           <div>
             <div className="text-sm font-medium text-jarvis-text">Grace period</div>
-            <div className="text-xs text-jarvis-hint mt-0.5">Seconds to wait after wake word before recording starts</div>
+            <div className="text-xs text-jarvis-hint mt-0.5">Minimum recording time — silence detection is disabled until this elapses</div>
           </div>
           <NumericStepper
             value={settings.wake_dictation_grace_seconds}
@@ -162,7 +162,7 @@ export default function JarvisPage() {
         <div className="flex items-center justify-between gap-4 py-2">
           <div>
             <div className="text-sm font-medium text-jarvis-text">Silence cutoff</div>
-            <div className="text-xs text-jarvis-hint mt-0.5">Seconds of silence before recording auto-stops</div>
+            <div className="text-xs text-jarvis-hint mt-0.5">Seconds of quiet after the grace period before recording auto-stops</div>
           </div>
           <NumericStepper
             value={settings.wake_dictation_silence_seconds}

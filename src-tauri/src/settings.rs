@@ -104,7 +104,7 @@ fn default_ai_cleanup_mode() -> String { "auto".into() }
 fn default_correction_strength() -> String { "Standard".into() }
 fn default_writing_profile() -> String { "General".into() }
 fn default_wake_grace() -> f64 { 3.5 }
-fn default_wake_silence() -> f64 { 4.5 }
+fn default_wake_silence() -> f64 { 2.5 }
 fn default_wake_max() -> f64 { 45.0 }
 fn default_wake_rms() -> f64 { 0.025 }
 fn default_translate_off() -> String { "Off".into() }

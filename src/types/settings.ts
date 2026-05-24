@@ -76,7 +76,7 @@ export const DEFAULT_SETTINGS: Settings = {
   show_active_profile: true,
   wake_enabled: true,
   wake_dictation_grace_seconds: 3.5,
-  wake_dictation_silence_seconds: 4.5,
+  wake_dictation_silence_seconds: 2.5,
   wake_dictation_max_seconds: 45.0,
   wake_dictation_silence_rms: 0.025,
   translate_my_dictation: "Off",
