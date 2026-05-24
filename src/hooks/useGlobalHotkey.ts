@@ -494,6 +494,10 @@ export function useGlobalHotkey() {
           status?: string;
           skipped_cleanup?: boolean;
           skip_reason?: string;
+          // History enrichment
+          whisper_text?: string | null;
+          ollama_text?: string | null;
+          active_app?: string | null;
         }>("sidecar_transcribe_last", undefined, 120_000);
         console.log("[sidecar] transcribe_last ✓  ok=", result.ok,
                     "action=", result.action, "chars=", result.text?.length);
@@ -571,6 +575,8 @@ export function useGlobalHotkey() {
             if (act === "close_app" && result.app_name) {
               await inv("close_app", { appName: result.app_name, force: result.force ?? false });
             }
+            // Snippet state notifications — HUD only, no keyboard action
+            // act === "snippet_waiting_trigger" | "snippet_trigger_received" | "snippet_saved"
             // noop: just show HUD
           } catch (ce) {
             console.error("[cmd] dispatch error:", ce);
@@ -704,17 +710,33 @@ export function useGlobalHotkey() {
             emit("dictation-timing", timingPayload);
           } catch { /* non-critical */ }
 
+          // Resolve target app name for history (fire-and-forget, non-blocking)
+          // get_last_target_app returns "AppName (bundle.id)" — strip bundle suffix
+          const resolveApp = async (): Promise<string> => {
+            try {
+              const { invoke: inv2 } = await import("@tauri-apps/api/core");
+              const info = await inv2<string | null>("get_last_target_app");
+              if (info) return info.replace(/\s*\([^)]+\)\s*$/, "").trim();
+            } catch { /* ignore */ }
+            return result.active_app ?? "";
+          };
+
           // History save — fire-and-forget (not awaited)
-          invokeWithTimeout("save_history_entry", {
-            entry: {
-              timestamp:  new Date().toISOString(),
-              final_text: textToPaste,
-              status:     custom.status ?? pasteStatus,
-              profile,
-              source:     "tauri",
-              timing:     result.timing ?? null,
-            },
-          }, 5_000).catch(() => {});
+          resolveApp().then((appName) => {
+            invokeWithTimeout("save_history_entry", {
+              entry: {
+                timestamp:    new Date().toISOString(),
+                app:          appName,
+                final_text:   textToPaste,
+                status:       custom.status ?? pasteStatus,
+                profile,
+                source:       "tauri",
+                timing:       result.timing ?? null,
+                whisper_text: result.whisper_text ?? null,
+                ollama_text:  result.ollama_text  ?? null,
+              },
+            }, 5_000).catch(() => {});
+          }).catch(() => {});
 
         } else {
           // Guard before showing error: don't clobber a new cycle's HUD

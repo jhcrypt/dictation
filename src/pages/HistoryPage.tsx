@@ -7,6 +7,8 @@ interface HistoryEntry {
   final_text: string;
   status: string;
   profile: string;
+  whisper_text?: string | null;
+  ollama_text?: string | null;
 }
 
 
@@ -20,6 +22,54 @@ function fmtTime(iso: string): string {
   if (diff < 3600000)  return `${Math.floor(diff / 60000)}m ago`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
   return d.toLocaleDateString();
+}
+
+function HistoryRow({ entry }: { entry: HistoryEntry }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail = !!(entry.whisper_text || entry.ollama_text);
+
+  return (
+    <div className="bg-jarvis-surface border border-jarvis-border rounded-xl p-3">
+      <p className="text-sm text-jarvis-text leading-relaxed mb-2">{entry.final_text}</p>
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-xs text-jarvis-muted">{fmtTime(entry.timestamp)}</span>
+        {entry.app && <span className="text-xs text-jarvis-muted">{entry.app}</span>}
+        {entry.profile && <span className="text-xs text-jarvis-muted">{entry.profile}</span>}
+        <span className={`text-xs ${entry.status === "pasted" ? "text-jarvis-success" : "text-jarvis-muted"}`}>
+          {entry.status}
+        </span>
+        {hasDetail && (
+          <button
+            onClick={() => setExpanded(v => !v)}
+            className="ml-auto text-xs text-jarvis-accent hover:text-jarvis-text transition-colors"
+          >
+            {expanded ? "Hide detail ▲" : "Show detail ▼"}
+          </button>
+        )}
+      </div>
+
+      {expanded && hasDetail && (
+        <div className="mt-3 space-y-2 border-t border-jarvis-border pt-2">
+          {entry.whisper_text && entry.whisper_text !== entry.final_text && (
+            <div>
+              <p className="text-[11px] text-jarvis-muted mb-1 font-medium uppercase tracking-wide">Whisper raw</p>
+              <p className="text-xs text-jarvis-hint leading-relaxed font-mono bg-jarvis-sidebar px-2 py-1.5 rounded-lg">
+                {entry.whisper_text}
+              </p>
+            </div>
+          )}
+          {entry.ollama_text && (
+            <div>
+              <p className="text-[11px] text-jarvis-muted mb-1 font-medium uppercase tracking-wide">Ollama suggestion</p>
+              <p className="text-xs text-jarvis-hint leading-relaxed font-mono bg-jarvis-sidebar px-2 py-1.5 rounded-lg">
+                {entry.ollama_text}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function HistoryPage() {
@@ -81,17 +131,7 @@ export default function HistoryPage() {
       ) : (
         <div className="flex flex-col gap-2">
           {filtered.map((entry, i) => (
-            <div key={i} className="bg-jarvis-surface border border-jarvis-border rounded-xl p-3">
-              <p className="text-sm text-jarvis-text leading-relaxed mb-2">{entry.final_text}</p>
-              <div className="flex gap-3 flex-wrap">
-                <span className="text-xs text-jarvis-muted">{fmtTime(entry.timestamp)}</span>
-                <span className="text-xs text-jarvis-muted">{entry.app}</span>
-                <span className="text-xs text-jarvis-muted">{entry.profile}</span>
-                <span className={`text-xs ${entry.status === "pasted" ? "text-jarvis-success" : "text-jarvis-muted"}`}>
-                  {entry.status}
-                </span>
-              </div>
-            </div>
+            <HistoryRow key={i} entry={entry} />
           ))}
         </div>
       )}

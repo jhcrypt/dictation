@@ -206,6 +206,8 @@ pub fn run() {
             trigger_shottr,
             close_app,
             restart_engine,
+            get_launch_at_login,
+            set_launch_at_login,
             play_recording_sound,
             pause_media,
             resume_media,

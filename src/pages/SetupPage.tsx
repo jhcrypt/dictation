@@ -10,13 +10,35 @@ interface MicTestResult { ok: boolean; device?: number | null; sample_rate?: num
 
 export default function SetupPage() {
   const { settings, updateSetting, saveSettings, saved } = useSettings();
-  const [micList,    setMicList]    = useState<MicListResult | null>(null);
-  const [micTest,    setMicTest]    = useState<MicTestResult | null>(null);
-  const [micBusy,    setMicBusy]    = useState(false);
-  const [axGranted,  setAxGranted]  = useState<boolean | null>(null);
-  const [axChecking, setAxChecking] = useState(false);
+  const [micList,       setMicList]       = useState<MicListResult | null>(null);
+  const [micTest,       setMicTest]       = useState<MicTestResult | null>(null);
+  const [micBusy,       setMicBusy]       = useState(false);
+  const [axGranted,     setAxGranted]     = useState<boolean | null>(null);
+  const [axChecking,    setAxChecking]    = useState(false);
+  const [launchAtLogin, setLaunchAtLogin] = useState<boolean>(false);
+  const [lalBusy,       setLalBusy]       = useState(false);
 
-  useEffect(() => { checkAx(); }, []);
+  useEffect(() => { checkAx(); loadLaunchAtLogin(); }, []);
+
+  async function loadLaunchAtLogin() {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const v = await invoke<boolean>("get_launch_at_login");
+      setLaunchAtLogin(v);
+    } catch { /* preview */ }
+  }
+
+  async function toggleLaunchAtLogin(enabled: boolean) {
+    setLalBusy(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("set_launch_at_login", { enabled });
+      setLaunchAtLogin(enabled);
+    } catch (e) {
+      console.error("[setup] set_launch_at_login failed:", e);
+    }
+    setLalBusy(false);
+  }
 
   async function checkAx() {
     setAxChecking(true);
@@ -158,6 +180,15 @@ export default function SetupPage() {
           onChange={(v) => updateSetting("wake_enabled", v)}
           label="Hey Jarvis Wake Word"
           description="Say 'Hey Jarvis' to start recording hands-free"
+        />
+      </Card>
+
+      <Card title="Launch at Login">
+        <Toggle
+          checked={launchAtLogin}
+          onChange={toggleLaunchAtLogin}
+          label="Start at Login"
+          description={lalBusy ? "Updating…" : "Automatically launch Quill when you log in to macOS"}
         />
       </Card>
 

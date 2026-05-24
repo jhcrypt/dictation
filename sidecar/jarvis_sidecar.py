@@ -708,6 +708,85 @@ def strip_ollama_preamble(text: str) -> str:
     return text
 
 
+# ── Whisper deduplication ─────────────────────────────────────────────────────
+
+def _deduplicate_whisper(text: str) -> str:
+    """Remove Whisper hallucination: exact duplicate adjacent sentences/phrases.
+
+    Whisper sometimes repeats the same sentence or phrase consecutively when
+    audio is quiet or the model is uncertain.  This function removes those
+    exact duplicates at sentence and word-chunk level.
+    """
+    if not text:
+        return text
+    # Sentence-level: split on ". " / "! " / "? " boundaries
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    deduped: list[str] = []
+    for p in parts:
+        norm = p.strip().lower().rstrip('.!?')
+        prev = deduped[-1].strip().lower().rstrip('.!?') if deduped else ""
+        if not deduped or norm != prev:
+            deduped.append(p)
+    result = ' '.join(deduped)
+    # Word-chunk level: catch "hello world hello world" (no punctuation boundary)
+    words = result.split()
+    n = len(words)
+    for half in range(n // 2, 3, -1):
+        first_h  = ' '.join(words[:half]).lower().rstrip(' .,!?')
+        second_h = ' '.join(words[half:half * 2]).lower().rstrip(' .,!?')
+        if first_h == second_h:
+            result = ' '.join(words[:half] + words[half * 2:])
+            break
+    return result
+
+
+# ── Snippet helpers ───────────────────────────────────────────────────────────
+
+def _save_snippet(trigger: str, content: str) -> None:
+    """Persist a new snippet to ~/.dictation_snippets.json."""
+    try:
+        snippets: dict = {}
+        try:
+            with open(SNIPPETS_FILE) as f:
+                snippets = json.load(f)
+        except Exception:
+            pass
+        snippets[trigger.lower().strip()] = content
+        with open(SNIPPETS_FILE, "w") as f:
+            json.dump(snippets, f, indent=2)
+        _log(f"Snippet saved: {trigger!r} → {content[:40]!r}")
+    except Exception as e:
+        _log(f"save_snippet error: {e}")
+
+
+# ── Contacts email lookup ─────────────────────────────────────────────────────
+
+def _lookup_contact_email(name: str) -> "str | None":
+    """Return the email address for a contact by name/alias from contacts file."""
+    name_lower = name.lower().strip()
+    try:
+        path = os.path.expanduser("~/.dictation_contacts.json")
+        with open(path) as f:
+            contacts = json.load(f)
+        for c in contacts:
+            if not isinstance(c, dict):
+                continue
+            cname = c.get("name", "").lower()
+            email = c.get("email", "")
+            if not email:
+                continue
+            if name_lower in cname or cname.startswith(name_lower):
+                return email
+            aliases = c.get("aliases", "")
+            if aliases:
+                for alias in str(aliases).split(","):
+                    if alias.strip().lower() == name_lower:
+                        return email
+    except Exception:
+        pass
+    return None
+
+
 # ── Audio state ───────────────────────────────────────────────────────────────
 _recording     = False
 _audio_frames: list = []
@@ -1090,6 +1169,9 @@ def cmd_get_status(_cmd: dict) -> dict:
 _cmd_last_text:     str       = ""
 _cmd_history:       list[str] = []
 _cmd_history_index: int       = -1
+_cmd_redo_stack:    list[str] = []      # populated by scratch; cleared by new dictation
+_snippet_state:     str       = "idle"  # "idle" | "waiting_trigger" | "waiting_content"
+_snippet_trigger:   str       = ""
 
 PUNCT_COMMANDS: dict[str, str] = {
     "period": ".",   "full stop": ".",
@@ -1118,16 +1200,29 @@ FORMAT_COMMANDS: list[tuple] = [
 ]
 
 def _cmd_add_to_history(text: str) -> None:
-    global _cmd_history, _cmd_history_index
+    global _cmd_history, _cmd_history_index, _cmd_redo_stack
     if _cmd_history_index < len(_cmd_history) - 1:
         _cmd_history = _cmd_history[:_cmd_history_index + 1]
     _cmd_history.append(text)
     _cmd_history_index = len(_cmd_history) - 1
+    _cmd_redo_stack.clear()  # new dictation invalidates the redo stack
     if len(_cmd_history) > 50:
         _cmd_history = _cmd_history[-50:]
         _cmd_history_index = 49
 
-def _cmd_detect(lower: str, raw_text: str, jarvis_enabled: bool = True) -> "dict | None":
+# Chat apps where Shift+Enter inserts a newline rather than sending the message.
+_CHAT_APPS: frozenset = frozenset({
+    "slack", "messages", "discord", "teams", "whatsapp", "telegram",
+    "signal", "zoom", "imessage", "texts", "mattermost",
+})
+
+
+def _cmd_detect(
+    lower: str,
+    raw_text: str,
+    jarvis_enabled: bool = True,
+    active_app: str = "",
+) -> "dict | None":
     """Detect a dictation command from the normalized Whisper output.
 
     Called on the raw (pre-pipeline) transcript so command routing is
@@ -1137,9 +1232,12 @@ def _cmd_detect(lower: str, raw_text: str, jarvis_enabled: bool = True) -> "dict
     volume, reminders, etc.) but never gates voice-editing commands (scratch,
     formatting, navigation) — those always run.
 
+    active_app  (optional) app name string used for context-sensitive routing
+                (e.g. Shift+Enter in chat apps).
+
     Returns an action dict consumed by useGlobalHotkey.ts, or None.
     """
-    global _cmd_last_text, _cmd_history, _cmd_history_index
+    global _cmd_last_text, _cmd_history, _cmd_history_index, _cmd_redo_stack, _snippet_state, _snippet_trigger
 
     # ── Scratch / undo ────────────────────────────────────────────────────────
     sc = 0
@@ -1160,16 +1258,33 @@ def _cmd_detect(lower: str, raw_text: str, jarvis_enabled: bool = True) -> "dict
 
     if sc > 0:
         bc = 0
+        scratched_texts: list[str] = []
         for i in range(sc):
             if 0 <= _cmd_history_index < len(_cmd_history):
+                scratched_texts.append(_cmd_history[_cmd_history_index])
                 bc += len(_cmd_history[_cmd_history_index]) + 1  # +1 for trailing space paste adds
                 _cmd_history.pop(_cmd_history_index)
                 _cmd_history_index = len(_cmd_history) - 1
             elif i == 0 and _cmd_last_text:
+                scratched_texts.append(_cmd_last_text)
                 bc += len(_cmd_last_text) + 1
         _cmd_last_text = _cmd_history[_cmd_history_index] if (0 <= _cmd_history_index < len(_cmd_history)) else ""
+        # Push scratched items to redo stack (most recent on top)
+        for t in reversed(scratched_texts):
+            if t:
+                _cmd_redo_stack.append(t)
         msg = (f"Scratched {sc}!" if sc > 1 else "Scratched!") if bc > 0 else "Nothing to scratch"
         return {"action": "scratch", "backspace_count": bc, "hud": msg, "hud_color": "#ff9f0a"}
+
+    # ── Redo ──────────────────────────────────────────────────────────────────
+    if lower in ("redo", "redo that", "redo dictation", "redo last"):
+        if _cmd_redo_stack:
+            redo_text = _cmd_redo_stack.pop()
+            _cmd_last_text = redo_text
+            _cmd_add_to_history(redo_text)
+            return {"action": "paste_text", "text": redo_text,
+                    "hud": "Redone!", "hud_color": "#30d158"}
+        return {"action": "noop", "hud": "Nothing to redo", "hud_color": "#ff9f0a"}
 
     # ── Punctuation ───────────────────────────────────────────────────────────
     if lower in PUNCT_COMMANDS:
@@ -1178,8 +1293,11 @@ def _cmd_detect(lower: str, raw_text: str, jarvis_enabled: bool = True) -> "dict
 
     # ── Navigation / whitespace keys ──────────────────────────────────────────
     if lower in ("new line", "newline", "next line"):
-        return {"action": "keypress", "key": "return", "with_shift": False, "repeat": 1,
-                "hud": "Next line", "hud_color": "#0a84ff"}
+        # Chat apps: Shift+Enter inserts a line break without sending the message
+        _app_lower = active_app.lower() if active_app else ""
+        _use_shift = any(ca in _app_lower for ca in _CHAT_APPS)
+        return {"action": "keypress", "key": "return", "with_shift": _use_shift, "repeat": 1,
+                "hud": "New line", "hud_color": "#0a84ff"}
     if lower in ("new paragraph", "next paragraph"):
         return {"action": "keypress", "key": "return", "with_shift": False, "repeat": 2,
                 "hud": "Next paragraph", "hud_color": "#0a84ff"}
@@ -1383,11 +1501,43 @@ def _cmd_detect(lower: str, raw_text: str, jarvis_enabled: bool = True) -> "dict
             return {"action": "close_app", "app_name": _aname, "force": True,
                     "hud": f"Force-quitting {_aname}…", "hud_color": "#ff3b30"}
 
+        # ── Translate on-demand ───────────────────────────────────────────────
+        if any(p in lower for p in ("translate that", "translate selected", "translate last")):
+            return {"action": "translate_last", "language": None,
+                    "hud": "Translating…", "hud_color": "#0a84ff"}
+        _translate_m = re.match(r"^translate (?:to |into )?(.+)$", lower)
+        if _translate_m:
+            _lang = _translate_m.group(1).strip()
+            if _lang not in ("that", "last", "selected", "text"):
+                return {"action": "translate_last", "language": _lang,
+                        "hud": f"Translating to {_lang.title()}…", "hud_color": "#0a84ff"}
+
+        # ── Email contact ─────────────────────────────────────────────────────
+        _email_m = re.match(
+            r"^(?:email|send email to|compose email to|email to|draft email to|send email)\s+(.+)$",
+            lower,
+        )
+        if _email_m:
+            _ename = _email_m.group(1).strip().rstrip(".")
+            _contact_email = _lookup_contact_email(_ename)
+            if _contact_email:
+                _mailto = f"mailto:{_contact_email}"
+            else:
+                _mailto = f"mailto:{_ename.replace(' ', '%20')}"
+            return {"action": "open_url", "url": _mailto,
+                    "hud": f"Emailing {_ename.title()}…", "hud_color": "#0a84ff"}
+
+        # ── Create snippet ────────────────────────────────────────────────────
+        if lower in ("create snippet", "new snippet", "add snippet", "make snippet"):
+            _snippet_state = "waiting_trigger"
+            return {"action": "snippet_waiting_trigger",
+                    "hud": "Say the trigger phrase…", "hud_color": "#0a84ff"}
+
     return None
 
 
 def cmd_transcribe_last(cmd: dict) -> dict:
-    global _last_result
+    global _last_result, _cmd_last_text, _snippet_state, _snippet_trigger
     t_total_start = time.time()
 
     settings    = load_settings()
@@ -1452,6 +1602,64 @@ def cmd_transcribe_last(cmd: dict) -> dict:
         t_whisper = int((time.time() - t_whisper_start) * 1000)
         _log(f"Whisper: {raw_text!r} ({t_whisper}ms)")
 
+        # Remove Whisper repetition hallucinations
+        raw_text = _deduplicate_whisper(raw_text)
+
+        # ── Snippet capture state machine ─────────────────────────────────────
+        # Intercept dictation BEFORE command detection when we are mid-snippet
+        # so that the trigger phrase or content is captured verbatim.
+        if _snippet_state == "waiting_trigger":
+            _snippet_trigger = raw_text.strip()
+            _snippet_state = "waiting_content"
+            t_total = int((time.time() - t_total_start) * 1000)
+            return {
+                "ok":              True,
+                "text":            None,
+                "action":          "snippet_trigger_received",
+                "backspace_count": 0,
+                "key":             None,
+                "with_shift":      False,
+                "repeat":          1,
+                "modifier":        None,
+                "nav_target":      None,
+                "app_name":        None,
+                "url":             None,
+                "direction":       None,
+                "level":           None,
+                "screenshot_type": None,
+                "force":           False,
+                "hud":     f"Trigger: \"{_snippet_trigger[:30]}\" — now say the content",
+                "hud_color": "#0a84ff",
+                "timing":  {"whisper": t_whisper, "ollama": 0, "total": t_total},
+            }
+        elif _snippet_state == "waiting_content":
+            _content     = raw_text.strip()
+            _trigger_key = _snippet_trigger.lower().strip()
+            _save_snippet(_trigger_key, _content)
+            _snippet_state   = "idle"
+            _snippet_trigger = ""
+            t_total = int((time.time() - t_total_start) * 1000)
+            return {
+                "ok":              True,
+                "text":            None,
+                "action":          "snippet_saved",
+                "backspace_count": 0,
+                "key":             None,
+                "with_shift":      False,
+                "repeat":          1,
+                "modifier":        None,
+                "nav_target":      None,
+                "app_name":        None,
+                "url":             None,
+                "direction":       None,
+                "level":           None,
+                "screenshot_type": None,
+                "force":           False,
+                "hud":     f"Snippet \"{_trigger_key[:25]}\" saved!",
+                "hud_color": "#30d158",
+                "timing":  {"whisper": t_whisper, "ollama": 0, "total": t_total},
+            }
+
         # ── Command detection (before Ollama / corrections) ───────────────────
         # Normalize: lowercase, strip non-alpha/digit/space — same as Python app.
         lower_cmd = re.sub(r"[^a-z0-9 ]", "", raw_text.lower()).strip()
@@ -1459,9 +1667,85 @@ def cmd_transcribe_last(cmd: dict) -> dict:
 
         jarvis_on = settings.get("jarvis_enabled", True)
         if not safe_mode_on and lower_cmd:
-            cmd_result = _cmd_detect(lower_cmd, raw_text, jarvis_enabled=jarvis_on)
+            cmd_result = _cmd_detect(lower_cmd, raw_text, jarvis_enabled=jarvis_on, active_app=active_app)
             if cmd_result is not None:
                 _log(f"Command detected: action={cmd_result['action']} lower={lower_cmd!r}")
+
+                # ── translate_last: run Ollama inline before returning ─────────
+                if cmd_result["action"] == "translate_last":
+                    _src = _cmd_last_text
+                    if not _src:
+                        t_total = int((time.time() - t_total_start) * 1000)
+                        return {
+                            "ok": True, "text": None, "action": "noop",
+                            "backspace_count": 0, "key": None, "with_shift": False,
+                            "repeat": 1, "modifier": None, "nav_target": None,
+                            "app_name": None, "url": None, "direction": None,
+                            "level": None, "screenshot_type": None, "force": False,
+                            "hud": "Nothing to translate", "hud_color": "#ff9f0a",
+                            "timing": {"whisper": t_whisper, "ollama": 0, "total": t_total},
+                        }
+                    _lang = (cmd_result.get("language")
+                             or settings.get("translate_target_language", "English"))
+                    if not _lang or _lang in ("Off", "off"):
+                        _lang = "English"
+                    try:
+                        import requests as _req
+                        _prompt = (f"Translate the following text to {_lang}. "
+                                   f"Return only the translation:\n\n{_src}")
+                        _resp = _req.post(
+                            "http://localhost:11434/api/generate",
+                            json={"model": "qwen2.5:3b", "prompt": _prompt, "stream": False},
+                            timeout=20,
+                        )
+                        if _resp.ok:
+                            _translated = _resp.json().get("response", "").strip()
+                            if _translated:
+                                _bc = len(_src) + 1
+                                _cmd_last_text = _translated
+                                _cmd_add_to_history(_translated)
+                                t_total  = int((time.time() - t_total_start) * 1000)
+                                t_ol_ms  = max(0, t_total - t_whisper)
+                                return {
+                                    "ok": True, "text": _translated,
+                                    "action": "format_paste",
+                                    "backspace_count": _bc,
+                                    "key": None, "with_shift": False, "repeat": 1,
+                                    "modifier": None, "nav_target": None,
+                                    "app_name": None, "url": None, "direction": None,
+                                    "level": None, "screenshot_type": None, "force": False,
+                                    "hud": f"Translated to {_lang.title()}!",
+                                    "hud_color": "#0a84ff",
+                                    "timing": {"whisper": t_whisper, "ollama": t_ol_ms, "total": t_total},
+                                }
+                    except Exception as _te:
+                        _log(f"translate_last error: {_te}")
+                    # Translation failed — fall through to error noop
+                    t_total = int((time.time() - t_total_start) * 1000)
+                    return {
+                        "ok": True, "text": None, "action": "noop",
+                        "backspace_count": 0, "key": None, "with_shift": False,
+                        "repeat": 1, "modifier": None, "nav_target": None,
+                        "app_name": None, "url": None, "direction": None,
+                        "level": None, "screenshot_type": None, "force": False,
+                        "hud": "Translation failed", "hud_color": "#ff3b30",
+                        "timing": {"whisper": t_whisper, "ollama": 0, "total": t_total},
+                    }
+
+                # ── snippet_waiting_trigger: update state and return ──────────
+                if cmd_result["action"] == "snippet_waiting_trigger":
+                    # _snippet_state was already set to "waiting_trigger" in _cmd_detect
+                    t_total = int((time.time() - t_total_start) * 1000)
+                    return {
+                        "ok": True, "text": None, "action": "snippet_waiting_trigger",
+                        "backspace_count": 0, "key": None, "with_shift": False,
+                        "repeat": 1, "modifier": None, "nav_target": None,
+                        "app_name": None, "url": None, "direction": None,
+                        "level": None, "screenshot_type": None, "force": False,
+                        "hud": cmd_result.get("hud"), "hud_color": "#0a84ff",
+                        "timing": {"whisper": t_whisper, "ollama": 0, "total": t_total},
+                    }
+
                 t_total = int((time.time() - t_total_start) * 1000)
                 return {
                     "ok":     True,
@@ -1494,6 +1778,7 @@ def cmd_transcribe_last(cmd: dict) -> dict:
 
         # ── Ollama cleanup ─────────────────────────────────────────────────────
         t_ollama = 0
+        ollama_text_raw: "str | None" = None   # raw Ollama output (before safety filter)
         use_ollama   = settings.get("use_ollama", True)
         ai_mode      = settings.get("ai_cleanup_mode", "auto")
         strength     = settings.get("correction_strength", "Standard")
@@ -1540,6 +1825,7 @@ def cmd_transcribe_last(cmd: dict) -> dict:
                     raw_ollama = resp.json().get("message", {}).get("content", "").strip()
                     if raw_ollama:
                         cleaned = strip_ollama_preamble(raw_ollama)
+                        ollama_text_raw = cleaned  # capture before safety filter
                         ok, reason = ollama_result_is_safe(text, cleaned)
                         if ok:
                             text = cleaned
@@ -1608,18 +1894,21 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             learn_from_text(text)
 
         # ── Update command history for scratch/format commands ────────────────
-        global _cmd_last_text
         if text:
             _cmd_last_text = text
             _cmd_add_to_history(text)
 
         t_total = int((time.time() - t_total_start) * 1000)
         result = {
-            "ok":     True,
-            "text":   text,
-            "action": None,
-            "timing": {"whisper": t_whisper, "ollama": t_ollama, "total": t_total},
-            "profile": profile,
+            "ok":          True,
+            "text":        text,
+            "action":      None,
+            "timing":      {"whisper": t_whisper, "ollama": t_ollama, "total": t_total},
+            "profile":     profile,
+            # History enrichment — only include when they differ from final text
+            "whisper_text": raw_text if raw_text != text else None,
+            "ollama_text":  ollama_text_raw,
+            "active_app":  active_app or None,
         }
         _last_result = result
         return result

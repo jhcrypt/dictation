@@ -88,8 +88,10 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let sep4           = PredefinedMenuItem::separator(app)?;
 
     // ── System items ──────────────────────────────────────────────────────────
-    // Launch at Login: not yet implemented in Tauri build — disabled with TODO.
-    let launch_login = MenuItem::with_id(app, "launch_login", "Launch at Login  (coming soon)", false, None::<&str>)?;
+    let launch_login = CheckMenuItem::with_id(
+        app, "launch_login", "Launch at Login", true,
+        crate::commands::get_launch_at_login(), None::<&str>,
+    )?;
     let sep5  = PredefinedMenuItem::separator(app)?;
     let about = MenuItem::with_id(app, "about", "About Quill Tauri Preview", true, None::<&str>)?;
     let quit  = MenuItem::with_id(app, "quit",  "Quit Quill Tauri Preview",  true, None::<&str>)?;
@@ -121,9 +123,9 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         &quit,
     ])?;
 
-    // Clone before the move closure so we can also capture it in the
-    // wake-menu-sync event listener below.
-    let wake_for_sync = wake.clone();
+    // Clone before the move closure so we can capture in the event handler.
+    let wake_for_sync     = wake.clone();
+    let launch_login_sync = launch_login.clone();
 
     let _tray = TrayIconBuilder::with_id("main")
         .icon(icon)
@@ -245,6 +247,23 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 let _ = app.emit("settings-changed", ());
                 // Python: app.show_message("Profile: {profile}", BLUE)
                 hud_notify(app, &format!("Profile: {}", p));
+                return;
+            }
+
+            // ── Launch at Login ───────────────────────────────────────────────
+            if id == "launch_login" {
+                let currently = crate::commands::get_launch_at_login();
+                let new_val   = !currently;
+                match crate::commands::set_launch_at_login(new_val) {
+                    Ok(_) => {
+                        let _ = launch_login_sync.set_checked(new_val);
+                        hud_notify(app, if new_val { "Launch at Login: On" } else { "Launch at Login: Off" });
+                    }
+                    Err(e) => {
+                        eprintln!("[tray] launch_login error: {}", e);
+                        hud_notify(app, &format!("Launch at Login error: {}", &e[..e.len().min(50)]));
+                    }
+                }
                 return;
             }
 

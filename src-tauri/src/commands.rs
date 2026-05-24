@@ -819,6 +819,70 @@ pub fn close_app(app_name: String, force: bool) -> Result<(), String> {
     Ok(())
 }
 
+// ── Launch at Login ───────────────────────────────────────────────────────────
+
+fn launch_agent_plist_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::PathBuf::from(home)
+        .join("Library/LaunchAgents/com.quill.tauri.dictation.plist")
+}
+
+/// Read current Launch-at-Login state (plist file presence).
+#[tauri::command]
+pub fn get_launch_at_login() -> bool {
+    launch_agent_plist_path().exists()
+}
+
+/// Enable or disable Launch at Login by writing/removing a LaunchAgent plist.
+#[tauri::command]
+pub fn set_launch_at_login(enabled: bool) -> Result<(), String> {
+    let plist_path = launch_agent_plist_path();
+    if enabled {
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("Cannot get exe path: {}", e))?
+            .to_string_lossy()
+            .to_string();
+        let plist = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n\
+<dict>\n\
+\t<key>Label</key>\n\
+\t<string>com.quill.tauri.dictation</string>\n\
+\t<key>ProgramArguments</key>\n\
+\t<array>\n\
+\t\t<string>{}</string>\n\
+\t</array>\n\
+\t<key>RunAtLoad</key>\n\
+\t<true/>\n\
+\t<key>KeepAlive</key>\n\
+\t<false/>\n\
+</dict>\n\
+</plist>",
+            exe
+        );
+        // Ensure ~/Library/LaunchAgents exists
+        if let Some(dir) = plist_path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&plist_path, plist).map_err(|e| e.to_string())?;
+        // Tell launchd to load it immediately
+        let _ = std::process::Command::new("launchctl")
+            .args(["load", &plist_path.to_string_lossy()])
+            .output();
+    } else {
+        if plist_path.exists() {
+            // Unload before removing so launchd stops tracking it
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload", &plist_path.to_string_lossy()])
+                .output();
+            std::fs::remove_file(&plist_path).map_err(|e| e.to_string())?;
+        }
+    }
+    eprintln!("[launch-at-login] enabled={}", enabled);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn restart_engine(state: State<SidecarState>) -> Result<(), String> {
     let _ = sidecar_stop(state.clone());
