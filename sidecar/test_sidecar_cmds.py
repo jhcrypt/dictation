@@ -441,6 +441,37 @@ class TestEmailCommands(unittest.TestCase):
         self.assertIn("body=", url)
         self.assertIn("late", url.replace("%20", " ").lower())
 
+    # 13. "let her know" — the Python-ported marker (was broken before)
+    def test_email_let_her_know(self):
+        r = detect("email Val let her know the meeting is cancelled", jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        # Recipient must be ONLY "val", NOT the full sentence
+        self.assertIn("val", url.lower())
+        self.assertNotIn("let%20her", url.lower())
+        self.assertNotIn("meeting", url.lower().split("?")[0])  # meeting not in To
+        # Body should contain "meeting"
+        self.assertIn("body=", url)
+        self.assertIn("meeting", url.replace("%20", " ").lower())
+
+    # 14. "tell him" body keyword
+    def test_email_tell_him(self):
+        r = detect("email Jack tell him I will be late", jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        self.assertIn("body=", url)
+        self.assertIn("late", url.replace("%20", " ").lower())
+        # "tell him" must not be in the To field
+        self.assertNotIn("tell", url.lower().split("?")[0])
+
+    # 15. "say" body keyword (short form)
+    def test_email_say(self):
+        r = detect("email Jack say hi there", jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        self.assertIn("body=", url)
+        self.assertIn("hi", url.replace("%20", " ").lower())
+
 
 # ---------------------------------------------------------------------------
 # Disfluency cleanup tests

@@ -958,9 +958,14 @@ def _wake_audio_callback(indata, frames, time_info, status):
 
 def _resume_wake_stream():
     """Re-open the wake stream after recording ends (if wake_listening is still active).
-    Called from cmd_stop_recording and cmd_cancel_recording."""
+    Called from cmd_stop_recording and cmd_cancel_recording (via background thread).
+    Guard: returns immediately if recording restarted before this fires."""
     global _wake_stream
     if not _wake_listening:
+        return
+    if _recording:
+        # A new recording started before this deferred resume could run.
+        # cmd_start_recording already closed the wake stream, so nothing to do.
         return
     # Flush any audio that built up while the stream was paused.
     # The wake loop processes _wake_frames in its next iteration — without this
@@ -1292,7 +1297,11 @@ def cmd_stop_recording(_cmd: dict) -> dict:
             pass
         _stream = None
     _log("Recording stopped")
-    _resume_wake_stream()   # re-open wake stream if still enabled
+    # Defer wake-stream resume to a background thread so this command returns
+    # immediately and sidecar_transcribe_last can start without waiting for
+    # CoreAudio to open the wake-word stream (~200–300 ms on macOS).
+    if _wake_listening:
+        threading.Thread(target=_resume_wake_stream, daemon=True).start()
     return {"ok": True, "status": "stopped"}
 
 
@@ -1321,6 +1330,31 @@ def cmd_get_status(_cmd: dict) -> dict:
 # ── Dictation command detection (ported from jarvis_dictation.py) ─────────────
 # Mirrors the Python app's deterministic command routing that runs on raw Whisper
 # text BEFORE the correction pipeline.  Returns a command action dict or None.
+
+# Email body-marker pattern — ported from jarvis_dictation.py _MARKER.
+# Matches speech patterns that separate the recipient from the body:
+#   "email Val tell her the meeting is cancelled"
+#   "email Val let him know I'll be late"
+#   "email Val saying see you tomorrow"
+#   "email Val ask them about the invoice"
+# Operates on the punctuation-stripped lowercase input (lower) so no punct handling needed.
+_EMAIL_BODY_MARKER = re.compile(
+    r"\s+(?:tell\s+(?:him|her|them|me|it)"
+    r"|let\s+(?:him|her|them)\s+know"
+    r"|say(?:ing)?"
+    r"|telling\s+(?:him|her|them)?"
+    r"|letting\s+(?:him|her|them)\s+know"
+    r"|ask(?:ing)?(?:\s+(?:him|her|them))?)"
+    r"\s*",
+    re.IGNORECASE,
+)
+
+# Prefix regex for extracting raw-text email body (preserves capitalization).
+_EMAIL_PREFIX_RE = re.compile(
+    r"^(?:email|compose email to|write (?:an )?email to|send email to|"
+    r"new email to|draft email to|email to|send email)\s+(.+)$",
+    re.IGNORECASE,
+)
 
 _cmd_last_text:     str       = ""
 _cmd_history:       list[str] = []
@@ -1673,6 +1707,8 @@ def _cmd_detect(
         #   "write an email to Jack", "new email to Jack",
         #   "email Jack about Monday meeting",
         #   "email Jack saying I will call you tomorrow",
+        #   "email Jack let her know the meeting is cancelled",
+        #   "email Jack tell him I will be late",
         #   "email Jack about Monday meeting saying I will call you tomorrow"
         _email_m = re.match(
             r"^(?:email|compose email to|write (?:an )?email to|send email to|"
@@ -1682,14 +1718,30 @@ def _cmd_detect(
         if _email_m:
             _rest = _email_m.group(1).strip()
 
-            # Extract body: "saying …" / "telling them …" / "letting them know …"
-            _body_kw_m = re.search(
-                r"\s+(?:saying|telling them|letting them know)\s+(.+)$", _rest
-            )
-            _body = _body_kw_m.group(1).strip() if _body_kw_m else ""
-            _rest_no_body = _rest[: _body_kw_m.start()].strip() if _body_kw_m else _rest
+            # Step 1: Extract body using the full Python-ported marker set.
+            # Handles: tell him/her/them, let him/her/them know, say/saying,
+            #   telling him/her/them, letting him/her/them know, ask/asking.
+            _marker_m = _EMAIL_BODY_MARKER.search(_rest)
+            if _marker_m:
+                _rest_no_body = _rest[: _marker_m.start()].strip()
+                _body_lower   = _rest[_marker_m.end():].strip()
 
-            # Extract subject: "about …" (after name, before body)
+                # Prefer body from raw text (preserves Whisper's capitalization).
+                _body = ""
+                if raw_text:
+                    _raw_prefix_m = _EMAIL_PREFIX_RE.match(raw_text.strip())
+                    if _raw_prefix_m:
+                        _raw_rest = _raw_prefix_m.group(1).strip()
+                        _raw_marker_m = _EMAIL_BODY_MARKER.search(_raw_rest)
+                        if _raw_marker_m:
+                            _body = _raw_rest[_raw_marker_m.end():].strip().rstrip(".")
+                if not _body and _body_lower:
+                    _body = _body_lower[0].upper() + _body_lower[1:]
+            else:
+                _rest_no_body = _rest
+                _body = ""
+
+            # Step 2: Extract subject from "about …" keyword.
             _subj_kw_m = re.search(r"\s+about\s+(.+)$", _rest_no_body)
             _subject = _subj_kw_m.group(1).strip() if _subj_kw_m else ""
             _ename = (
@@ -1712,8 +1764,7 @@ def _cmd_detect(
                     _cap_subject = _subject[0].upper() + _subject[1:] if _subject else ""
                     _params.append(f"subject={_urlquote(_cap_subject)}")
                 if _body:
-                    _cap_body = _body[0].upper() + _body[1:] if _body else ""
-                    _params.append(f"body={_urlquote(_cap_body)}")
+                    _params.append(f"body={_urlquote(_body)}")
                 _mailto = "mailto:" + _to + ("?" + "&".join(_params) if _params else "")
 
                 # HUD message — always surface what was parsed; annotate contact-not-found
@@ -2189,7 +2240,8 @@ def cmd_cancel_recording(_cmd: dict) -> dict:
     with _audio_lock:
         _audio_frames = []
     _log("Recording cancelled and buffer cleared")
-    _resume_wake_stream()   # re-open wake stream if still enabled
+    if _wake_listening:
+        threading.Thread(target=_resume_wake_stream, daemon=True).start()
     return {"ok": True, "status": "cancelled"}
 
 
