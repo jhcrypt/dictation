@@ -105,45 +105,80 @@ export default function WorkflowsPage() {
       />
 
       <WorkflowCard
+        title="Open Apps & Websites"
+        status="Available in Tauri"
+        examples={["open Safari", "open Terminal", "open YouTube", "open Netflix"]}
+        note="Say 'open [app name]' to launch any installed app. Say 'open [site]' for YouTube, Netflix, GitHub, Claude, and other popular sites. Requires Jarvis Commands to be enabled."
+      />
+
+      <WorkflowCard
+        title="Web Search"
+        status="Available in Tauri"
+        examples={["search for machine learning", "google Python tutorials", "look up recursion"]}
+        note="Opens a DuckDuckGo search in your default browser. Works with 'search for', 'google', 'look up', and 'find'. Requires Jarvis Commands to be enabled."
+      />
+
+      <WorkflowCard
+        title="System Volume"
+        status="Available in Tauri"
+        examples={["volume up", "volume down", "mute", "set volume to 50"]}
+        note="Controls macOS system volume. 'Volume up/down' adjusts by 10%. 'Set volume to N' sets an exact level 0–100. Requires Jarvis Commands to be enabled."
+      />
+
+      <WorkflowCard
         title="Reminders"
+        status="Available in Tauri"
+        examples={["remind me to call Jack", "set a reminder to buy milk", "add reminder to review the report"]}
+        note="Creates a reminder in the Apple Reminders app. Requires Jarvis Commands to be enabled."
+      />
+
+      <WorkflowCard
+        title="Screenshots"
+        status="Available in Tauri"
+        examples={["screenshot", "area capture", "scrolling capture", "text recognition"]}
+        note="Triggers Shottr shortcuts (Control+W/A/S/T). Requires Shottr installed at /Applications/Shottr.app. If Shottr is missing, a HUD error message appears. Requires Jarvis Commands to be enabled."
+      />
+
+      <WorkflowCard
+        title="Spotify & Playlists"
+        status="Available in Tauri"
+        examples={["play lo-fi music on Spotify", "play coding playlist", "play workout playlist"]}
+        note="Opens Spotify with a search or a specific playlist URI. Requires Spotify to be installed and Jarvis Commands to be enabled."
+      />
+
+      <WorkflowCard
+        title="Close & Quit Apps"
+        status="Available in Tauri"
+        examples={["close Safari", "kill Chrome", "force quit Slack"]}
+        note="'Close [app]' sends a graceful quit. 'Kill [app]' or 'force quit [app]' force-terminates the process. Requires Jarvis Commands to be enabled."
+      />
+
+      <WorkflowCard
+        title="Scratch, Undo, and Formatting"
+        status="Available in Tauri"
+        examples={["scratch that", "make bold", "all caps"]}
+        note="Scratch/undo deletes the last dictation. Formatting commands (bold, italic, code, heading, bullet, quote, strikethrough) work both inline and standalone. These always work — Safe Mode does not block them."
+      />
+
+      <WorkflowCard
+        title="Email Drafts"
         status="Python parity pending"
-        examples={["remind me to call Jack tomorrow", "remind me to review the quote at 3pm"]}
-        note="Worked in the stable Python app. Tauri should restore the same predictable reminder creation workflow."
+        examples={["email Jack", "send email to Val", "compose email to King"]}
+        note="Worked in the stable Python app. Tauri should restore this without assuming Apple Mail, since users may use Spark, Outlook, or another default email client."
       />
 
       <WorkflowCard
         title="Translation"
         status="Python parity pending"
         examples={["translate that", "translate selected text", "translate to French"]}
-        note="Worked in the stable Python app. Tauri should restore selected text, clipboard handling, and target language behavior."
-      />
-
-      <WorkflowCard
-        title="System Controls"
-        status="Python parity pending"
-        examples={["set volume to 50", "volume up", "set brightness to 80"]}
-        note="Worked in the stable Python app. Tauri should restore this carefully with permission and safety checks."
-      />
-
-      <WorkflowCard
-        title="Screenshots"
-        status="Python parity pending"
-        examples={["take a screenshot", "capture window", "extract text"]}
-        note="Worked in the stable Python app with Shottr integration. Tauri should restore the same command patterns."
-      />
-
-      <WorkflowCard
-        title="Scratch, Undo, and Formatting"
-        status="Python parity pending"
-        examples={["scratch that", "undo last", "make that bold"]}
-        note="Worked in the stable Python app. These should be restored as part of command parsing parity."
+        note="Translate My Dictation (auto-translate every dictation) is already available in Audio & Language settings. On-demand 'translate that' voice command is still pending."
       />
 
       <WorkflowCard
         title="Wake Word"
-        status="Paused in Tauri"
+        status="Available in Tauri"
         examples={["Hey Jarvis"]}
-        note="Wake Word worked in Python, but is currently paused in Tauri because enabling it can freeze the app. Option-key dictation remains the safe path."
+        note="Say 'Hey Jarvis' to start recording hands-free. Enable in Settings → Jarvis. Timing parameters (grace, silence, max) are adjustable."
       />
     </div>
   );

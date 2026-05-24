@@ -731,6 +731,94 @@ pub fn open_app(app_name: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── System volume ─────────────────────────────────────────────────────────────
+// direction: "up" | "down" | "mute" | "unmute" | "set"
+// level: 0–100, used only when direction == "set"
+#[tauri::command]
+pub fn set_system_volume(direction: String, level: Option<u32>) -> Result<(), String> {
+    match direction.as_str() {
+        "up" => osa_spawn(
+            "set volume output volume (output volume of (get volume settings) + 10)",
+        ),
+        "down" => osa_spawn(
+            "set volume output volume (output volume of (get volume settings) - 10)",
+        ),
+        "mute"   => osa_spawn("set volume with output muted"),
+        "unmute" => osa_spawn("set volume without output muted"),
+        "set" => {
+            let lvl = level.unwrap_or(50).min(100);
+            osa_spawn(&format!("set volume output volume {}", lvl));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+// ── Create Apple Reminder ─────────────────────────────────────────────────────
+#[tauri::command]
+pub fn create_reminder(text: String) -> Result<(), String> {
+    // Escape backslashes and double-quotes to prevent AppleScript injection.
+    let safe = text.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "tell application \"Reminders\"\n    tell default list\n        make new reminder with properties {{name:\"{}\"}}\n    end tell\nend tell",
+        safe
+    );
+    std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Shottr screenshot ─────────────────────────────────────────────────────────
+// screenshot_type: "screen" | "window" | "area" | "scrolling" | "text"
+// Requires Shottr ≥ 1.3 at /Applications/Shottr.app.
+// Triggers Shottr's Control+key shortcuts (same approach as stable Python app).
+// Falls back with an Err if Shottr is not installed.
+#[tauri::command]
+pub fn trigger_shottr(screenshot_type: String) -> Result<(), String> {
+    if !std::path::Path::new("/Applications/Shottr.app").exists() {
+        return Err(
+            "Shottr is not installed. Install it from shottr.cc to use screenshot voice commands."
+                .to_string(),
+        );
+    }
+    // Shottr default Control-key shortcuts: W=screen, A=area, S=scroll, T=OCR
+    let key = match screenshot_type.as_str() {
+        "area"      => "a",
+        "scrolling" => "s",
+        "text"      => "t",
+        _           => "w", // screen / window
+    };
+    let script = format!(
+        "tell application \"System Events\"\n    keystroke \"{}\" using control down\nend tell",
+        key
+    );
+    osa_spawn(&script);
+    Ok(())
+}
+
+// ── Close / force-quit app ────────────────────────────────────────────────────
+// force=true uses pkill -9; force=false uses osascript graceful quit.
+#[tauri::command]
+pub fn close_app(app_name: String, force: bool) -> Result<(), String> {
+    let safe = app_name.replace('"', "\\\"");
+    if force {
+        std::process::Command::new("pkill")
+            .args(["-9", "-f", &app_name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    } else {
+        osa_spawn(&format!("tell application \"{}\" to quit", safe));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn restart_engine(state: State<SidecarState>) -> Result<(), String> {
     let _ = sidecar_stop(state.clone());

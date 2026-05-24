@@ -1127,11 +1127,15 @@ def _cmd_add_to_history(text: str) -> None:
         _cmd_history = _cmd_history[-50:]
         _cmd_history_index = 49
 
-def _cmd_detect(lower: str, raw_text: str) -> "dict | None":
+def _cmd_detect(lower: str, raw_text: str, jarvis_enabled: bool = True) -> "dict | None":
     """Detect a dictation command from the normalized Whisper output.
 
     Called on the raw (pre-pipeline) transcript so command routing is
     unaffected by spelling correction or Ollama rewrites.
+
+    jarvis_enabled gates the Jarvis system-command block (open app, search,
+    volume, reminders, etc.) but never gates voice-editing commands (scratch,
+    formatting, navigation) — those always run.
 
     Returns an action dict consumed by useGlobalHotkey.ts, or None.
     """
@@ -1230,6 +1234,155 @@ def _cmd_detect(lower: str, raw_text: str) -> "dict | None":
                 "backspace_count": len(_cmd_last_text) + 1,
                 "hud":             label, "hud_color": "#0a84ff"}
 
+    # ── Jarvis system commands ────────────────────────────────────────────────
+    # Gated by jarvis_enabled. Safe Mode already blocks at the call site.
+    if jarvis_enabled:
+        # Website → URL map (checked before generic open-app)
+        _WEBSITE_MAP = {
+            "youtube":    "https://www.youtube.com",
+            "google":     "https://www.google.com",
+            "gmail":      "https://mail.google.com",
+            "github":     "https://github.com",
+            "netflix":    "https://www.netflix.com",
+            "spotify":    "spotify:",
+            "twitter":    "https://www.twitter.com",
+            "x":          "https://www.x.com",
+            "instagram":  "https://www.instagram.com",
+            "facebook":   "https://www.facebook.com",
+            "linkedin":   "https://www.linkedin.com",
+            "reddit":     "https://www.reddit.com",
+            "claude":     "https://claude.ai",
+            "chatgpt":    "https://chat.openai.com",
+            "amazon":     "https://www.amazon.com",
+        }
+
+        # Named Spotify playlists
+        _PLAYLIST_MAP = {
+            "coding playlist":  "spotify:playlist:37i9dQZF1DX4UtSsGT1Sbe",
+            "workout playlist": "spotify:playlist:37i9dQZF1DX70RN3TfR07f",
+            "playlist 4":       "spotify:playlist:37i9dQZF1DX4UtSsGT1Sbe",
+            "playlist 5":       "spotify:playlist:37i9dQZF1DX70RN3TfR07f",
+            "playlist 6":       "spotify:playlist:7JZxrxQtbmAGcXf9b4BibQ",
+        }
+
+        # ── open [target] ─────────────────────────────────────────────────────
+        _open_m = re.match(r"^open (.+)$", lower)
+        if _open_m:
+            target = _open_m.group(1).strip()
+            if target in ("calendar", "my calendar"):
+                return {"action": "open_app", "app_name": "Calendar",
+                        "hud": "Opening Calendar…", "hud_color": "#30d158"}
+            if target in _WEBSITE_MAP:
+                return {"action": "open_url", "url": _WEBSITE_MAP[target],
+                        "hud": f"Opening {target.capitalize()}…", "hud_color": "#30d158"}
+            return {"action": "open_app", "app_name": target.title(),
+                    "hud": f"Opening {target.title()}…", "hud_color": "#30d158"}
+
+        # ── Web search ────────────────────────────────────────────────────────
+        for _pfx in ("search for ", "search ", "google ", "look up ", "find "):
+            if lower.startswith(_pfx):
+                _query = lower[len(_pfx):].strip()
+                if _query:
+                    _url = f"https://duckduckgo.com/?q={_query.replace(' ', '+')}"
+                    return {"action": "open_url", "url": _url,
+                            "hud": f"Searching: {_query[:30]}…", "hud_color": "#0a84ff"}
+
+        # ── Spotify / playlists ───────────────────────────────────────────────
+        if lower.startswith("play "):
+            _tail = lower[5:].strip()
+            for _kw, _uri in _PLAYLIST_MAP.items():
+                if _kw in _tail:
+                    return {"action": "open_url", "url": _uri,
+                            "hud": f"Playing {_kw}…", "hud_color": "#30d158"}
+            if _tail.endswith(" on spotify"):
+                _song = _tail[:-11].strip()
+                _uri = f"spotify:search:{_song.replace(' ', '%20')}"
+                return {"action": "open_url", "url": _uri,
+                        "hud": f"Spotify: {_song[:25]}…", "hud_color": "#30d158"}
+
+        # ── System volume ─────────────────────────────────────────────────────
+        if lower in ("volume up", "turn volume up", "increase volume", "louder"):
+            return {"action": "set_volume", "direction": "up",
+                    "hud": "Volume up", "hud_color": "#30d158"}
+        if lower in ("volume down", "turn volume down", "decrease volume", "quieter"):
+            return {"action": "set_volume", "direction": "down",
+                    "hud": "Volume down", "hud_color": "#30d158"}
+        if lower in ("mute", "mute volume", "turn off sound"):
+            return {"action": "set_volume", "direction": "mute",
+                    "hud": "Muted", "hud_color": "#30d158"}
+        if lower == "unmute":
+            return {"action": "set_volume", "direction": "unmute",
+                    "hud": "Unmuted", "hud_color": "#30d158"}
+        _vol_m = re.match(r"^(?:set volume to|volume to)\s+(\d+)", lower)
+        if _vol_m:
+            _lvl = min(100, max(0, int(_vol_m.group(1))))
+            return {"action": "set_volume", "direction": "set", "level": _lvl,
+                    "hud": f"Volume: {_lvl}%", "hud_color": "#30d158"}
+
+        # ── Screenshots ───────────────────────────────────────────────────────
+        if any(p in lower for p in ("capture area", "area capture", "area screenshot")):
+            return {"action": "take_screenshot", "screenshot_type": "area",
+                    "hud": "Area capture…", "hud_color": "#0a84ff"}
+        if any(p in lower for p in ("scrolling capture", "scrolling screenshot",
+                                     "capture scrolling", "capture scroll")):
+            return {"action": "take_screenshot", "screenshot_type": "scrolling",
+                    "hud": "Scrolling capture…", "hud_color": "#0a84ff"}
+        if any(p in lower for p in ("text recognition", "extract text",
+                                     "capture text", "recognize text")):
+            return {"action": "take_screenshot", "screenshot_type": "text",
+                    "hud": "Text recognition…", "hud_color": "#0a84ff"}
+        if any(p in lower for p in ("screenshot", "take a screenshot", "capture screen",
+                                     "take screenshot", "capture window", "window screenshot")):
+            return {"action": "take_screenshot", "screenshot_type": "screen",
+                    "hud": "Screenshot…", "hud_color": "#0a84ff"}
+
+        # ── Weather ───────────────────────────────────────────────────────────
+        if any(p in lower for p in ("check weather", "whats the weather",
+                                     "weather today", "what is the weather")):
+            return {"action": "open_url",
+                    "url": "https://duckduckgo.com/?q=weather+today",
+                    "hud": "Checking weather…", "hud_color": "#0a84ff"}
+        _weather_m = re.match(r"^weather (?:in |for )?(.+)$", lower)
+        if _weather_m:
+            _loc = _weather_m.group(1).strip()
+            return {"action": "open_url",
+                    "url": f"https://duckduckgo.com/?q=weather+in+{_loc.replace(' ', '+')}",
+                    "hud": f"Weather: {_loc[:20]}…", "hud_color": "#0a84ff"}
+
+        # ── Calendar ──────────────────────────────────────────────────────────
+        if any(p in lower for p in ("open calendar", "check calendar",
+                                     "whats on my calendar", "what is on my calendar")):
+            return {"action": "open_app", "app_name": "Calendar",
+                    "hud": "Opening Calendar…", "hud_color": "#30d158"}
+
+        # ── Reminders ─────────────────────────────────────────────────────────
+        _remind_m = re.match(
+            r"^(?:remind me (?:to )?|set (?:a )?reminder (?:to )?|add (?:a )?reminder (?:to )?)(.+)",
+            lower,
+        )
+        if _remind_m:
+            # Use raw Whisper text for proper capitalisation
+            _raw_remind = re.match(
+                r"(?i)^(?:remind me (?:to )?|set (?:a )?reminder (?:to )?|add (?:a )?reminder (?:to )?)(.+)",
+                raw_text.strip(),
+            )
+            _task = (_raw_remind.group(1).strip().rstrip(".") if _raw_remind
+                     else _remind_m.group(1).strip())
+            return {"action": "create_reminder", "text": _task,
+                    "hud": f"Reminder: {_task[:30]}…", "hud_color": "#30d158"}
+
+        # ── Close / kill app ──────────────────────────────────────────────────
+        _close_m = re.match(r"^close (.+)$", lower)
+        if _close_m:
+            _aname = _close_m.group(1).strip().title()
+            return {"action": "close_app", "app_name": _aname, "force": False,
+                    "hud": f"Closing {_aname}…", "hud_color": "#30d158"}
+        _kill_m = re.match(r"^(?:kill|force quit|force close) (.+)$", lower)
+        if _kill_m:
+            _aname = _kill_m.group(1).strip().title()
+            return {"action": "close_app", "app_name": _aname, "force": True,
+                    "hud": f"Force-quitting {_aname}…", "hud_color": "#ff3b30"}
+
     return None
 
 
@@ -1304,8 +1457,9 @@ def cmd_transcribe_last(cmd: dict) -> dict:
         lower_cmd = re.sub(r"[^a-z0-9 ]", "", raw_text.lower()).strip()
         safe_mode_on = settings.get("safe_mode", False)
 
+        jarvis_on = settings.get("jarvis_enabled", True)
         if not safe_mode_on and lower_cmd:
-            cmd_result = _cmd_detect(lower_cmd, raw_text)
+            cmd_result = _cmd_detect(lower_cmd, raw_text, jarvis_enabled=jarvis_on)
             if cmd_result is not None:
                 _log(f"Command detected: action={cmd_result['action']} lower={lower_cmd!r}")
                 t_total = int((time.time() - t_total_start) * 1000)
@@ -1319,6 +1473,13 @@ def cmd_transcribe_last(cmd: dict) -> dict:
                     "repeat": cmd_result.get("repeat", 1),
                     "modifier": cmd_result.get("modifier"),
                     "nav_target": cmd_result.get("nav_target"),
+                    # Jarvis command fields
+                    "app_name":        cmd_result.get("app_name"),
+                    "url":             cmd_result.get("url"),
+                    "direction":       cmd_result.get("direction"),
+                    "level":           cmd_result.get("level"),
+                    "screenshot_type": cmd_result.get("screenshot_type"),
+                    "force":           cmd_result.get("force", False),
                     "hud":    cmd_result.get("hud"),
                     "hud_color": cmd_result.get("hud_color", "#0a84ff"),
                     "timing": {"whisper": t_whisper, "ollama": 0, "total": t_total},

@@ -479,6 +479,13 @@ export function useGlobalHotkey() {
           repeat?: number;
           modifier?: string;
           nav_target?: string;
+          // Jarvis system-command fields
+          app_name?: string;
+          url?: string;
+          direction?: string;
+          level?: number | null;
+          screenshot_type?: string;
+          force?: boolean;
           hud?: string | null;
           hud_color?: string;
           timing: { whisper: number; ollama: number; total: number };
@@ -542,9 +549,37 @@ export function useGlobalHotkey() {
                            : null;
               if (evName) { ev(evName, {}); }
             }
+            // ── Jarvis system commands ──────────────────────────────────────
+            if (act === "open_app" && result.app_name) {
+              await inv("open_app", { appName: result.app_name });
+            }
+            if (act === "open_url" && result.url) {
+              await inv("open_url", { url: result.url });
+            }
+            if (act === "set_volume") {
+              await inv("set_system_volume", {
+                direction: result.direction ?? "up",
+                level: result.level ?? null,
+              });
+            }
+            if (act === "create_reminder" && result.text) {
+              await inv("create_reminder", { text: result.text });
+            }
+            if (act === "take_screenshot") {
+              await inv("trigger_shottr", { screenshotType: result.screenshot_type ?? "screen" });
+            }
+            if (act === "close_app" && result.app_name) {
+              await inv("close_app", { appName: result.app_name, force: result.force ?? false });
+            }
             // noop: just show HUD
           } catch (ce) {
             console.error("[cmd] dispatch error:", ce);
+            // Surface actionable errors (e.g. Shottr not installed) in the HUD.
+            const errMsg = String(ce);
+            stateRef.current = "idle";
+            hudEmit({ state: "error", subtext: errMsg });
+            setTimeout(() => hudEmit({ state: "idle" }), 4500);
+            return;
           }
 
           // HUD notification for command (fire-and-forget)

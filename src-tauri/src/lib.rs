@@ -201,6 +201,10 @@ pub fn run() {
             // Native
             open_url,
             open_app,
+            set_system_volume,
+            create_reminder,
+            trigger_shottr,
+            close_app,
             restart_engine,
             play_recording_sound,
             pause_media,
