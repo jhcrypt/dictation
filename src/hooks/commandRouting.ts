@@ -62,6 +62,27 @@ export type TranscribeOutcome =
   | { type: "error"; message: string };
 
 /**
+ * Normalize a spoken phrase or stored trigger for exact-match comparison.
+ *
+ * Rules (order matters):
+ *  1. trim() — remove surrounding whitespace
+ *  2. toLowerCase()
+ *  3. Strip LEADING punctuation — Whisper sometimes hallucinates ", " or ". "
+ *     at the start of the transcript.  Without this strip, a trigger "open movies"
+ *     would never match a Whisper result ", open movies."
+ *  4. Strip TRAILING punctuation — Whisper/smart_punctuate commonly adds "."
+ *  5. Remove apostrophes — "let's" → "lets" so stored triggers without apostrophes
+ *     match natural speech (e.g. stored "lets play chess" matches "let's play chess").
+ */
+export function normalizeTrigger(text: string): string {
+  return text.trim()
+    .toLowerCase()
+    .replace(/^[.,!?\s]+/g, "") // leading punctuation + space (Whisper hallucinations: ", open movies")
+    .replace(/[.,!?]+$/g, "")   // trailing punctuation
+    .replace(/['']/g, "");      // apostrophes: "let's" → "lets"
+}
+
+/**
  * Classify a sidecar transcribe_last result into one of four outcomes.
  *
  * Routing rules (in priority order):

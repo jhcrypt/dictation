@@ -541,6 +541,101 @@ class TestRemoveDisfluencies(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Regression: leading-punctuation strip + vad_filter parity
+# ---------------------------------------------------------------------------
+
+class TestLeadingPunctuationStrip(unittest.TestCase):
+    """Regression: Whisper sometimes returns leading ', ' or '. '.
+    The sidecar must strip it before any further processing so:
+      1. Custom command triggers match ("lets play chess" not ", lets play chess")
+      2. Dictation text doesn't start with comma/period
+    This mirrors the behaviour enforced by vad_filter=True + the explicit strip in cmd_transcribe_last.
+    """
+
+    def _strip(self, raw: str) -> str:
+        """Apply the same strip the sidecar applies to raw Whisper output."""
+        import re as _re
+        return _re.sub(r'^[\s,\.!\?]+', '', raw).strip()
+
+    def test_leading_comma_stripped(self):
+        self.assertEqual(self._strip(", hey Bob everything is good"), "hey Bob everything is good")
+
+    def test_leading_comma_space_stripped(self):
+        self.assertEqual(self._strip(", open movies."), "open movies.")
+
+    def test_leading_period_stripped(self):
+        self.assertEqual(self._strip(". let's play chess"), "let's play chess")
+
+    def test_leading_whitespace_and_comma_stripped(self):
+        self.assertEqual(self._strip("  , hello world"), "hello world")
+
+    def test_no_leading_punct_unchanged(self):
+        self.assertEqual(self._strip("hello world"), "hello world")
+        self.assertEqual(self._strip("Open Safari"), "Open Safari")
+
+    def test_empty_string_unchanged(self):
+        self.assertEqual(self._strip(""), "")
+
+    def test_comma_in_middle_preserved(self):
+        # Only LEADING punctuation is stripped — mid-text commas are kept.
+        self.assertEqual(self._strip("hello, world"), "hello, world")
+
+
+# ---------------------------------------------------------------------------
+# Regression: learn_from_text vocab file robustness
+# ---------------------------------------------------------------------------
+
+class TestLearnFromTextRobustness(unittest.TestCase):
+    """Regression: learn_from_text must not raise KeyError when the vocab file
+    exists but predates the word_counts / phrases keys (e.g. {} or old format)."""
+
+    def test_empty_vocab_file_no_error(self):
+        """learn_from_text with vocab that has no word_counts must not crash."""
+        import tempfile, os
+        import json as _json
+        # Write a vocab file that's missing word_counts
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            _json.dump({}, f)
+            tmp_path = f.name
+        old_vocab = VOCAB_FILE  # type: ignore[name-defined]
+        try:
+            # Temporarily point the module at our temp file
+            import jarvis_sidecar as _sidecar  # type: ignore[import]
+        except ImportError:
+            pass  # module is exec'd into globals — use globals directly
+        # Patch the global VOCAB_FILE path
+        g = globals()
+        g["VOCAB_FILE"] = tmp_path
+        try:
+            learn_from_text("testing the robustness fix")  # type: ignore[name-defined]
+            # If we get here, no KeyError was raised
+            with open(tmp_path) as f:
+                out = _json.load(f)
+            self.assertIn("word_counts", out)
+            self.assertIsInstance(out["word_counts"], dict)
+        finally:
+            g["VOCAB_FILE"] = old_vocab
+            os.unlink(tmp_path)
+
+    def test_malformed_vocab_file_no_error(self):
+        """learn_from_text with a list (not dict) vocab must not crash."""
+        import tempfile, os
+        import json as _json
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            _json.dump([], f)  # list, not dict — old/corrupt format
+            tmp_path = f.name
+        g = globals()
+        old_vocab = g["VOCAB_FILE"]
+        g["VOCAB_FILE"] = tmp_path
+        try:
+            # Should not raise — loads default dict when file is not a dict
+            learn_from_text("another robustness test")  # type: ignore[name-defined]
+        finally:
+            g["VOCAB_FILE"] = old_vocab
+            os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

@@ -58,7 +58,7 @@
 import { useEffect, useRef } from "react";
 import { useSettings } from "../context/SettingsContext";
 import type { HudPayload } from "../HudApp";
-import { classifyTranscribeResult } from "./commandRouting";
+import { classifyTranscribeResult, normalizeTrigger } from "./commandRouting";
 
 type RecState =
   | "idle"         // nothing happening
@@ -232,11 +232,6 @@ export function useGlobalHotkey() {
     const clearWakeMonitor = () => {
       if (wakeMonitorRef.current) { clearInterval(wakeMonitorRef.current); wakeMonitorRef.current = null; }
     };
-
-    const normalizeTrigger = (text: string) =>
-      text.trim().toLowerCase()
-        .replace(/[.,!?]+$/g, "")    // trailing punctuation
-        .replace(/['’]/g, "");  // apostrophes: "let's" → "lets", "don't" → "dont"
 
     const runCustomCommand = async (spokenText: string): Promise<{
       matched: boolean;
@@ -450,6 +445,7 @@ export function useGlobalHotkey() {
               ok: boolean;
               recording: boolean;
               voice_active?: boolean;
+              recording_rms?: number | null;
             };
 
             if (!status.ok || !status.recording) {
@@ -458,7 +454,16 @@ export function useGlobalHotkey() {
               return;
             }
 
-            const voiceActive = status.voice_active ?? false;
+            // Use raw RMS vs absolute threshold — matches Python _silence_stop_monitor.
+            // The relative voice_active flag (rms > noise_floor*2.5) cannot detect
+            // silence in rooms where ambient noise is above the threshold (0.025),
+            // because the noise floor starts at 0.01 and can only adapt downward
+            // while silent — creating a catch-22 that pins voice_active=True forever.
+            // Comparing raw RMS to the same fixed threshold the Python app uses
+            // ensures silence detection works regardless of noise floor state.
+            const silenceRmsThreshold = settingsRef.current.wake_dictation_silence_rms ?? 0.025;
+            const rawRms = status.recording_rms ?? 0.0;
+            const voiceActive = rawRms >= silenceRmsThreshold;
 
             if (voiceActive) {
               // Voice detected — reset the silence window

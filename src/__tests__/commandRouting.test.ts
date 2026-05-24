@@ -13,7 +13,7 @@
  *       npx vitest run src/__tests__/commandRouting.test.ts
  */
 import { describe, it, expect } from "vitest";
-import { classifyTranscribeResult } from "../hooks/commandRouting";
+import { classifyTranscribeResult, normalizeTrigger } from "../hooks/commandRouting";
 import type { SidecarResult } from "../hooks/commandRouting";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -201,6 +201,43 @@ describe("real error responses", () => {
   it("ok=true + text=null + action=null → error (unknown state)", () => {
     const r = classifyTranscribeResult({ ok: true, text: null, action: null });
     expect(r.type).toBe("error");
+  });
+});
+
+// ── normalizeTrigger — custom command matching ────────────────────────────
+
+describe("normalizeTrigger", () => {
+  it("lowercases and trims", () => {
+    expect(normalizeTrigger("  Open Safari  ")).toBe("open safari");
+  });
+
+  it("strips trailing punctuation", () => {
+    expect(normalizeTrigger("open safari.")).toBe("open safari");
+    expect(normalizeTrigger("open safari!")).toBe("open safari");
+    expect(normalizeTrigger("open safari?")).toBe("open safari");
+  });
+
+  it("strips leading punctuation (Whisper hallucination defense)", () => {
+    // Regression: Whisper may return ", open movies." — without leading-punct
+    // strip the trigger "open movies" would never match.
+    expect(normalizeTrigger(", open movies.")).toBe("open movies");
+    expect(normalizeTrigger(". let's play chess")).toBe("lets play chess");
+    expect(normalizeTrigger(", Hey Jarvis")).toBe("hey jarvis");
+  });
+
+  it("strips apostrophes so stored triggers match natural speech", () => {
+    expect(normalizeTrigger("let's play chess")).toBe("lets play chess");
+    expect(normalizeTrigger("don't do that")).toBe("dont do that");
+  });
+
+  it("plain trigger is unchanged (no double-strip side effects)", () => {
+    expect(normalizeTrigger("open movies")).toBe("open movies");
+    expect(normalizeTrigger("my email")).toBe("my email");
+  });
+
+  it("empty string returns empty string", () => {
+    expect(normalizeTrigger("")).toBe("");
+    expect(normalizeTrigger("   ")).toBe("");
   });
 });
 

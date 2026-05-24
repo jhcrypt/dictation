@@ -317,10 +317,19 @@ def get_personal_prompt(settings: dict) -> str:
 def learn_from_text(text: str):
     """Update vocabulary word counts after each dictation."""
     try:
-        vocab = {"word_counts": {}, "total_dictations": 0, "phrases": {}}
+        # Default structure — updated below from file so partial files don't lose keys.
+        vocab: dict = {"word_counts": {}, "total_dictations": 0, "phrases": {}}
         try:
             with open(VOCAB_FILE) as f:
-                vocab = json.load(f)
+                loaded = json.load(f)
+            # Merge file content into defaults so missing keys don't cause KeyErrors.
+            if isinstance(loaded, dict):
+                vocab.update(loaded)
+                # Ensure required sub-dicts exist even if the file predates them.
+                if not isinstance(vocab.get("word_counts"), dict):
+                    vocab["word_counts"] = {}
+                if not isinstance(vocab.get("phrases"), dict):
+                    vocab["phrases"] = {}
         except Exception:
             pass
 
@@ -1851,9 +1860,20 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             beam_size=1,
             best_of=1,
             condition_on_previous_text=False,
+            # vad_filter removes silent/noise-only segments before transcription.
+            # Without it, Whisper processes leading silence and hallucinates
+            # continuation punctuation (leading commas/periods) — matches the
+            # stable Python app which passes these same three params.
+            vad_filter=True,
+            no_speech_threshold=0.6,
+            compression_ratio_threshold=2.4,
             **transcribe_kwargs,
         )
         raw_text = " ".join(seg.text.strip() for seg in segments).strip()
+        # Strip hallucinated leading punctuation (safety net even with vad_filter).
+        # Whisper occasionally starts output with ", " or ". " when it treats the
+        # audio as a continuation; this never represents real speech.
+        raw_text = re.sub(r'^[\s,\.!\?]+', '', raw_text).strip()
         t_whisper = int((time.time() - t_whisper_start) * 1000)
         _log(f"Whisper: {raw_text!r} ({t_whisper}ms)")
 
