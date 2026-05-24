@@ -312,6 +312,137 @@ class TestRoutingInvariants(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Email command tests
+# ---------------------------------------------------------------------------
+
+class TestEmailCommands(unittest.TestCase):
+    """Tests for the email command parser in _cmd_detect.
+
+    These use detect() which calls _cmd_detect(lower, raw, jarvis_enabled=True).
+    They verify:
+      - action is always "open_url" (draft only, no auto-send)
+      - recipient / name parsed correctly
+      - subject parsed correctly from "about …"
+      - body parsed correctly from "saying …" / "telling them …"
+      - mailto: URL is correctly encoded
+      - no automatic send
+    """
+
+    # All email actions open a URL — never send automatically.
+    def _assert_draft_only(self, r):
+        self.assertIsNotNone(r)
+        self.assertEqual(r["action"], "open_url")
+        url = r.get("url", "")
+        self.assertTrue(url.startswith("mailto:"), f"URL must start with mailto: — got {url!r}")
+
+    # 1. "email Jack" — minimal form, name-only draft
+    def test_email_name_only(self):
+        r = detect("email Jack", jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        # recipient is in the URL (either resolved email or encoded name)
+        self.assertIn("jack", url.lower())
+        # no query parameters (no body, no subject)
+        self.assertNotIn("?", url)
+        # HUD must direct user to click body (contact-not-found prefix is OK too)
+        self.assertIn("click body", r.get("hud", "").lower())
+
+    # 2. "compose email to Jack" — alternate prefix
+    def test_compose_email_to(self):
+        r = detect("compose email to Jack", jarvis=True)
+        self._assert_draft_only(r)
+        self.assertIn("jack", r["url"].lower())
+
+    # 3. "write an email to Jack" — new prefix
+    def test_write_an_email_to(self):
+        r = detect("write an email to Jack", jarvis=True)
+        self._assert_draft_only(r)
+        self.assertIn("jack", r["url"].lower())
+
+    # 4. "new email to Jack" — new prefix
+    def test_new_email_to(self):
+        r = detect("new email to Jack", jarvis=True)
+        self._assert_draft_only(r)
+        self.assertIn("jack", r["url"].lower())
+
+    # 5. "email Jack about Monday meeting" — subject extracted
+    def test_email_with_subject(self):
+        r = detect("email Jack about Monday meeting", jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        self.assertIn("subject=", url)
+        # "Monday meeting" should be URL-encoded in subject
+        self.assertIn("Monday", url.replace("%20", " ").replace("+", " "))
+        # no body param
+        self.assertNotIn("body=", url)
+        self.assertIn("subject", r.get("hud", "").lower())
+
+    # 6. "email Jack saying I will call you tomorrow" — body extracted
+    def test_email_with_body_saying(self):
+        r = detect("email Jack saying I will call you tomorrow", jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        self.assertIn("body=", url)
+        decoded = url.replace("%20", " ").replace("+", " ")
+        self.assertIn("call", decoded.lower())
+        # no subject param
+        self.assertNotIn("subject=", url)
+        self.assertIn("body filled", r.get("hud", "").lower())
+
+    # 7. "compose email to Jack saying I will call you tomorrow" — prefix + body
+    def test_compose_email_with_body(self):
+        r = detect("compose email to Jack saying I will call you tomorrow", jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        self.assertIn("body=", url)
+        self.assertIn("jack", url.lower())
+
+    # 8. "email Jack about Monday meeting saying I will call you tomorrow" — both
+    def test_email_with_subject_and_body(self):
+        r = detect(
+            "email Jack about Monday meeting saying I will call you tomorrow",
+            jarvis=True,
+        )
+        self._assert_draft_only(r)
+        url = r["url"]
+        self.assertIn("subject=", url)
+        self.assertIn("body=", url)
+        decoded = url.replace("%20", " ").replace("+", " ")
+        self.assertIn("Monday", decoded)
+        self.assertIn("call", decoded.lower())
+
+    # 9. Unknown contact — mailto still formed, HUD warns
+    def test_unknown_contact_fallback(self):
+        r = detect("email unknownperson xyz", jarvis=True)
+        self._assert_draft_only(r)
+        # HUD should mention contact not found
+        self.assertIn("not found", r.get("hud", "").lower())
+
+    # 10. URL encoding: spaces become %20, no raw spaces in URL
+    def test_mailto_url_encoding(self):
+        r = detect("email Jack saying call me at 5 PM", jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        # After the '?' there should be no unencoded spaces
+        if "?" in url:
+            query = url.split("?", 1)[1]
+            self.assertNotIn(" ", query, "Query string must not contain raw spaces")
+
+    # 11. Email commands must not fire when jarvis is off
+    def test_email_blocked_when_jarvis_off(self):
+        r = detect("email Jack", jarvis=False)
+        self.assertIsNone(r, "email command must be blocked when jarvis_enabled=False")
+
+    # 12. "telling them" body keyword
+    def test_email_with_body_telling_them(self):
+        r = detect("email Jack telling them I will be late", jarvis=True)
+        self._assert_draft_only(r)
+        url = r["url"]
+        self.assertIn("body=", url)
+        self.assertIn("late", url.replace("%20", " ").lower())
+
+
+# ---------------------------------------------------------------------------
 # Disfluency cleanup tests
 # ---------------------------------------------------------------------------
 

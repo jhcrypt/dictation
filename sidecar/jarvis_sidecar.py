@@ -32,6 +32,7 @@ import time
 import threading
 import wave
 import tempfile
+from urllib.parse import quote as _urlquote
 
 # ── Environment guards (must be set BEFORE importing faster_whisper / onnxruntime)
 # These match the stable Python app exactly.
@@ -1668,19 +1669,67 @@ def _cmd_detect(
                         "hud": f"Translating to {_lang.title()}…", "hud_color": "#0a84ff"}
 
         # ── Email contact ─────────────────────────────────────────────────────
+        # Supported: "email Jack", "compose email to Jack",
+        #   "write an email to Jack", "new email to Jack",
+        #   "email Jack about Monday meeting",
+        #   "email Jack saying I will call you tomorrow",
+        #   "email Jack about Monday meeting saying I will call you tomorrow"
         _email_m = re.match(
-            r"^(?:email|send email to|compose email to|email to|draft email to|send email)\s+(.+)$",
+            r"^(?:email|compose email to|write (?:an )?email to|send email to|"
+            r"new email to|draft email to|email to|send email)\s+(.+)$",
             lower,
         )
         if _email_m:
-            _ename = _email_m.group(1).strip().rstrip(".")
-            _contact_email = _lookup_contact_email(_ename)
-            if _contact_email:
-                _mailto = f"mailto:{_contact_email}"
+            _rest = _email_m.group(1).strip()
+
+            # Extract body: "saying …" / "telling them …" / "letting them know …"
+            _body_kw_m = re.search(
+                r"\s+(?:saying|telling them|letting them know)\s+(.+)$", _rest
+            )
+            _body = _body_kw_m.group(1).strip() if _body_kw_m else ""
+            _rest_no_body = _rest[: _body_kw_m.start()].strip() if _body_kw_m else _rest
+
+            # Extract subject: "about …" (after name, before body)
+            _subj_kw_m = re.search(r"\s+about\s+(.+)$", _rest_no_body)
+            _subject = _subj_kw_m.group(1).strip() if _subj_kw_m else ""
+            _ename = (
+                _rest_no_body[: _subj_kw_m.start()].strip()
+                if _subj_kw_m
+                else _rest_no_body
+            ).rstrip(".")
+
+            if not _ename:
+                # Malformed — fall through to plain dictation
+                pass
             else:
-                _mailto = f"mailto:{_ename.replace(' ', '%20')}"
-            return {"action": "open_url", "url": _mailto,
-                    "hud": f"Emailing {_ename.title()}…", "hud_color": "#0a84ff"}
+                _contact_email = _lookup_contact_email(_ename)
+                _found = bool(_contact_email)
+                _to = _contact_email if _found else _ename.replace(" ", "%20")
+
+                # Build mailto: URL
+                _params: list[str] = []
+                if _subject:
+                    _cap_subject = _subject[0].upper() + _subject[1:] if _subject else ""
+                    _params.append(f"subject={_urlquote(_cap_subject)}")
+                if _body:
+                    _cap_body = _body[0].upper() + _body[1:] if _body else ""
+                    _params.append(f"body={_urlquote(_cap_body)}")
+                _mailto = "mailto:" + _to + ("?" + "&".join(_params) if _params else "")
+
+                # HUD message — always surface what was parsed; annotate contact-not-found
+                _disp = _ename.title()
+                if _body:
+                    _hud_suffix = "body filled"
+                elif _subject:
+                    _hud_suffix = "subject filled"
+                else:
+                    _hud_suffix = "click body to dictate"
+                if not _found:
+                    _hud_suffix = f"contact not found — {_hud_suffix}"
+                _hud = f"Draft to {_disp} — {_hud_suffix}"
+
+                return {"action": "open_url", "url": _mailto,
+                        "hud": _hud, "hud_color": "#0a84ff"}
 
         # ── Create snippet ────────────────────────────────────────────────────
         if lower in ("create snippet", "new snippet", "add snippet", "make snippet"):
