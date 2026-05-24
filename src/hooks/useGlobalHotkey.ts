@@ -293,9 +293,21 @@ export function useGlobalHotkey() {
     // ── Recording flow ────────────────────────────────────────────────────────
 
     const startRecording = async (source: "hotkey" | "button" | "tray" | "wake" = "hotkey") => {
-      if (stateRef.current !== "idle") {
-        console.log("[recording] startRecording ignored — state =", stateRef.current, "source =", source);
+      const currentState = stateRef.current;
+
+      // Allow starting from "error" state — the user or wake word should always
+      // be able to clear a stale error and begin a new recording immediately.
+      // The cycleIdRef increment below cancels any pending setError setTimeout
+      // so the 4-second error lockout never blocks the next attempt.
+      //
+      // Block only the in-flight states where the sidecar is actively busy.
+      if (currentState !== "idle" && currentState !== "error") {
+        console.log("[recording] startRecording ignored — state =", currentState, "source =", source);
         return;
+      }
+
+      if (currentState === "error") {
+        console.log("[recording] clearing stale error — starting fresh from", source);
       }
 
       console.log("[recording] → starting  source =", source);

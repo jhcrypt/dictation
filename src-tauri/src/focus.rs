@@ -12,6 +12,11 @@ pub struct LastTargetApp(pub Mutex<Option<AppInfo>>);
 pub struct AppInfo {
     pub bundle_id: String,
     pub name: String,
+    /// Wall-clock instant when this app was last confirmed frontmost by the
+    /// focus tracker.  Used by paste_text to decide whether to skip the
+    /// osascript activation round-trip (saves ~200ms + 250ms wait when the
+    /// target is already in front, which is true for almost all dictations).
+    pub last_seen_at: std::time::Instant,
 }
 
 impl LastTargetApp {
@@ -56,7 +61,7 @@ fn frontmost_app() -> Option<AppInfo> {
     let bundle_id = parts.next()?.trim().to_string();
     let name      = parts.next().unwrap_or("").trim().to_string();
     if bundle_id.is_empty() { return None; }
-    Some(AppInfo { bundle_id, name })
+    Some(AppInfo { bundle_id, name, last_seen_at: std::time::Instant::now() })
 }
 
 /// Activate an app by bundle ID using System Events (requires Accessibility).
