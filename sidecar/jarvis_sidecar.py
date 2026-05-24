@@ -391,6 +391,110 @@ def repair_mojibake(text: str) -> str:
     return text
 
 
+# ── Disfluency cleanup ────────────────────────────────────────────────────────
+
+# Safe contractions: only unambiguous forms (cant/its/lets/were/id excluded).
+_SAFE_CONTRACTIONS: dict[str, str] = {
+    "hows":     "how's",    "whats":    "what's",   "thats":    "that's",
+    "whos":     "who's",    "wheres":   "where's",  "heres":    "here's",
+    "theres":   "there's",  "dont":     "don't",    "doesnt":   "doesn't",
+    "didnt":    "didn't",   "wont":     "won't",    "wasnt":    "wasn't",
+    "isnt":     "isn't",    "arent":    "aren't",   "havent":   "haven't",
+    "hadnt":    "hadn't",   "hasnt":    "hasn't",   "wouldnt":  "wouldn't",
+    "couldnt":  "couldn't", "shouldnt": "shouldn't",
+    "youre":    "you're",   "theyre":   "they're",  "youve":    "you've",
+    "weve":     "we've",    "theyve":   "they've",  "ive":      "I've",
+}
+
+_CONTRACTION_RE = re.compile(
+    r'\b(' + '|'.join(sorted(_SAFE_CONTRACTIONS, key=len, reverse=True)) + r')\b',
+    re.IGNORECASE,
+)
+
+# Code/URL/path/shell detector — skip disfluency cleanup on these.
+_CODE_RE = re.compile(
+    r"""
+    https?://                                                  |  # URL
+    www\.                                                      |  # web address
+    (?:^|(?<=\s))[./~][\w/\\]                                 |  # path: ./foo /bar ~/baz
+    \b(?:npm|git|pip|sudo|brew|cargo|docker|kubectl)\s+\w     |  # shell cmds
+    \b(?:import|function|const|let|var|def|class|return|async|await)\b |
+    [{}()\[\];&|<>]                                           |
+    ===|!==|=>|::|->|\|\|                                     |
+    \.\b(?:py|js|ts|rs|json|yaml|yml|sh|cpp|java|swift|go|rb)\b |
+    \b\w{2,}_\w{2,}_\w{2,}\b                                     # snake_case_identifiers
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def remove_disfluencies(text: str, profile: str = "General") -> str:
+    """
+    Light local pass to clean common speech transcription artefacts.
+    Runs in the correction pipeline regardless of whether Ollama ran.
+
+    Operations:
+      1. Removes standalone filler words (um, uh, ah, er, hmm).
+      2. Collapses adjacent duplicate words ("the the" → "the").
+      3. Removes clearly-parenthetical filler phrases ("you know", "I mean").
+      4. Fixes time-spacing ("10PM" → "10 PM").
+      5. Restores missing apostrophes in safe contractions (English-only).
+
+    Guardrails — returns text unchanged when:
+      - profile is "Developer" or "Verbatim"
+      - text contains code, paths, URLs, or shell-command patterns
+    """
+    if not text or not text.strip():
+        return text
+    if profile in ("Developer", "Verbatim"):
+        return text
+    if _CODE_RE.search(text):
+        return text
+
+    # 1. Remove filler words (with optional adjacent comma)
+    text = re.sub(
+        r'(?:,\s*)?\b(?:um|uh|ah|er|hmm|hm)\b(?:\s*,)?',
+        '', text, flags=re.IGNORECASE,
+    )
+
+    # 2. Collapse adjacent duplicates (loop handles triple+)
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text, flags=re.IGNORECASE)
+
+    # 3. Remove parenthetical filler phrases
+    text = re.sub(r',?\s*\byou know\b,?\s*', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?:^|(?<=,)\s*)\bI mean\b,?\s*', '', text, flags=re.IGNORECASE)
+
+    # 4. Time spacing: "10PM" / "10:30am" → "10 PM" / "10:30 AM"
+    text = re.sub(
+        r'\b(\d{1,2}(?::\d{2})?)\s*(AM|PM|am|pm)\b',
+        lambda m: f"{m.group(1)} {m.group(2).upper()}",
+        text,
+    )
+
+    # 5. Contraction repair (English ASCII text only)
+    if text.isascii():
+        def _fix_contraction(m: re.Match) -> str:
+            word = m.group(0)
+            contracted = _SAFE_CONTRACTIONS.get(word.lower())
+            if contracted is None:
+                return word
+            if word[0].isupper():
+                return contracted[0].upper() + contracted[1:]
+            return contracted
+        text = _CONTRACTION_RE.sub(_fix_contraction, text)
+
+    # Normalize whitespace and re-capitalize first letter
+    text = re.sub(r'  +', ' ', text).strip()
+    text = re.sub(r'\s+([.,!?;:])', r'\1', text)
+    if text and text[0].islower():
+        text = text[0].upper() + text[1:]
+
+    return text
+
+
 # ── Profile aliases (multi-word phrase → abbreviation) ────────────────────────
 # Only multi-word source phrases are allowed as keys — never single words —
 # to prevent dangerous substitutions (e.g. "I" → "UI").
@@ -1941,6 +2045,9 @@ def cmd_transcribe_last(cmd: dict) -> dict:
                         text = translated
             except Exception as e:
                 _log(f"Translation skipped: {e}")
+
+        # ── Disfluency cleanup (runs whether or not Ollama ran) ──────────────
+        text = remove_disfluencies(text, profile)
 
         # ── Local correction pipeline (matches jarvis_dictation.py) ──────────
         # Determine whether the transcription is non-English so we can skip the

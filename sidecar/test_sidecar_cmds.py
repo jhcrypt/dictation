@@ -312,6 +312,73 @@ class TestRoutingInvariants(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Disfluency cleanup tests
+# ---------------------------------------------------------------------------
+
+class TestRemoveDisfluencies(unittest.TestCase):
+    """Tests for the remove_disfluencies() local cleanup function."""
+
+    def _clean(self, text: str, profile: str = "General") -> str:
+        return remove_disfluencies(text, profile)  # type: ignore[name-defined]
+
+    # 1. Filler words are removed
+    def test_filler_words_removed(self):
+        result = self._clean("Um, I think we should, uh, go ahead with this.")
+        self.assertNotIn("um", result.lower())
+        self.assertNotIn("uh", result.lower())
+        # Remaining text is coherent
+        self.assertIn("think", result.lower())
+        self.assertIn("go ahead", result.lower())
+
+    # 2. Repeated words collapsed
+    def test_repeated_word_collapsed(self):
+        result = self._clean("We should do the the thing now.")
+        self.assertNotIn("the the", result.lower())
+        self.assertIn("the thing", result.lower())
+
+    # 3. Time spacing fixed
+    def test_time_spacing(self):
+        result = self._clean("Hey, how's it going? We should do a call at 10:30, not at 11PM.")
+        self.assertIn("11 PM", result)
+        self.assertNotIn("11PM", result)
+
+    # 4. Contraction repair
+    def test_contraction_repair(self):
+        result = self._clean("Hows it going? Dont worry about it.")
+        self.assertIn("How's", result)
+        self.assertIn("Don't", result)
+
+    # 5. Developer profile: no cleanup applied
+    def test_developer_profile_skipped(self):
+        original = "Um, call the dont function with uh the args."
+        result = self._clean(original, profile="Developer")
+        self.assertEqual(result, original)
+
+    # 6. Verbatim profile: no cleanup applied
+    def test_verbatim_profile_skipped(self):
+        original = "Um, hows it going?"
+        result = self._clean(original, profile="Verbatim")
+        self.assertEqual(result, original)
+
+    # 7. Code-like text: no cleanup applied
+    def test_code_text_skipped(self):
+        code = "import dont from './module';"
+        result = self._clean(code)
+        # _CODE_RE should detect the import keyword — text returned unchanged
+        self.assertEqual(result, code)
+
+    # Bonus: filler phrase "you know" removed
+    def test_you_know_removed(self):
+        result = self._clean("It's, you know, a good idea.")
+        self.assertNotIn("you know", result.lower())
+
+    # Bonus: empty text passes through safely
+    def test_empty_text_passthrough(self):
+        self.assertEqual(self._clean(""), "")
+        self.assertEqual(self._clean("   "), "   ")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
