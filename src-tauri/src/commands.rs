@@ -5,6 +5,7 @@ use crate::hotkey::HotkeyConfig;
 use crate::settings::{self, Settings};
 use crate::sidecar::{SidecarState, TranscribeResult, spawn_sidecar};
 use tauri::State;
+use serde::Serialize;
 use serde_json::json;
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode,
@@ -399,14 +400,26 @@ fn send_cmd_v() -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), String> {
-    eprintln!("[paste] requested text len={} preview={}", text.len(), &text[..text.len().min(40)]);
+/// Per-substep timing for a single paste_text call.
+/// Returned so the frontend can display the breakdown in the timing card.
+#[derive(Debug, Clone, Serialize)]
+pub struct PasteTiming {
+    pub save_ms:      u64,
+    pub activate_ms:  u64,
+    pub write_ms:     u64,
+    pub cmd_v_ms:     u64,
+    pub post_wait_ms: u64,
+    pub restore_ms:   u64,
+    pub total_ms:     u64,
+    pub skipped_activate: bool,
+}
 
-    // ── 1. Save original clipboard BEFORE we touch it ───────────────────────
-    // pbpaste with no args returns the current plain-text clipboard content.
-    // We read raw bytes so non-UTF-8 content (e.g. RTF, binary) round-trips
-    // correctly through pbcopy_raw() below.
+#[tauri::command]
+pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<PasteTiming, String> {
+    let t_total = Instant::now();
+
+    // ── 1. Save original clipboard ──────────────────────────────────────────
+    let t0 = Instant::now();
     let prev_clipboard: Option<Vec<u8>> = std::process::Command::new("pbpaste")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -414,62 +427,87 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<(), Stri
         .ok()
         .map(|o| o.stdout)
         .filter(|b| !b.is_empty());
-
-    eprintln!(
-        "[paste] saved original clipboard ({} bytes)",
-        prev_clipboard.as_ref().map_or(0, |b| b.len())
-    );
+    let save_ms = t0.elapsed().as_millis();
 
     // ── 2. Resolve target app ───────────────────────────────────────────────
     let app_info = {
         let guard = target.0.lock().map_err(|e| e.to_string())?;
         guard.clone()
     };
-
     let app_info = app_info.ok_or_else(|| {
         "No target app found. Click into the app where you want text inserted, then dictate.".to_string()
     })?;
 
-    eprintln!("[paste] target: {} ({})", app_info.name, app_info.bundle_id);
+    // ── 3. Activate target app — skip if it was seen frontmost recently ──────
+    // The focus tracker polls every 800 ms.  For normal hold/toggle/wake
+    // recordings the target app stays frontmost throughout.  If last_seen_at
+    // is < 5 s ago, the app is almost certainly still in front and we can
+    // skip the 200 ms osascript round-trip + 250 ms settle entirely.
+    let t0 = Instant::now();
+    let recently_frontmost = app_info.last_seen_at.elapsed()
+        < std::time::Duration::from_secs(5);
 
-    // ── 3. Restore focus to target app ──────────────────────────────────────
-    activate_app(&app_info).map_err(|e| format!("Could not activate target app: {}", e))?;
-    // Wait for the window to come to front before writing to clipboard.
-    std::thread::sleep(std::time::Duration::from_millis(250));
+    let (activate_ms, settle_ms) = if recently_frontmost {
+        // App is already in front — just a tiny settle so the event queue
+        // is clear before we send Cmd+V.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        (0u128, 20u128)
+    } else {
+        // App needs to come to front (e.g. Jarvis settings was focused).
+        let act_start = Instant::now();
+        activate_app(&app_info).map_err(|e| format!("Could not activate target app: {}", e))?;
+        let act_ms = act_start.elapsed().as_millis();
+        // Reduced settle: 80 ms is sufficient for the window to become key.
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        (act_ms, 80u128)
+    };
+    let activate_total_ms = t0.elapsed().as_millis();
 
     // ── 4. Write dictated text via pbcopy ──────────────────────────────────
-    // Append a trailing space to match Python behavior (ensures paste ends
-    // the word being typed rather than extending it).
-    // Python source: paste_text() at line 2484: paste_content = text + " "
+    let t0 = Instant::now();
     let paste_content = format!("{} ", text);
     pbcopy(&paste_content)?;
-    eprintln!("[paste] clipboard set via pbcopy");
+    let write_ms = t0.elapsed().as_millis();
 
-    // ── 5. Cmd+V ───────────────────────────────────────────────────────────
-    // pbcopy is synchronous — the process exits only after NSPasteboard ownership
-    // is registered.  No settle needed (unlike arboard which had internal cache).
-    let cmd_v_start = Instant::now();
+    // ── 5. Cmd+V ────────────────────────────────────────────────────────────
+    let t0 = Instant::now();
     send_cmd_v()?;
-    eprintln!(
-        "[paste] cmd_v returned elapsed={}ms",
-        cmd_v_start.elapsed().as_millis()
-    );
-    eprintln!("[paste] Cmd+V sent successfully into '{}'", app_info.name);
+    let cmd_v_ms = t0.elapsed().as_millis();
 
-    // ── 6. Wait for target app to process the paste, then restore clipboard ─
-    // 350 ms is enough for the app to read NSPasteboard before we overwrite it.
-    std::thread::sleep(std::time::Duration::from_millis(350));
+    // ── 6. Post-paste wait, then restore clipboard ──────────────────────────
+    // 150 ms is enough for the target app to consume the pasteboard contents
+    // before we overwrite it with the original clipboard.
+    let t0 = Instant::now();
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let post_wait_ms = t0.elapsed().as_millis();
 
+    let t0 = Instant::now();
     if let Some(prev_bytes) = prev_clipboard {
         match pbcopy_raw(&prev_bytes) {
-            Ok(()) => eprintln!("[paste] original clipboard restored ({} bytes)", prev_bytes.len()),
+            Ok(()) => {},
             Err(e) => eprintln!("[paste] clipboard restore failed (non-fatal): {}", e),
         }
-    } else {
-        eprintln!("[paste] no original clipboard to restore (was empty before dictation)");
     }
+    let restore_ms = t0.elapsed().as_millis();
 
-    Ok(())
+    let total_ms = t_total.elapsed().as_millis();
+    eprintln!(
+        "[paste] save={}ms activate={}ms (osascript={}ms settle={}ms) write={}ms cmd_v={}ms post_wait={}ms restore={}ms total={}ms  target='{}' skip_activate={}",
+        save_ms, activate_total_ms, activate_ms, settle_ms,
+        write_ms, cmd_v_ms, post_wait_ms, restore_ms, total_ms,
+        app_info.name, recently_frontmost,
+    );
+
+    Ok(PasteTiming {
+        save_ms:          save_ms as u64,
+        activate_ms:      activate_total_ms as u64,
+        write_ms:         write_ms as u64,
+        cmd_v_ms:         cmd_v_ms as u64,
+        post_wait_ms:     post_wait_ms as u64,
+        restore_ms:       restore_ms as u64,
+        total_ms:         total_ms as u64,
+        skipped_activate: recently_frontmost,
+    })
 }
 
 /// Return the name of the currently tracked paste target (for diagnostics/UI).

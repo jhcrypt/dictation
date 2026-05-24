@@ -89,8 +89,16 @@ export interface DictationTiming {
   cleanupMs?: number;
   /** "done" | "skipped" | "off" */
   cleanupStatus?: string;
-  /** paste_text call duration */
+  /** paste_text total call duration */
   pasteMs?: number;
+  /** Paste substeps — from PasteTiming returned by paste_text command */
+  paste_save_ms?: number;
+  paste_activate_ms?: number;
+  paste_write_ms?: number;
+  paste_cmd_v_ms?: number;
+  paste_post_wait_ms?: number;
+  paste_restore_ms?: number;
+  paste_skipped_activate?: boolean;
   /** key-up to paste completed */
   totalAfterReleaseMs?: number;
   /** key-down to paste completed */
@@ -518,7 +526,11 @@ export function useGlobalHotkey() {
               if (bc > 0) await inv("send_backspaces", { count: bc });
             }
             if ((act === "paste_text" || act === "format_paste") && result.text) {
-              await invokeWithTimeout("paste_text", { text: result.text }, 8_000);
+              await invokeWithTimeout<{
+                save_ms: number; activate_ms: number; write_ms: number;
+                cmd_v_ms: number; post_wait_ms: number; restore_ms: number;
+                total_ms: number; skipped_activate: boolean;
+              }>("paste_text", { text: result.text }, 8_000);
             }
             if (act === "keypress") {
               await inv("send_keypress", {
@@ -629,16 +641,27 @@ export function useGlobalHotkey() {
           // Matches Python app: paste_text() happens before save_history() and
           // show_message().  No HUD animation or setTimeout blocks paste.
 
+          type PasteTiming = {
+            save_ms: number; activate_ms: number; write_ms: number;
+            cmd_v_ms: number; post_wait_ms: number; restore_ms: number;
+            total_ms: number; skipped_activate: boolean;
+          };
           let pasteStatus = "transcribed";
+          let pasteTiming: PasteTiming | null = null;
           const t_pasteStart = Date.now();
           let   t_pasteEnd   = t_pasteStart;
           if (!s.safe_mode) {
             try {
               console.log("[perf] paste_text sent");
-              await invokeWithTimeout("paste_text", { text: textToPaste }, 8_000);
+              pasteTiming = await invokeWithTimeout<PasteTiming>("paste_text", { text: textToPaste }, 8_000);
               t_pasteEnd = Date.now();
               pasteStatus = "pasted";
-              console.log("[perf] paste_text returned  elapsed=", t_pasteEnd - t_pasteStart, "ms");
+              console.log(
+                "[paste] save=%dms activate=%dms write=%dms cmd_v=%dms post_wait=%dms restore=%dms total=%dms skip_activate=%s",
+                pasteTiming.save_ms, pasteTiming.activate_ms, pasteTiming.write_ms,
+                pasteTiming.cmd_v_ms, pasteTiming.post_wait_ms, pasteTiming.restore_ms,
+                pasteTiming.total_ms, pasteTiming.skipped_activate,
+              );
             } catch (pe) {
               t_pasteEnd = Date.now();
               pasteStatus = "paste_failed";
@@ -692,6 +715,14 @@ export function useGlobalHotkey() {
             cleanupMs:           result.timing.ollama > 0 ? result.timing.ollama : undefined,
             cleanupStatus,
             pasteMs:             s.safe_mode ? undefined : (t_pasteEnd - t_pasteStart),
+            // Paste substeps (from Rust PasteTiming)
+            paste_save_ms:          pasteTiming?.save_ms,
+            paste_activate_ms:      pasteTiming?.activate_ms,
+            paste_write_ms:         pasteTiming?.write_ms,
+            paste_cmd_v_ms:         pasteTiming?.cmd_v_ms,
+            paste_post_wait_ms:     pasteTiming?.post_wait_ms,
+            paste_restore_ms:       pasteTiming?.restore_ms,
+            paste_skipped_activate: pasteTiming?.skipped_activate,
             totalAfterReleaseMs: t_pasteEnd - t_stopCalled.current,
             totalCycleMs:        t_pasteEnd - t_keyDown.current,
             profile,

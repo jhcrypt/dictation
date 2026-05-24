@@ -333,7 +333,23 @@ export default function DictationPage() {
                 fmtMs(dictTiming.cleanupMs)
               }
             />
+            {/* Paste row — expands to substeps when PasteTiming data is available */}
             <TimingRow label="Paste"              value={fmtMs(dictTiming.pasteMs, true)} />
+            {dictTiming.paste_save_ms !== undefined && (
+              <div className="ml-3 border-l border-jarvis-border pl-3 mb-0.5">
+                {dictTiming.paste_skipped_activate === false && (
+                  <TimingRow label="  activate app"  value={fmtMs(dictTiming.paste_activate_ms)} />
+                )}
+                {dictTiming.paste_skipped_activate === true && (
+                  <TimingRow label="  activate app"  value="skipped" />
+                )}
+                <TimingRow label="  clipboard save" value={fmtMs(dictTiming.paste_save_ms)} />
+                <TimingRow label="  pbcopy write"   value={fmtMs(dictTiming.paste_write_ms)} />
+                <TimingRow label="  Cmd+V"          value={fmtMs(dictTiming.paste_cmd_v_ms)} />
+                <TimingRow label="  post-paste wait" value={fmtMs(dictTiming.paste_post_wait_ms)} />
+                <TimingRow label="  restore clip"   value={fmtMs(dictTiming.paste_restore_ms)} />
+              </div>
+            )}
             <div className="border-t border-jarvis-border my-1.5" />
             <TimingRow label="Total after release" value={fmtMs(dictTiming.totalAfterReleaseMs)} bold />
             <TimingRow label="Total cycle"         value={fmtMs(dictTiming.totalCycleMs, true)} bold />
