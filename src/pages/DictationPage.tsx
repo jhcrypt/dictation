@@ -294,14 +294,17 @@ export default function DictationPage() {
       {/* Last Dictation Timing — always visible; shows placeholders before first dictation */}
       <Card title="Last Dictation Timing">
         {!dictTiming ? (
-          // Pre-dictation placeholder
+          // Pre-dictation placeholder — show configured engine so it's never blank
           <div className="flex flex-col gap-0">
             <p className="text-xs text-jarvis-muted mb-2 pb-2 border-b border-jarvis-border">
               Timing will appear here after your first dictation.
             </p>
             <TimingRow label="Recording duration"        value="—" />
             <TimingRow label="Stop processing"           value="—" />
-            <TimingRow label="Transcription"             value="—" />
+            <TimingRow
+              label="Transcription"
+              value={`— · ${settings.transcription_engine === "cloud" ? "OpenAI Cloud" : "Local Whisper"}`}
+            />
             <TimingRow label="Cleanup"                   value="—" />
             <TimingRow label="Paste"                     value="—" />
             <div className="border-t border-jarvis-border my-1.5" />
