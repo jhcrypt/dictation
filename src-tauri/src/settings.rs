@@ -22,10 +22,11 @@ pub struct Settings {
     pub transcription_provider: String,
     #[serde(default = "default_cleanup_provider")]
     pub cleanup_provider: String,
-    // Legacy fields — kept for migration only; openai_key no longer written back
+    // Legacy fields — kept for migration only; never written back to disk
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_mode: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Skip when None OR when the string is empty ("") — both arrive from old settings files
+    #[serde(default, skip_serializing_if = "openai_key_is_absent")]
     pub openai_key: Option<String>,
     // ── Audio / hardware ──────────────────────────────────────────────────────
     #[serde(default = "default_model")]
@@ -102,6 +103,12 @@ pub struct Settings {
     pub hud_x: i32,
     #[serde(default)]
     pub hud_y: i32,
+}
+
+/// Skip openai_key during serialization when it is absent or an empty string.
+/// This covers both None (never set) and Some("") (old plaintext field read from disk).
+fn openai_key_is_absent(v: &Option<String>) -> bool {
+    v.as_deref().map_or(true, |s| s.is_empty())
 }
 
 fn default_transcription_engine()   -> String { "local".into() }

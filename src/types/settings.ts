@@ -22,8 +22,8 @@ export interface Settings {
   // ── Legacy (kept for migration path only — do not write new code against these) ──
   /** @deprecated use transcription_engine instead */
   cloud_mode?: boolean;
-  /** @deprecated key now stored in macOS Keychain */
-  openai_key?: string;
+  // openai_key is intentionally absent — key is stored in macOS Keychain only.
+  // Do not add openai_key here; it must never appear in the save payload.
   // ── Audio / hardware ─────────────────────────────────────────────────────
   model: string;
   mic_device: number | null;
