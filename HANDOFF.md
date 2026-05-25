@@ -13,7 +13,7 @@ Session engineer: Claude (Anthropic)
 | R2 — Clipboard paste/preservation | **FIXED** | ✅ Manual QA passed 2026-05-25 |
 | R3 — Custom commands | **FIXED** | ✅ Manual QA passed 2026-05-25 |
 | R4 — Email body in To field | **FIXED** | ✅ Manual QA passed 2026-05-25 |
-| R5 — Cleanup inventing words/commentary | Needs test coverage | 🔲 Safety filter exists, no unit tests |
+| R5 — Cleanup inventing words/commentary | **FIXED** | ✅ Manual QA passed 2026-05-25 |
 | R8 — Inline punctuation | **DEFERRED** | ❌ Function built, disabled in pipeline |
 
 ---
@@ -290,7 +290,7 @@ When revisiting, options in priority order:
 | `src-tauri/src/wake.rs` | Wake-poll thread auto-restarts sidecar + restores wake listening on broken pipe |
 | `sidecar/jarvis_sidecar.py` | VAD hard cap (Issue 2); duplicate wake-resume guard (Issue 5); `_deduplicate_whisper` threshold (Issue 6); Ollama prompt (Issue 7); main() BrokenPipeError handler (Issue 1); `apply_inline_punctuation()` built but **disabled/deferred** (Issue 8); custom command trigger normalization fix (Issue 9) |
 | `src/hooks/useGlobalHotkey.ts` | Removed skipped HUD (Issue 3); rmsGuard (Issue 4); `lastPasteRef` duplicate guard (Issue 6); wake monitor rewrite to raw-RMS/100ms poll |
-| `sidecar/test_sidecar_cmds.py` | **145 tests total**: `TestApplyInlinePunctuation` (40 — function tested but not in pipeline), `TestDeduplicateWhisper` (13), `TestCustomCommandPriority` (+7 new: apostrophe normalization, field shapes, hud presence, missing-file), others |
+| `sidecar/test_sidecar_cmds.py` | **196 tests total**: `TestApplyInlinePunctuation` (40 — function tested but not in pipeline), `TestDeduplicateWhisper` (13), `TestCustomCommandPriority` (+7 new), `TestAlreadyWellFormed` (10), `TestIsRepetitive` (7), `TestOllamaSafetyFilter` (10), `TestStripOllamaPreamble` (8), `TestLooksLikeAssistantAnswer` (15), others |
 | `ARCHITECTURE_AUDIT.md` | New — read-only architecture map, duplication inventory, release blockers |
 | `HANDOFF.md` | New — this file |
 | `BUG_FIX_TEMPLATE.md` | New — task template for future sessions |

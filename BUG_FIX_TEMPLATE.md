@@ -8,7 +8,7 @@
 | R2 — Clipboard paste/preservation | ✅ CONFIRMED FIXED (manual QA) |
 | R3 — Custom commands | ✅ CONFIRMED FIXED (manual QA) |
 | R4 — Email body in To field | ✅ CONFIRMED FIXED (manual QA) |
-| R5 — Cleanup inventing words | 🔲 Safety filter exists, needs unit tests |
+| R5 — Cleanup inventing words | ✅ CONFIRMED FIXED (manual QA) |
 | R8 — Inline punctuation | ❌ DEFERRED — do not re-enable without robust parser |
 
 ## Source of truth
