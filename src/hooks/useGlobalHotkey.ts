@@ -169,6 +169,12 @@ export function useGlobalHotkey() {
   const t_stopCalled = useRef<number>(0); // key-up / stop requested
   const t_stopDone   = useRef<number>(0); // sidecar_stop_recording returned
 
+  // ── Duplicate-paste guard ────────────────────────────────────────────────────
+  // Tracks the most-recently pasted text + timestamp. If the same text arrives
+  // again within 5 s (Whisper 2× hallucination, double-trigger, etc.) we skip
+  // the second paste so the user never sees duplicated dictation output.
+  const lastPasteRef = useRef<{ text: string; time: number } | null>(null);
+
   useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   useEffect(() => {
@@ -468,6 +474,9 @@ export function useGlobalHotkey() {
         const graceMs   = (settingsRef.current.wake_dictation_grace_seconds   ?? 3.5) * 1000;
         const silenceMs = (settingsRef.current.wake_dictation_silence_seconds ?? 2.5) * 1000;
         const maxMs     = (settingsRef.current.wake_dictation_max_seconds     ?? 45.0) * 1000;
+        // silence_rms: absolute threshold matching Python _silence_stop_monitor.
+        // WAKE_DICTATION_SILENCE_RMS = 0.025 in the reference.
+        const silenceRmsThreshold = settingsRef.current.wake_dictation_silence_rms ?? 0.025;
 
         clearWakeMonitor(); // defensive: clear any stale monitor
         wakeMonitorRef.current = setInterval(async () => {
@@ -494,7 +503,26 @@ export function useGlobalHotkey() {
             return;
           }
 
-          // Poll voice activity from sidecar VAD
+          // ── Silence detection: mirror Python _silence_stop_monitor exactly ────
+          //
+          // Python reference (jarvis_dictation.py _silence_stop_monitor):
+          //   rms = float(np.sqrt(np.mean(last_frame ** 2)))
+          //   if rms < silence_rms:   # silence_rms = 0.025 (absolute)
+          //       silence_since = ...
+          //   else:
+          //       silence_since = None
+          //
+          // PREVIOUS (incorrect) approach used sidecar voice_active flag:
+          //   voice_active = rms > max(noise_floor * 2.5, 0.012)
+          //   After noise floor reaches cap (0.016), threshold = 0.040 — more than
+          //   1.6× the Python reference's 0.025.  Normal inter-word dips (RMS 0.025–
+          //   0.040) were counted as silence even mid-sentence, causing cutoffs at
+          //   grace+~0.5 s.
+          //
+          // CORRECT: compare raw recording_rms against the absolute silence_rms
+          // threshold (wake_dictation_silence_rms, default 0.025), identical to
+          // what Python does.  voice_active is still used by HudApp for waveform
+          // scaling — it is NOT used for silence detection here.
           try {
             const statusStr = await invokeWithTimeout<string>("sidecar_get_status", undefined, 2_000);
             const status = JSON.parse(statusStr) as {
@@ -502,6 +530,8 @@ export function useGlobalHotkey() {
               recording: boolean;
               voice_active?: boolean;
               recording_rms?: number | null;
+              noise_floor?: number;
+              vad_threshold?: number;
             };
 
             if (!status.ok || !status.recording) {
@@ -510,36 +540,36 @@ export function useGlobalHotkey() {
               return;
             }
 
-            // Use the sidecar's adaptive voice_active VAD flag as the primary signal.
-            //
-            // The sidecar noise floor now adapts bidirectionally (down when silent,
-            // slowly up when ambient noise is consistently above the floor).  This
-            // eliminates the catch-22 where floor=0.01, ambient=0.03, threshold=0.025
-            // would pin voice_active=True forever.  After ~5–10 s in a noisy room the
-            // floor rises and the VAD correctly reports silence once the user stops.
-            //
-            // Raw RMS fallback: if voice_active is absent (shouldn't happen with current
-            // sidecar builds) fall back to the configured absolute threshold.
-            const silenceRmsThreshold = settingsRef.current.wake_dictation_silence_rms ?? 0.025;
-            const rawRms = status.recording_rms ?? 0.0;
-            const voiceActive = (status.voice_active != null)
-              ? status.voice_active === true
-              : rawRms >= silenceRmsThreshold;
+            const rawRms       = status.recording_rms ?? 0.0;
+            const noiseFloor   = status.noise_floor   ?? 0;
+            const vadThreshold = status.vad_threshold ?? 0;
+            const voiceActive  = status.voice_active  ?? false;
+            const silenceElapsedMs = silenceSinceMs !== null ? Date.now() - silenceSinceMs : 0;
 
-            if (voiceActive) {
+            // ── Measured diagnostics log (every poll while past grace period) ──
+            console.log(
+              `[wake-monitor] t=${(elapsed/1000).toFixed(2)}s` +
+              ` rms=${rawRms.toFixed(4)}` +
+              ` silence_rms=${silenceRmsThreshold.toFixed(4)}` +
+              ` noise_floor=${noiseFloor.toFixed(4)}` +
+              ` vad_thr=${vadThreshold.toFixed(4)}` +
+              ` voice_active=${voiceActive}` +
+              ` silent=${rawRms < silenceRmsThreshold}` +
+              (silenceSinceMs !== null ? ` silence_elapsed=${(silenceElapsedMs/1000).toFixed(2)}s` : ""),
+            );
+
+            // Mirror Python: "is silent" = raw RMS below absolute threshold
+            const isSilent = rawRms < silenceRmsThreshold;
+
+            if (!isSilent) {
               // Voice detected — reset the silence window
               silenceSinceMs = null;
             } else {
-              // Silent. The grace period above already guarantees we won't fire
-              // before the user has had time to begin speaking, so there is no
-              // need for a separate "has-ever-heard-voice" gate.  That gate made
-              // wake_dictation_silence_seconds completely ineffective whenever
-              // the VAD threshold wasn't crossed (quiet mic, noisy floor, etc.)
-              // causing recordings to always run to the 45-second max cap.
               if (silenceSinceMs === null) silenceSinceMs = Date.now();
-              else if (Date.now() - silenceSinceMs >= silenceMs) {
+              else if (silenceElapsedMs >= silenceMs) {
                 console.log(
-                  `[wake-monitor] silence for ${((Date.now() - silenceSinceMs) / 1000).toFixed(1)}s — auto-stopping`,
+                  `[wake-monitor] auto-stop: silence for ${(silenceElapsedMs/1000).toFixed(1)}s` +
+                  ` rms=${rawRms.toFixed(4)} threshold=${silenceRmsThreshold.toFixed(4)}`,
                 );
                 clearWakeMonitor();
                 stopAndTranscribe();
@@ -548,7 +578,7 @@ export function useGlobalHotkey() {
           } catch (e) {
             console.warn("[wake-monitor] get_status error (ignored):", e);
           }
-        }, 200);
+        }, 100); // 100 ms — matches Python _silence_stop_monitor sleep(0.1)
       }
     };
 
@@ -824,6 +854,23 @@ export function useGlobalHotkey() {
           }
 
           const textToPaste = custom.pasteText ?? trimmed;
+
+          // ── Duplicate-paste guard ────────────────────────────────────────────
+          // Catches Whisper 2× hallucination that survives dedup AND any scenario
+          // where two triggers fire in quick succession (double wake-word event,
+          // two apps running, etc.).  5-second window is generous enough not to
+          // block legitimate identical phrases typed minutes apart, but tight
+          // enough to catch back-to-back duplicates.
+          {
+            const prev = lastPasteRef.current;
+            if (prev && prev.text === textToPaste && Date.now() - prev.time < 5_000) {
+              console.warn("[paste] duplicate suppressed — same text within 5 s");
+              stateRef.current = "idle";
+              hudEmit({ state: "idle" });
+              return;
+            }
+            lastPasteRef.current = { text: textToPaste, time: Date.now() };
+          }
 
           // ── FAST PATH: paste FIRST, before any HUD/history/timing work ─────
           // Matches Python app: paste_text() happens before save_history() and

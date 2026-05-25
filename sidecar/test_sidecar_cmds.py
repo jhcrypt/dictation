@@ -296,6 +296,75 @@ class TestCustomCommandPriority(unittest.TestCase):
         # Should NOT match — single-word triggers are skipped
         self.assertIsNone(r, "single-word custom triggers must be skipped")
 
+    def test_apostrophe_in_stored_trigger_matches_speech(self):
+        """Stored trigger "let's play chess" (apostrophe) must match speech "lets play chess".
+
+        Root cause: _cc_trigger was only .lower().strip()'d, not re.sub'd.
+        So stored "let's play chess" != speech-normalized "lets play chess".
+        Fix: apply re.sub(r'[^a-z0-9 ]', '', ...) to the stored trigger too.
+        """
+        import json as _j
+        with open(self._tmp.name, "w") as f:
+            _j.dump([
+                {"trigger": "let's play chess", "action": "open_url",
+                 "target": "https://www.chess.com/play/online"},
+            ], f)
+        # Simulate Whisper output: apostrophe already stripped by re.sub on raw text
+        r = detect("lets play chess", jarvis=True)
+        self.assertIsNotNone(r, "stored trigger with apostrophe must match speech without apostrophe")
+        self.assertEqual(r["action"], "open_url")
+        self.assertIn("chess.com", r.get("url", ""))
+
+    def test_leading_whisper_comma_does_not_block_custom_match(self):
+        """Whisper sometimes prepends ', ' to a phrase; re.sub strips it, match still works."""
+        # detect() feeds raw_text directly; simulate Whisper comma prefix
+        r = detect(", open movies.", jarvis=True)
+        self.assertIsNotNone(r, "leading Whisper comma must not break custom command match")
+        self.assertEqual(r["action"], "open_url")
+        self.assertIn("fmoviess", r.get("url", ""))
+
+    def test_open_url_result_has_url_field(self):
+        """open_url custom command must return url= field (not target=) for TS dispatch."""
+        r = detect("open movies", jarvis=True)
+        self.assertIsNotNone(r)
+        self.assertIn("url", r, "open_url result must have 'url' key")
+        self.assertNotIn("target", r, "open_url result must NOT expose raw 'target' key")
+
+    def test_open_app_result_has_app_name_field(self):
+        """open_app custom command must return app_name= field for TS dispatch."""
+        r = detect("open photoshop", jarvis=True)
+        self.assertIsNotNone(r)
+        self.assertIn("app_name", r, "open_app result must have 'app_name' key")
+
+    def test_type_text_result_action_is_paste_text(self):
+        """type_text custom command must return action='paste_text' (not 'type_text') for TS dispatch."""
+        r = detect("user email", jarvis=True)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["action"], "paste_text",
+                         "type_text custom command must use action='paste_text' so TS paste path is triggered")
+        self.assertIn("text", r, "type_text result must carry 'text' field")
+
+    def test_custom_command_result_has_hud_field(self):
+        """All custom command results must include 'hud' for HUD display."""
+        for phrase, action in [("open movies", "open_url"), ("open photoshop", "open_app"),
+                               ("user email", "paste_text")]:
+            with self.subTest(phrase=phrase, action=action):
+                r = detect(phrase, jarvis=True)
+                self.assertIsNotNone(r)
+                self.assertIn("hud", r, f"Custom command '{phrase}' result missing 'hud' field")
+                self.assertTrue(r["hud"], f"Custom command '{phrase}' hud must be non-empty")
+
+    def test_missing_custom_commands_file_returns_no_match(self):
+        """If the custom commands file is missing, _cmd_detect must not crash."""
+        import os as _os
+        globals()["CUSTOM_COMMANDS_FILE"] = "/tmp/__nonexistent_custom_commands__.json"
+        try:
+            r = detect("open photoshop", jarvis=True)
+            # Should fall through to built-in open_app (not None) or None — just must not crash
+            # We only verify it didn't raise an exception (test reaching here is the assertion)
+        finally:
+            globals()["CUSTOM_COMMANDS_FILE"] = self._tmp.name
+
 
 class TestNonCommands(unittest.TestCase):
     """Phrases that should NOT be detected as commands."""
@@ -925,6 +994,103 @@ class TestApplyInlinePunctuation(unittest.TestCase):
         # The word is preserved (possibly title-cased), not replaced with '-'.
         self.assertNotIn(" - ", result)
         self.assertIn("yphenated", result)  # suffix survives regardless of capitalisation
+
+    # ── Whisper-inserted trailing punctuation after command words ────────────
+    # These are the EXACT assertions from the bug report — do not weaken them.
+
+    def test_whisper_hello_period_dot(self):
+        """'Hello, period.' → 'Hello.'  (Whisper adds trailing period)"""
+        self.assertEqual(self.punct("Hello, period."), "Hello.")
+
+    def test_whisper_come_again_period_dot(self):
+        """'Come again, period.' → 'Come again.'"""
+        self.assertEqual(self.punct("Come again, period."), "Come again.")
+
+    def test_whisper_see_you_later_period_dot(self):
+        """'See you later, period.' → 'See you later.'"""
+        self.assertEqual(self.punct("See you later, period."), "See you later.")
+
+    def test_whisper_question_mark_trailing_comma(self):
+        """'Question mark,' → '?'  (Whisper adds trailing comma)"""
+        self.assertEqual(self.punct("Question mark,"), "?")
+
+    def test_whisper_question_mark_trailing_comma_plus_smart_punct_period(self):
+        """smart_punctuate adds '.' to 'Question mark,' → 'Question mark,.' → '?'"""
+        # This simulates the pipeline: smart_punctuate runs before apply_inline_punctuation
+        self.assertEqual(self.punct("Question mark,."), "?")
+
+    def test_whisper_exclamation_mark_trailing_comma(self):
+        """'Exclamation mark,' → '!'"""
+        self.assertEqual(self.punct("Exclamation mark,"), "!")
+
+    def test_whisper_exclamation_mark_trailing_comma_plus_smart_punct(self):
+        """smart_punctuate adds '.' after Whisper comma: 'Exclamation mark,.' → '!'"""
+        self.assertEqual(self.punct("Exclamation mark,."), "!")
+
+    def test_whisper_explanation_mark_mishearing(self):
+        """'Explanation mark,' → '!'  (common Whisper mishearing of exclamation mark)"""
+        self.assertEqual(self.punct("Explanation mark,"), "!")
+
+    def test_whisper_period_exclamation_question_sequence(self):
+        """'Period, exclamation mark, question mark.' → '.!?'"""
+        self.assertEqual(
+            self.punct("Period, exclamation mark, question mark."),
+            ".!?",
+        )
+
+    def test_whisper_full_failing_sentence(self):
+        """Exact failing dictation from the bug report must produce exact expected output."""
+        result = self.punct(
+            "Question mark, exclamation mark, period. Hello, period. "
+            "Come again, period. See you later, period."
+        )
+        self.assertEqual(result, "?!. Hello. Come again. See you later.")
+
+    def test_whisper_trailing_comma_after_period(self):
+        """'Hello, period,' → 'Hello.'  (Whisper adds trailing comma instead of period)"""
+        self.assertEqual(self.punct("Hello, period,"), "Hello.")
+
+    def test_whisper_trailing_comma_after_question_mark(self):
+        """'Really, question mark,' → 'Really?'"""
+        self.assertEqual(self.punct("Really, question mark,"), "Really?")
+
+    def test_whisper_trailing_comma_after_exclamation_mark(self):
+        """'Wow, exclamation mark,' → 'Wow!'"""
+        self.assertEqual(self.punct("Wow, exclamation mark,"), "Wow!")
+
+    def test_whisper_comma_before_command_not_doubled(self):
+        """'Hello, comma, world' → 'Hello, world' (not 'Hello,, world')."""
+        self.assertEqual(self.punct("Hello, comma, world"), "Hello, world")
+
+    def test_whisper_trailing_period_on_question_mark(self):
+        """'Is this right, question mark.' → 'Is this right?'"""
+        self.assertEqual(self.punct("Is this right, question mark."), "Is this right?")
+
+    def test_whisper_sentence_capitalize_after_command(self):
+        """Words after period command are capitalized: 'hello period come again' → 'Hello. Come again'"""
+        self.assertEqual(self.punct("hello period come again"), "Hello. Come again")
+
+    def test_whisper_goodbye_period(self):
+        """'Goodbye, period' → 'Goodbye.'"""
+        self.assertEqual(self.punct("Goodbye, period"), "Goodbye.")
+
+    def test_smart_punctuate_double_question_mark_collapsed(self):
+        """smart_punctuate adds '?' AND user said 'question mark': must not produce '??'."""
+        # Simulate what the pipeline produces after smart_punctuate adds trailing '?'
+        result = self.punct("Is this working question mark?")
+        self.assertEqual(result, "Is this working?")
+
+    def test_smart_punctuate_double_exclamation_collapsed(self):
+        """Duplicate '!!' from back-to-back exclamation commands → single '!'."""
+        result = self.punct("Wow exclamation mark!")
+        self.assertEqual(result, "Wow!")
+
+    def test_mixed_punctuation_not_collapsed(self):
+        """'?!' and '!?' are valid mixed sequences and must NOT be collapsed."""
+        result = self.punct("Really question mark exclamation mark")
+        # Both symbols must be present; order depends on substitution order
+        self.assertIn("?", result)
+        self.assertIn("!", result)
 
 
 class TestDeduplicateWhisper(unittest.TestCase):

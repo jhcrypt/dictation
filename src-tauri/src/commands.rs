@@ -537,10 +537,24 @@ pub fn paste_text(text: String, target: State<LastTargetApp>) -> Result<PasteTim
     let cmd_v_ms = t0.elapsed().as_millis();
 
     // ── 6. Post-paste wait, then restore clipboard ──────────────────────────
-    // 150 ms is enough for the target app to consume the pasteboard contents
-    // before we overwrite it with the original clipboard.
+    // Product decision: Quill preserves the user's previous clipboard.
+    // After dictation the clipboard is restored to what it was before.
+    //
+    // The wait must be long enough for the target app to read the clipboard
+    // and complete its paste before we overwrite it with the old content.
+    // Python reference uses sleep(0.6) for exactly this reason.  Our previous
+    // 150 ms was too short for slow apps (Notion, Slack, Electron, browsers)
+    // that process Cmd+V asynchronously: they read the clipboard AFTER we had
+    // already restored the old content, causing the old clipboard text to
+    // appear after the dictation.
+    //
+    // Correct sequence:
+    //   pbcopy(dictated_text) → Cmd+V → wait 600 ms → pbcopy(prev_clipboard)
+    //
+    // The 600 ms wait guarantees the target app has consumed the dictated text
+    // before we restore the old clipboard.  No second Cmd+V is ever sent.
     let t0 = Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    std::thread::sleep(std::time::Duration::from_millis(600));
     let post_wait_ms = t0.elapsed().as_millis();
 
     let t0 = Instant::now();
