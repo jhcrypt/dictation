@@ -1,7 +1,20 @@
 # Jarvis Tauri — Bug Fix Handoff
 
-Last updated: 2026-05-24  
+Last updated: 2026-05-25  
 Session engineer: Claude (Anthropic)
+
+---
+
+## ✅ Manual QA Results — Confirmed Fixed
+
+| Blocker | Status | Confirmed |
+|---|---|---|
+| R1 — Jarvis long dictation cut-off | **FIXED** | ✅ Manual QA passed 2026-05-25 |
+| R2 — Clipboard paste/preservation | **FIXED** | ✅ Manual QA passed 2026-05-25 |
+| R3 — Custom commands | **FIXED** | ✅ Manual QA passed 2026-05-25 |
+| R4 — Email body in To field | Needs test coverage | 🔲 Code fix exists, no regression test |
+| R5 — Cleanup inventing words/commentary | Needs test coverage | 🔲 Safety filter exists, no unit tests |
+| R8 — Inline punctuation | **DEFERRED** | ❌ Function built, disabled in pipeline |
 
 ---
 
@@ -273,11 +286,39 @@ When revisiting, options in priority order:
 
 | File | What Changed |
 |---|---|
-| `src-tauri/src/commands.rs` | `try_restart_on_broken_pipe()` added; all 5 sidecar commands use it |
+| `src-tauri/src/commands.rs` | `try_restart_on_broken_pipe()` added; all 5 sidecar commands use it; clipboard wait 150→600 ms |
 | `src-tauri/src/wake.rs` | Wake-poll thread auto-restarts sidecar + restores wake listening on broken pipe |
-| `sidecar/jarvis_sidecar.py` | VAD hard cap (Issue 2); duplicate wake-resume guard (Issue 5); `_deduplicate_whisper` threshold (Issue 6); Ollama prompt (Issue 7); main() BrokenPipeError handler (Issue 1); `apply_inline_punctuation()` built but **disabled/deferred** (Issue 8) |
+| `sidecar/jarvis_sidecar.py` | VAD hard cap (Issue 2); duplicate wake-resume guard (Issue 5); `_deduplicate_whisper` threshold (Issue 6); Ollama prompt (Issue 7); main() BrokenPipeError handler (Issue 1); `apply_inline_punctuation()` built but **disabled/deferred** (Issue 8); custom command trigger normalization fix (Issue 9) |
 | `src/hooks/useGlobalHotkey.ts` | Removed skipped HUD (Issue 3); rmsGuard (Issue 4); `lastPasteRef` duplicate guard (Issue 6); wake monitor rewrite to raw-RMS/100ms poll |
-| `sidecar/test_sidecar_cmds.py` | 138 tests total: `TestApplyInlinePunctuation` (40 — function tested but not in pipeline), `TestDeduplicateWhisper` (13), others |
+| `sidecar/test_sidecar_cmds.py` | **145 tests total**: `TestApplyInlinePunctuation` (40 — function tested but not in pipeline), `TestDeduplicateWhisper` (13), `TestCustomCommandPriority` (+7 new: apostrophe normalization, field shapes, hud presence, missing-file), others |
+| `ARCHITECTURE_AUDIT.md` | New — read-only architecture map, duplication inventory, release blockers |
+| `HANDOFF.md` | New — this file |
+| `BUG_FIX_TEMPLATE.md` | New — task template for future sessions |
+
+---
+
+## Issue 9 — Custom Command Trigger Normalization Mismatch
+
+### Symptom
+UI-created custom commands with apostrophes in the trigger (e.g. `"let's play chess"`) never matched in the Python sidecar, falling through to Ollama cleanup and then relying on the TypeScript fallback path to catch the command. Commands with clean triggers worked; commands typed naturally with contractions did not.
+
+### Root Cause
+`_cmd_detect` normalized raw Whisper speech with `re.sub(r'[^a-z0-9 ]', '', raw_text.lower())` — stripping all non-alphanumeric — but compared it against the stored trigger using only `.lower().strip()`, which preserved apostrophes, hyphens, and other special chars. So `"lets play chess"` (speech) never equalled `"let's play chess"` (stored trigger).
+
+### Fix
+**`sidecar/jarvis_sidecar.py`** — Apply the same `re.sub` to the stored trigger before comparing:
+```python
+_cc_trigger = re.sub(r'[^a-z0-9 ]', '', str(_cc.get("trigger", "")).lower()).strip()
+```
+
+### Tests Added (7 new, in `TestCustomCommandPriority`)
+- `test_apostrophe_in_stored_trigger_matches_speech`
+- `test_leading_whisper_comma_does_not_block_custom_match`
+- `test_open_url_result_has_url_field`
+- `test_open_app_result_has_app_name_field`
+- `test_type_text_result_action_is_paste_text`
+- `test_custom_command_result_has_hud_field`
+- `test_missing_custom_commands_file_returns_no_match`
 
 ---
 
@@ -295,6 +336,7 @@ When revisiting, options in priority order:
 | Inline punct regex trailing `\b` without consuming Whisper punctuation | Whisper's trailing comma/period not consumed; leaves `,?` or `,.` garbage in output |
 | Comma-before-punct cleanup only matching `,` without `\s*` | After phrase sub, space exists between comma and symbol: "Hello, ." won't match `,([.!?])` |
 | No double-comma collapse | Whisper comma + "comma" command → `,,` in output |
+| Normalizing raw speech but not stored custom trigger | `re.sub` on speech text but only `.lower()` on stored trigger → apostrophes/hyphens in triggers never match |
 
 ---
 

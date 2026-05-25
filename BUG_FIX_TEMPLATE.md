@@ -1,5 +1,16 @@
 # Claude Task — [Specific Bug Name]
 
+## Release blocker status (2026-05-25)
+
+| Blocker | Status |
+|---|---|
+| R1 — Jarvis long dictation cut-off | ✅ CONFIRMED FIXED (manual QA) |
+| R2 — Clipboard paste/preservation | ✅ CONFIRMED FIXED (manual QA) |
+| R3 — Custom commands | ✅ CONFIRMED FIXED (manual QA) |
+| R4 — Email body in To field | 🔲 Code fix exists, needs regression test |
+| R5 — Cleanup inventing words | 🔲 Safety filter exists, needs unit tests |
+| R8 — Inline punctuation | ❌ DEFERRED — do not re-enable without robust parser |
+
 ## Source of truth
 Compare against:
 - /Users/user1/dictation/src/jarvis_dictation.py
