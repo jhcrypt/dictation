@@ -3,7 +3,7 @@ use arboard;
 use crate::focus::{LastTargetApp, activate_app};
 use crate::hotkey::HotkeyConfig;
 use crate::settings::{self, Settings};
-use crate::sidecar::{SidecarState, TranscribeResult, spawn_sidecar};
+use crate::sidecar::{SidecarState, TranscribeResult};
 use tauri::State;
 use serde::Serialize;
 use serde_json::json;
