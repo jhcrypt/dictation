@@ -675,6 +675,305 @@ class TestEmailCommands(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Ollama safety filter tests (R5 — cleanup must not invent words/commentary)
+# ---------------------------------------------------------------------------
+
+class TestAlreadyWellFormed(unittest.TestCase):
+    """Tests for _already_well_formed().
+
+    Port from jarvis_dictation.py. Determines whether Ollama should be skipped
+    in auto mode because the text is already clean.  Running Ollama on already-
+    correct text is the primary vector for commentary responses.
+    """
+
+    def _wf(self, text: str) -> bool:
+        return _already_well_formed(text)  # type: ignore[name-defined]
+
+    def test_clean_sentence_is_well_formed(self):
+        """Starts with capital, ends with period → well-formed → skip Ollama."""
+        self.assertTrue(self._wf("The meeting is at 3 PM."))
+
+    def test_question_mark_is_well_formed(self):
+        self.assertTrue(self._wf("How is the project going?"))
+
+    def test_exclamation_is_well_formed(self):
+        self.assertTrue(self._wf("Great work on the presentation!"))
+
+    def test_lowercase_start_not_well_formed(self):
+        """Starts lowercase → not well-formed → do run Ollama."""
+        self.assertFalse(self._wf("the meeting is at 3 PM."))
+
+    def test_no_terminal_punct_not_well_formed(self):
+        """Missing terminal punctuation → not well-formed."""
+        self.assertFalse(self._wf("The meeting is at 3 PM"))
+
+    def test_empty_string_not_well_formed(self):
+        self.assertFalse(self._wf(""))
+
+    def test_all_caps_artifact_not_well_formed(self):
+        """More than 50% ALL-CAPS words = Whisper artifact → not well-formed."""
+        self.assertFalse(self._wf("THE MEETING IS AT THREE PM."))
+
+    def test_mixed_caps_but_mostly_normal_is_well_formed(self):
+        """A single ALL-CAPS acronym in otherwise normal text is fine."""
+        self.assertTrue(self._wf("Please update the API documentation."))
+
+    def test_single_word_with_punct_is_well_formed(self):
+        self.assertTrue(self._wf("Done."))
+
+    def test_whitespace_only_not_well_formed(self):
+        self.assertFalse(self._wf("   "))
+
+
+class TestIsRepetitive(unittest.TestCase):
+    """Tests for _is_repetitive().
+
+    Port from jarvis_dictation.py. Skips Ollama when more than 60% of words
+    are identical — a Whisper hallucination loop that survived dedup.
+    """
+
+    def _rep(self, text: str) -> bool:
+        return _is_repetitive(text)  # type: ignore[name-defined]
+
+    def test_repetitive_loop_detected(self):
+        """Classic Whisper loop: same phrase repeated."""
+        self.assertTrue(self._rep("testing testing testing testing"))
+
+    def test_high_repetition_over_threshold(self):
+        """5 of 6 words are the same → 83% repetitive."""
+        self.assertTrue(self._rep("the the the the the meeting"))
+
+    def test_normal_sentence_not_repetitive(self):
+        self.assertFalse(self._rep("The meeting is at three PM tomorrow"))
+
+    def test_short_text_not_flagged(self):
+        """Less than 4 words → never flagged (too short to judge)."""
+        self.assertFalse(self._rep("yes yes yes"))
+
+    def test_empty_not_repetitive(self):
+        self.assertFalse(self._rep(""))
+
+    def test_exactly_threshold_boundary(self):
+        """5 of 6 words same = 83% (2/6 unique = 0.33 < 0.40) → repetitive."""
+        # "hello hello hello hello hello world" → set size 2, total 6 → 0.333 < 0.4 ✓
+        self.assertTrue(self._rep("hello hello hello hello hello world"))
+
+    def test_just_below_threshold(self):
+        """3 of 6 words same = 50% → NOT repetitive (not > 60%)."""
+        self.assertFalse(self._rep("the cat sat on the mat"))
+
+
+class TestOllamaSafetyFilter(unittest.TestCase):
+    """Tests for ollama_result_is_safe().
+
+    Verifies that the safety filter catches the patterns that cause invented
+    words or commentary to reach the paste path.
+    """
+
+    def _safe(self, original: str, refined: str) -> tuple:
+        return ollama_result_is_safe(original, refined)  # type: ignore[name-defined]
+
+    def test_clean_correction_accepted(self):
+        """A genuine correction (typo fixed) must be accepted."""
+        ok, reason = self._safe(
+            "the meetig is at 3",
+            "The meeting is at 3.",
+        )
+        self.assertTrue(ok, f"Expected accepted but got: {reason!r}")
+
+    def test_identical_output_accepted(self):
+        """If Ollama returns the text unchanged, that is safe."""
+        ok, _ = self._safe("The meeting is at 3 PM.", "The meeting is at 3 PM.")
+        self.assertTrue(ok)
+
+    def test_apostrophe_restoration_accepted(self):
+        """Adding an apostrophe ('dont' → 'don't') introduces only one new word."""
+        ok, reason = self._safe(
+            "I dont think we should do that",
+            "I don't think we should do that.",
+        )
+        self.assertTrue(ok, f"Expected accepted: {reason!r}")
+
+    def test_empty_output_rejected(self):
+        ok, reason = self._safe("some text here", "")
+        self.assertFalse(ok)
+        self.assertIn("empty", reason)
+
+    def test_nothing_output_rejected(self):
+        ok, reason = self._safe("some text here", "nothing")
+        self.assertFalse(ok)
+        self.assertIn("empty", reason)
+
+    def test_short_expanded_to_long_rejected(self):
+        """6-word input expanded to a 30-word assistant answer → rejected."""
+        ok, reason = self._safe(
+            "what is the best approach",
+            "The best approach to this problem involves several key considerations. "
+            "First, you should evaluate your requirements. Then consider the trade-offs "
+            "between different solutions available.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "expanded short dictation")
+
+    def test_question_becomes_non_question_rejected(self):
+        """Question input that Ollama rewrites as a statement → rejected."""
+        ok, reason = self._safe(
+            "What time is the meeting tomorrow?",
+            "The meeting is tomorrow at some time.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "question became non-question")
+
+    def test_assistant_answer_sure_rejected(self):
+        """Ollama responds with 'Sure, ...' instead of correcting → rejected."""
+        ok, reason = self._safe(
+            "the meetig is at 3",
+            "Sure, I can help you with that! The meeting is at 3.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "looks like assistant response")
+
+    def test_too_many_new_words_rejected(self):
+        """Output introduces far more new words than the original had → rejected."""
+        # Use a 7-word original so the short-expansion guard (≤6 words) is bypassed.
+        original = "The quick brown fox jumped over something"
+        refined = (
+            "The quick brown fox jumped over something and leaped across the beautiful "
+            "garden river bank yesterday morning while everyone watched in amazement."
+        )
+        ok, reason = self._safe(original, refined)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "too many new words")
+
+    def test_output_too_long_rejected(self):
+        """Output is more than 2.2× the length of the original → rejected."""
+        # Use a 7+-word original so the short-expansion guard (≤6 words) is bypassed.
+        # Repeat only original words so the "too many new words" guard is also bypassed.
+        original = "The proposal looks good and we should proceed with it carefully."
+        refined = (original + " ") * 3  # ~192 chars > max(orig*2.2, orig+80)=143
+        ok, reason = self._safe(original, refined)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "output too long")
+
+
+class TestStripOllamaPreamble(unittest.TestCase):
+    """Tests for strip_ollama_preamble().
+
+    The function strips known label prefixes and takes the last non-empty line
+    (qwen2.5:3b sometimes prepends a reasoning line before the correction).
+    """
+
+    def _strip(self, text: str) -> str:
+        return strip_ollama_preamble(text)  # type: ignore[name-defined]
+
+    def test_corrected_prefix_stripped(self):
+        result = self._strip("Corrected: The meeting is at 3 PM.")
+        self.assertEqual(result, "The meeting is at 3 PM.")
+
+    def test_here_is_the_corrected_prefix_stripped(self):
+        # Prefix is "Here is the corrected" (no trailing colon in the registered prefix).
+        # The word immediately following the prefix becomes the start of the result.
+        result = self._strip("Here is the corrected The meeting is at 3 PM.")
+        self.assertEqual(result, "The meeting is at 3 PM.")
+
+    def test_output_prefix_stripped(self):
+        result = self._strip("Output: The meeting is at 3 PM.")
+        self.assertEqual(result, "The meeting is at 3 PM.")
+
+    def test_result_prefix_stripped(self):
+        result = self._strip("Result: The meeting is at 3 PM.")
+        self.assertEqual(result, "The meeting is at 3 PM.")
+
+    def test_single_line_unchanged(self):
+        result = self._strip("The meeting is at 3 PM.")
+        self.assertEqual(result, "The meeting is at 3 PM.")
+
+    def test_multiline_takes_last_line(self):
+        """qwen2.5:3b sometimes adds reasoning first, correction last."""
+        result = self._strip("I will correct this text.\nThe meeting is at 3 PM.")
+        self.assertEqual(result, "The meeting is at 3 PM.")
+
+    def test_multiline_blank_lines_ignored(self):
+        """Blank lines are skipped when finding last non-empty line."""
+        result = self._strip("Reasoning line.\nThe meeting is at 3 PM.\n\n")
+        self.assertEqual(result, "The meeting is at 3 PM.")
+
+    def test_prefix_then_multiline(self):
+        """Prefix stripped first, then last-line logic applied."""
+        result = self._strip("Corrected:\nReasoning.\nThe meeting is at 3 PM.")
+        self.assertEqual(result, "The meeting is at 3 PM.")
+
+
+class TestLooksLikeAssistantAnswer(unittest.TestCase):
+    """Tests for _looks_like_assistant_answer().
+
+    Verifies that the extended suspicious_starts list catches the commentary
+    patterns that used to slip through (Issue 7 original, Note:, parentheticals).
+    """
+
+    def _flag(self, text: str) -> bool:
+        return _looks_like_assistant_answer(text)  # type: ignore[name-defined]
+
+    # ── New commentary patterns added in R5 fix ───────────────────────────────
+
+    def test_parenthetical_annotation_flagged(self):
+        """'(No correction needed...)' — the original Issue 7 bug."""
+        self.assertTrue(self._flag("(No correction needed as it is grammatically correct.)"))
+
+    def test_note_colon_flagged(self):
+        """'Note: I changed...' commentary."""
+        self.assertTrue(self._flag("Note: I changed 'tree' to '3'."))
+
+    def test_i_corrected_flagged(self):
+        self.assertTrue(self._flag("I corrected the spelling of 'meetig'."))
+
+    def test_i_changed_flagged(self):
+        self.assertTrue(self._flag("I changed the word order for clarity."))
+
+    def test_i_fixed_flagged(self):
+        self.assertTrue(self._flag("I fixed the punctuation in this sentence."))
+
+    def test_no_changes_flagged(self):
+        self.assertTrue(self._flag("No changes were needed."))
+
+    def test_no_correction_flagged(self):
+        self.assertTrue(self._flag("No correction required for this text."))
+
+    def test_unchanged_flagged(self):
+        self.assertTrue(self._flag("Unchanged."))
+
+    # ── Original suspicious_starts (must still work) ──────────────────────────
+
+    def test_sure_flagged(self):
+        self.assertTrue(self._flag("Sure, I can help with that!"))
+
+    def test_certainly_flagged(self):
+        self.assertTrue(self._flag("Certainly, here is the corrected version."))
+
+    def test_here_is_flagged(self):
+        self.assertTrue(self._flag("Here is the corrected text."))
+
+    def test_as_an_ai_flagged(self):
+        self.assertTrue(self._flag("As an AI, I cannot make that correction."))
+
+    # ── Clean dictation must NOT be flagged ───────────────────────────────────
+
+    def test_clean_dictation_not_flagged(self):
+        self.assertFalse(self._flag("The meeting is at 3 PM."))
+
+    def test_sentence_starting_with_the_next_word_not_flagged(self):
+        """'The next' (starts with 'the', not 'the next') — must not false-positive."""
+        self.assertFalse(self._flag("There are several steps to follow."))
+
+    def test_sentence_with_note_in_body_not_flagged(self):
+        """'Note' inside a sentence (not as a prefix) must not be flagged."""
+        self.assertFalse(self._flag("Please note the time has changed."))
+
+    def test_empty_string_not_flagged(self):
+        self.assertFalse(self._flag(""))
+
+
+# ---------------------------------------------------------------------------
 # Disfluency cleanup tests
 # ---------------------------------------------------------------------------
 

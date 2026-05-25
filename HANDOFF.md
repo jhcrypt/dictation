@@ -12,7 +12,7 @@ Session engineer: Claude (Anthropic)
 | R1 — Jarvis long dictation cut-off | **FIXED** | ✅ Manual QA passed 2026-05-25 |
 | R2 — Clipboard paste/preservation | **FIXED** | ✅ Manual QA passed 2026-05-25 |
 | R3 — Custom commands | **FIXED** | ✅ Manual QA passed 2026-05-25 |
-| R4 — Email body in To field | Needs test coverage | 🔲 Code fix exists, no regression test |
+| R4 — Email body in To field | **FIXED** | ✅ Manual QA passed 2026-05-25 |
 | R5 — Cleanup inventing words/commentary | Needs test coverage | 🔲 Safety filter exists, no unit tests |
 | R8 — Inline punctuation | **DEFERRED** | ❌ Function built, disabled in pipeline |
 

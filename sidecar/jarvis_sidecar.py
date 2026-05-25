@@ -329,12 +329,49 @@ def _is_question_like(text: str) -> bool:
 def _looks_like_assistant_answer(text: str) -> bool:
     t = (text or "").strip().lower()
     suspicious_starts = (
+        # Original assistant-response starters (ported from jarvis_dictation.py)
         "sure", "certainly", "here is", "here's", "i can", "i will",
         "you should", "the next", "next is", "to improve", "it sounds like",
         "based on", "as an ai", "let's", "we should", "you asked",
         "the answer", "this means",
+        # Commentary / annotation patterns not caught by the prompt instruction.
+        # "(No correction needed...)", "(I changed...)", etc.
+        "(", "note:", "i corrected", "i changed", "i fixed",
+        "no changes", "no correction", "unchanged",
     )
     return any(t.startswith(p) for p in suspicious_starts)
+
+
+def _is_repetitive(text: str) -> bool:
+    """True when >60 % of words are the same — likely a Whisper hallucination loop.
+
+    Port of jarvis_dictation.py _is_repetitive (line 915).
+    Used to skip Ollama for repetitive input that would confuse or expand the model.
+    """
+    words = (text or "").lower().split()
+    return len(words) >= 4 and len(set(words)) / len(words) < 0.4
+
+
+def _already_well_formed(text: str) -> bool:
+    """True when text looks clean enough that Ollama cannot improve it.
+
+    Port of jarvis_dictation.py _already_well_formed (line 919).
+    Criteria: starts with capital letter, ends with sentence punctuation (.!?),
+    and fewer than half the multi-letter words are ALL-CAPS (Whisper artifacts).
+
+    Used to skip Ollama in auto mode — running the LLM on already-correct text
+    is the primary vector for commentary responses ("No correction needed…").
+    """
+    t = (text or "").strip()
+    if not t or not t[0].isupper():
+        return False
+    if t[-1] not in ".!?":
+        return False
+    words = _dictation_words(t)
+    if not words:
+        return False
+    all_caps = sum(1 for w in words if len(w) > 1 and w.isupper())
+    return all_caps <= len(words) * 0.5
 
 
 def ollama_result_is_safe(original: str, refined: str) -> tuple:
@@ -2602,10 +2639,20 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             skip_reason_cleanup = "strength=Off"
         elif not text:
             skip_reason_cleanup = "empty_text"
+        elif _is_repetitive(text):
+            # Port of Python reference: skip Ollama for repetitive input (>60% same words).
+            # Whisper hallucination loops that survived _deduplicate_whisper would cause
+            # the model to expand or mirror the repetition rather than clean it.
+            skip_reason_cleanup = "repetitive_input"
         elif word_count <= 4:
             skip_reason_cleanup = f"too_short ({word_count} words ≤ 4)"
         elif ai_mode == "auto" and word_count < 10:
             skip_reason_cleanup = f"auto_short ({word_count} words < 10)"
+        elif ai_mode == "auto" and _already_well_formed(text):
+            # Port of Python reference: skip Ollama when text is already clean.
+            # Running the LLM on already-correct text is the primary vector for
+            # commentary responses ("No correction needed…", "(unchanged)", etc.).
+            skip_reason_cleanup = "already_well_formed"
 
         skip_ollama = skip_reason_cleanup is not None
 

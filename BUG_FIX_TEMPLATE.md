@@ -7,7 +7,7 @@
 | R1 — Jarvis long dictation cut-off | ✅ CONFIRMED FIXED (manual QA) |
 | R2 — Clipboard paste/preservation | ✅ CONFIRMED FIXED (manual QA) |
 | R3 — Custom commands | ✅ CONFIRMED FIXED (manual QA) |
-| R4 — Email body in To field | 🔲 Code fix exists, needs regression test |
+| R4 — Email body in To field | ✅ CONFIRMED FIXED (manual QA) |
 | R5 — Cleanup inventing words | 🔲 Safety filter exists, needs unit tests |
 | R8 — Inline punctuation | ❌ DEFERRED — do not re-enable without robust parser |
 
