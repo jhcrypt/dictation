@@ -84,8 +84,10 @@ export interface DictationTiming {
   recordingMs?: number;
   /** key-up to stop_recording returned (WAV save + sidecar overhead) */
   stopMs?: number;
-  /** Whisper inference time (from sidecar) */
+  /** Whisper/cloud inference time (from sidecar) */
   transcriptionMs?: number;
+  /** "local" | "cloud" | "local (fallback)" — which engine produced the transcript */
+  transcriptionEngine?: string;
   /** Ollama cleanup time ms (from sidecar); undefined if skipped */
   cleanupMs?: number;
   /** Ollama HTTP request-only time ms (subset of cleanupMs) */
@@ -683,6 +685,9 @@ export function useGlobalHotkey() {
           error?: string;
           profile?: string;
           status?: string;
+          // Transcription engine
+          transcription_engine?: string;
+          cloud_fallback?: boolean;
           skipped_cleanup?: boolean;
           skip_reason?: string;
           ollama_accepted?: boolean | null;
@@ -934,11 +939,20 @@ export function useGlobalHotkey() {
             result.skipped_cleanup      ? "skipped" :
             result.timing.ollama > 0   ? "done" : "skipped";
 
+          // Non-blocking HUD warning when cloud fell back to local
+          if (result.cloud_fallback) {
+            try {
+              const { emit } = await import("@tauri-apps/api/event");
+              emit("hud-event", { state: "warning", message: "Cloud transcription failed — used local" });
+            } catch { /* non-critical */ }
+          }
+
           const timingPayload: DictationTiming = {
             model:               s.model,
             recordingMs:         t_stopCalled.current - t_keyDown.current,
             stopMs:              t_stopDone.current   - t_stopCalled.current,
             transcriptionMs:     result.timing.whisper,
+            transcriptionEngine: result.transcription_engine ?? "local",
             cleanupMs:           result.timing.ollama > 0 ? result.timing.ollama : undefined,
             cleanupRequestMs:    result.ollama_request_ms && result.ollama_request_ms > 0 ? result.ollama_request_ms : undefined,
             cleanupStatus,

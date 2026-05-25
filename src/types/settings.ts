@@ -6,7 +6,25 @@ export type CorrectionStrength = "Light" | "Standard" | "Strong" | "Off";
 export type WritingProfile = "General" | "Professional" | "Email" | "Developer" | "Medical" | "Legal" | "Sales" | "Notes" | "Creative" | "Verbatim";
 export type HotkeyLabel = "Right Option" | "F13" | "F14" | "F15";
 
+// ── Transcription engine / provider ──────────────────────────────────────────
+export type TranscriptionEngine   = "local" | "cloud";
+export type TranscriptionProvider = "openai";          // Phase 1 only; future: "deepgram" etc.
+export type CleanupProvider = "off" | "ollama";        // future: "claude", "groq" etc.
+// Local Whisper model is owned by Audio & Language (dictation_quality + model fields).
+// Do not add a separate local_model field here — use dictation_quality as the source of truth.
+
 export interface Settings {
+  // ── Transcription engine ─────────────────────────────────────────────────
+  transcription_engine:   TranscriptionEngine;
+  transcription_provider: TranscriptionProvider;
+  cleanup_provider:       CleanupProvider;
+  // Local Whisper model → use dictation_quality (AudioPage) + model override (AudioPage).
+  // ── Legacy (kept for migration path only — do not write new code against these) ──
+  /** @deprecated use transcription_engine instead */
+  cloud_mode?: boolean;
+  // openai_key is intentionally absent — key is stored in macOS Keychain only.
+  // Do not add openai_key here; it must never appear in the save payload.
+  // ── Audio / hardware ─────────────────────────────────────────────────────
   model: string;
   mic_device: number | null;
   mic_device_name: string;
@@ -14,8 +32,6 @@ export interface Settings {
   hotkey_label: HotkeyLabel;
   show_hud: boolean;
   toggle_mode: boolean;
-  cloud_mode: boolean;
-  openai_key: string;
   context_format: boolean;
   auto_detect: boolean;
   jarvis_enabled: boolean;
@@ -49,6 +65,11 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  // Transcription engine
+  transcription_engine:   "local",
+  transcription_provider: "openai",
+  cleanup_provider:       "ollama",
+  // Audio / hardware
   model: "small.en",
   mic_device: null,
   mic_device_name: "",
@@ -56,8 +77,6 @@ export const DEFAULT_SETTINGS: Settings = {
   hotkey_label: "Right Option",
   show_hud: true,
   toggle_mode: true,
-  cloud_mode: false,
-  openai_key: "",
   context_format: true,
   auto_detect: true,
   jarvis_enabled: true,

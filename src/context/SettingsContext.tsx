@@ -37,7 +37,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const saveSettings = useCallback(async () => {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("save_settings", { settings });
+      // Strip deprecated fields that must never be written back to disk.
+      // openai_key lives in macOS Keychain only; cloud_mode replaced by transcription_engine.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { openai_key, cloud_mode, ...safeSettings } = settings as typeof settings & { openai_key?: unknown; cloud_mode?: unknown };
+      await invoke("save_settings", { settings: safeSettings });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       // HUD notification — Python: self.show_message("Saved.", self.GREEN)

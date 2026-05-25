@@ -1299,6 +1299,108 @@ def _get_model(model_name: str):
         _model_name = model_name
     return _model
 
+# ── Keychain helper ───────────────────────────────────────────────────────────
+
+_KEYCHAIN_SERVICE = "JarvisDictation-OpenAI"
+_KEYCHAIN_ACCOUNT = "openai_key"
+
+def _keychain_get(service: str = _KEYCHAIN_SERVICE,
+                  account: str = _KEYCHAIN_ACCOUNT) -> str | None:
+    """Read a password from macOS Keychain via /usr/bin/security.
+
+    Returns the key string on success, None if not found or on error.
+    Never raises — callers treat None as "key unavailable".
+    """
+    try:
+        result = _subprocess.run(
+            ["/usr/bin/security", "find-generic-password",
+             "-s", service, "-a", account, "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            key = result.stdout.strip()
+            return key if key else None
+        return None
+    except Exception as e:
+        _log(f"[keychain] read failed: {e}")
+        return None
+
+
+# ── OpenAI Whisper API transcription ─────────────────────────────────────────
+
+def _openai_transcribe(wav_path: str, api_key: str,
+                       language: str | None = None) -> tuple[str, int]:
+    """Transcribe a WAV file using the OpenAI Whisper API (whisper-1).
+
+    Uses stdlib urllib + manually constructed multipart/form-data — no
+    `requests` dependency required.
+
+    Returns (transcript_text, latency_ms).
+    Raises RuntimeError on HTTP errors or empty responses so callers can fall back.
+    """
+    import urllib.request
+    import urllib.error
+
+    t0 = time.time()
+
+    # ── Build multipart body ──────────────────────────────────────────────────
+    boundary = "----JarvisMultipart7a3f9c2e"
+    crlf = b"\r\n"
+
+    def field(name: str, value: str) -> bytes:
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n"
+        ).encode()
+
+    with open(wav_path, "rb") as fh:
+        wav_bytes = fh.read()
+
+    body = b""
+    body += field("model", "whisper-1")
+    body += field("response_format", "text")
+    if language and language != "en":
+        body += field("language", language)
+    # File part
+    body += (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+        f"Content-Type: audio/wav\r\n\r\n"
+    ).encode()
+    body += wav_bytes + crlf
+    body += f"--{boundary}--\r\n".encode()
+
+    # ── Send request ──────────────────────────────────────────────────────────
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/audio/transcriptions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8").strip()
+    except urllib.error.HTTPError as e:
+        body_msg = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenAI HTTP {e.code}: {body_msg[:200]}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"OpenAI network error: {e.reason}") from e
+
+    latency_ms = int((time.time() - t0) * 1000)
+
+    if not text:
+        raise RuntimeError("OpenAI returned empty transcription")
+
+    # Strip leading punctuation the same way we do for local Whisper output.
+    text = re.sub(r'^[\s,\.!\?]+', '', text).strip()
+    _log(f"[openai] transcription={text!r} ({latency_ms} ms)")
+    return text, latency_ms
+
+
 # ── Wake-word helpers ─────────────────────────────────────────────────────────
 
 def _wake_audio_callback(indata, frames, time_info, status):
@@ -2370,6 +2472,14 @@ def cmd_transcribe_last(cmd: dict) -> dict:
     auto_detect = settings.get("auto_detect", False)
     translate_target = settings.get("translate_my_dictation", "Off")
 
+    # ── Transcription engine / provider settings ───────────────────────────
+    safe_mode_transcribe = settings.get("safe_mode", False)
+    transcription_engine = settings.get("transcription_engine", "local")
+    # Safe Mode always forces local regardless of UI setting
+    if safe_mode_transcribe:
+        transcription_engine = "local"
+        _log("[safe_mode] forcing local Whisper — cloud disabled")
+
     # Active app passed from Rust (for auto profile detection)
     active_app  = cmd.get("active_app") or ""
 
@@ -2377,6 +2487,8 @@ def cmd_transcribe_last(cmd: dict) -> dict:
     if auto_detect or (language and language != "en"):
         quality_to_model = {"Fast": "tiny", "Balanced": "small", "Accurate": "medium"}
 
+    # model override (AudioPage "Advanced Speech Model") → quality mapping (AudioPage "Dictation Quality")
+    # Canonical source of truth: dictation_quality, overridable via model field.
     model_name = model_override if model_override else quality_to_model.get(quality, "small.en")
 
     with _audio_lock:
@@ -2401,42 +2513,83 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             wf.setframerate(sample_rate)
             wf.writeframes(audio_int16.tobytes())
 
-        # ── Transcribe with Whisper ────────────────────────────────────────────
-        t_whisper_start = time.time()
-        model = _get_model(model_name)
-        transcribe_kwargs: dict = {}
-        if language and not auto_detect:
-            transcribe_kwargs["language"] = language
+        # ── Transcription engine branch ────────────────────────────────────────
+        transcription_engine_used = "local"   # updated below if cloud succeeds
+        cloud_fallback_warning    = False
 
-        # Build initial_prompt from vocabulary (manual + learned)
-        if not model_name.startswith("distil-"):
-            personal_prompt = get_personal_prompt(settings)
-            if personal_prompt:
-                transcribe_kwargs["initial_prompt"] = personal_prompt
+        if transcription_engine == "cloud":
+            # ── Cloud path (OpenAI Whisper API) ───────────────────────────────
+            api_key = _keychain_get()
+            if not api_key:
+                return {"ok": False, "error": (
+                    "Cloud transcription requires an OpenAI API key. "
+                    "Add it in Settings → Cloud."
+                )}
+            try:
+                t_whisper_start = time.time()
+                cloud_lang = language if (language and not auto_detect) else None
+                raw_text, t_whisper = _openai_transcribe(tmp.name, api_key, cloud_lang)
+                transcription_engine_used = "cloud"
+            except Exception as cloud_err:
+                # ── Fallback to local Whisper ─────────────────────────────────
+                _log(f"[cloud] transcription failed ({cloud_err}); falling back to local")
+                cloud_fallback_warning = True
+                transcription_engine_used = "local (fallback)"
+                t_whisper_start = time.time()
+                model = _get_model(model_name)
+                transcribe_kwargs: dict = {}
+                if language and not auto_detect:
+                    transcribe_kwargs["language"] = language
+                if not model_name.startswith("distil-"):
+                    personal_prompt = get_personal_prompt(settings)
+                    if personal_prompt:
+                        transcribe_kwargs["initial_prompt"] = personal_prompt
+                segments, _info = model.transcribe(
+                    tmp.name, beam_size=1, best_of=1,
+                    condition_on_previous_text=False,
+                    vad_filter=True, no_speech_threshold=0.6,
+                    compression_ratio_threshold=2.4,
+                    **transcribe_kwargs,
+                )
+                raw_text = " ".join(seg.text.strip() for seg in segments).strip()
+                raw_text = re.sub(r'^[\s,\.!\?]+', '', raw_text).strip()
+                t_whisper = int((time.time() - t_whisper_start) * 1000)
+                _log(f"Whisper (fallback): {raw_text!r} ({t_whisper}ms)")
+        else:
+            # ── Local path (faster-whisper, default) ──────────────────────────
+            t_whisper_start = time.time()
+            model = _get_model(model_name)
+            transcribe_kwargs: dict = {}
+            if language and not auto_detect:
+                transcribe_kwargs["language"] = language
 
-        segments, _info = model.transcribe(
-            tmp.name,
-            beam_size=1,
-            best_of=1,
-            condition_on_previous_text=False,
-            # vad_filter removes silent/noise-only segments before transcription.
-            # Without it, Whisper processes leading silence and hallucinates
-            # continuation punctuation (leading commas/periods) — matches the
-            # stable Python app which passes these same three params.
-            vad_filter=True,
-            no_speech_threshold=0.6,
-            compression_ratio_threshold=2.4,
-            **transcribe_kwargs,
-        )
-        raw_text = " ".join(seg.text.strip() for seg in segments).strip()
-        # Strip hallucinated leading punctuation (safety net even with vad_filter).
-        # Whisper occasionally starts output with ", " or ". " when it treats the
-        # audio as a continuation; this never represents real speech.
-        raw_text = re.sub(r'^[\s,\.!\?]+', '', raw_text).strip()
-        t_whisper = int((time.time() - t_whisper_start) * 1000)
-        _log(f"Whisper: {raw_text!r} ({t_whisper}ms)")
+            # Build initial_prompt from vocabulary (manual + learned)
+            if not model_name.startswith("distil-"):
+                personal_prompt = get_personal_prompt(settings)
+                if personal_prompt:
+                    transcribe_kwargs["initial_prompt"] = personal_prompt
 
-        # Remove Whisper repetition hallucinations
+            segments, _info = model.transcribe(
+                tmp.name,
+                beam_size=1,
+                best_of=1,
+                condition_on_previous_text=False,
+                # vad_filter removes silent/noise-only segments before transcription.
+                # Without it, Whisper processes leading silence and hallucinates
+                # continuation punctuation (leading commas/periods) — matches the
+                # stable Python app which passes these same three params.
+                vad_filter=True,
+                no_speech_threshold=0.6,
+                compression_ratio_threshold=2.4,
+                **transcribe_kwargs,
+            )
+            raw_text = " ".join(seg.text.strip() for seg in segments).strip()
+            # Strip hallucinated leading punctuation (safety net even with vad_filter).
+            raw_text = re.sub(r'^[\s,\.!\?]+', '', raw_text).strip()
+            t_whisper = int((time.time() - t_whisper_start) * 1000)
+            _log(f"Whisper: {raw_text!r} ({t_whisper}ms)")
+
+        # Remove Whisper repetition hallucinations (local and cloud fallback paths)
         raw_text = _deduplicate_whisper(raw_text)
 
         # ── Snippet capture state machine ─────────────────────────────────────
@@ -2797,6 +2950,9 @@ def cmd_transcribe_last(cmd: dict) -> dict:
             "action":      None,
             "timing":      {"whisper": t_whisper, "ollama": t_ollama, "total": t_total},
             "profile":     profile,
+            # Transcription engine metadata — used by timing card
+            "transcription_engine": transcription_engine_used,
+            "cloud_fallback":       cloud_fallback_warning,
             # Cleanup metadata — used by HUD skipped badge and timing card
             "skipped_cleanup":    skip_ollama,
             "skip_reason":        skip_reason_cleanup,

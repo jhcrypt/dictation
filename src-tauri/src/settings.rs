@@ -14,6 +14,21 @@ fn dirs_next() -> PathBuf {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    // ── Transcription engine ──────────────────────────────────────────────────
+    // Local Whisper model is owned by audio settings (dictation_quality + model).
+    #[serde(default = "default_transcription_engine")]
+    pub transcription_engine: String,
+    #[serde(default = "default_transcription_provider")]
+    pub transcription_provider: String,
+    #[serde(default = "default_cleanup_provider")]
+    pub cleanup_provider: String,
+    // Legacy fields — kept for migration only; never written back to disk
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_mode: Option<bool>,
+    // Skip when None OR when the string is empty ("") — both arrive from old settings files
+    #[serde(default, skip_serializing_if = "openai_key_is_absent")]
+    pub openai_key: Option<String>,
+    // ── Audio / hardware ──────────────────────────────────────────────────────
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default)]
@@ -28,10 +43,6 @@ pub struct Settings {
     pub show_hud: bool,
     #[serde(default = "default_true")]
     pub toggle_mode: bool,
-    #[serde(default)]
-    pub cloud_mode: bool,
-    #[serde(default)]
-    pub openai_key: String,
     #[serde(default = "default_true")]
     pub context_format: bool,
     #[serde(default = "default_true")]
@@ -94,6 +105,15 @@ pub struct Settings {
     pub hud_y: i32,
 }
 
+/// Skip openai_key during serialization when it is absent or an empty string.
+/// This covers both None (never set) and Some("") (old plaintext field read from disk).
+fn openai_key_is_absent(v: &Option<String>) -> bool {
+    v.as_deref().map_or(true, |s| s.is_empty())
+}
+
+fn default_transcription_engine()   -> String { "local".into() }
+fn default_transcription_provider() -> String { "openai".into() }
+fn default_cleanup_provider()       -> String { "ollama".into() }
 fn default_model() -> String { "small.en".into() }
 fn default_sample_rate() -> u32 { 48000 }
 fn default_hotkey() -> String { "Right Option".into() }

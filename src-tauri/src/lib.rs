@@ -213,6 +213,10 @@ pub fn run() {
             resume_media,
             get_diagnostics,
             get_last_target_app,
+            // Keychain
+            keychain_save_api_key,
+            keychain_delete_api_key,
+            keychain_has_api_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Quill Tauri Preview");
