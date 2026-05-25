@@ -3,7 +3,7 @@ import Card from "../components/ui/Card";
 
 interface WorkflowCardProps {
   title: string;
-  status: "Available" | "Requires Commands Enabled" | "Deferred";
+  status: "Available" | "Voice Command" | "Deferred";
   examples: string[];
   note: string;
 }
@@ -12,15 +12,15 @@ function WorkflowCard({ title, status, examples, note }: WorkflowCardProps) {
   const statusClass =
     status === "Available"
       ? "bg-jarvis-accent/10 text-jarvis-accent"
-      : status === "Requires Commands Enabled"
+      : status === "Voice Command"
         ? "bg-purple-500/10 text-purple-300 border border-purple-500/20"
         : "bg-jarvis-surface text-jarvis-muted border border-jarvis-border";
 
   const statusLabel =
     status === "Available"
       ? "Available"
-      : status === "Requires Commands Enabled"
-        ? "Requires Commands Enabled"
+      : status === "Voice Command"
+        ? "Voice Command"
         : "Deferred";
 
   return (
@@ -54,9 +54,8 @@ export default function WorkflowsPage() {
         <h2 className="text-lg font-semibold text-jarvis-text">Workflows</h2>
         <p className="text-sm text-jarvis-hint mt-1 leading-relaxed">
           Workflows are voice-triggered actions beyond plain dictation — opening apps, composing emails,
-          controlling volume, taking screenshots, and more. Most are available now. Commands marked
-          "Requires Commands Enabled" work from the record button, hotkey, or wake word — they just need
-          Commands to be turned on in the Jarvis settings page.
+          controlling volume, taking screenshots, and more. Commands marked "Voice Command" can be spoken
+          using the record button, hotkey, or wake word.
         </p>
       </div>
 
@@ -72,7 +71,7 @@ export default function WorkflowsPage() {
           "scratch all",
           "redo dictation",
         ]}
-        note="Scratch/undo deletes your last dictation and sends the matching number of backspaces. Redo re-inserts whatever was last scratched. These always work regardless of Safe Mode or Jarvis Commands settings."
+        note="Scratch/undo deletes your last dictation and sends the matching number of backspaces. Redo re-inserts whatever was last scratched. These always work regardless of Safe Mode or Voice Commands settings."
       />
 
       <WorkflowCard
@@ -161,18 +160,18 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Custom Commands"
-        status="Requires Commands Enabled"
+        status="Voice Command"
         examples={[
           "open my email",
           "open client portal",
           "insert follow up message",
         ]}
-        note="Create your own trigger phrases in Settings → Custom Commands. Supported actions: open URL, open app, and type text."
+        note="Create your own trigger phrases in Settings → Custom Commands. Say them using the record button, hotkey, or wake word. Supported actions: open URL, open app, and type text."
       />
 
       <WorkflowCard
         title="Open Apps & Websites"
-        status="Requires Commands Enabled"
+        status="Voice Command"
         examples={[
           "open Safari",
           "open Terminal",
@@ -181,12 +180,12 @@ export default function WorkflowsPage() {
           "open Netflix",
           "open GitHub",
         ]}
-        note="Say 'open [app name]' to launch any installed macOS app. Say 'open [site]' for popular websites (YouTube, Netflix, GitHub, Claude, Spotify, and more)."
+        note="Say these phrases using the record button, hotkey, or wake word. Say 'open [app name]' to launch any installed macOS app. Say 'open [site]' for popular websites (YouTube, Netflix, GitHub, Claude, Spotify, and more)."
       />
 
       <WorkflowCard
         title="Web Search"
-        status="Requires Commands Enabled"
+        status="Voice Command"
         examples={[
           "search for machine learning",
           "google Python tutorials",
@@ -198,7 +197,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="System Volume"
-        status="Requires Commands Enabled"
+        status="Voice Command"
         examples={[
           "volume up",
           "volume down",
@@ -211,7 +210,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Reminders"
-        status="Requires Commands Enabled"
+        status="Voice Command"
         examples={[
           "remind me to call Jack",
           "set a reminder to buy milk",
@@ -222,7 +221,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Email Drafts"
-        status="Requires Commands Enabled"
+        status="Voice Command"
         examples={[
           "email Jack",
           "send email to Val",
@@ -233,7 +232,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Screenshots"
-        status="Requires Commands Enabled"
+        status="Voice Command"
         examples={[
           "screenshot",
           "capture window",
@@ -246,7 +245,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Spotify & Playlists"
-        status="Requires Commands Enabled"
+        status="Voice Command"
         examples={[
           "play lo-fi music on Spotify",
           "play coding playlist",
@@ -258,7 +257,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Close & Quit Apps"
-        status="Requires Commands Enabled"
+        status="Voice Command"
         examples={[
           "close Safari",
           "quit Chrome",

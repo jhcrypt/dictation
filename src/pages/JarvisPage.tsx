@@ -138,7 +138,7 @@ export default function JarvisPage() {
         <Toggle
           checked={settings.jarvis_enabled}
           onChange={(v) => updateSetting("jarvis_enabled", v)}
-          label="Jarvis commands"
+          label="Voice Commands"
           description="Recognize and execute voice commands — coming in a future update"
         />
       </Card>
