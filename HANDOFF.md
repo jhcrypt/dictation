@@ -282,6 +282,48 @@ When revisiting, options in priority order:
 
 ---
 
+## Cloud Phase 1 — `feature/cloud-transcription` (2026-05-25)
+
+### Status
+Pending manual QA. Do NOT merge into master until all QA items below pass.
+
+### QA checklist (must all pass before merge)
+- [ ] Local mode — normal dictation works, timing card shows `· local`
+- [ ] Cloud mode — valid OpenAI key → timing shows `· cloud`, transcription correct
+- [ ] Bad key fallback — HUD warning appears, timing shows `· local (fallback)`, paste still works
+- [ ] Safe Mode — cloud configured but forced to local; timing shows `· local`
+- [ ] Settings file — `~/.dictation_settings.json` contains no `openai_key` field after saving
+- [ ] Regression — Wake word, clipboard preserve, Ollama cleanup, custom commands all still work
+
+### API key migration behavior (intentional — document for future sessions)
+
+**Old `openai_key` plaintext values are dropped, not auto-migrated to Keychain.**
+
+| Event | Behavior |
+|---|---|
+| Settings load (Rust) | Old `openai_key` deserialized as `Option<String>`, held in memory only |
+| Sidecar transcription | Reads key from macOS Keychain via `/usr/bin/security`; never reads settings field |
+| Next settings save | `#[serde(skip_serializing_if = "Option::is_none")]` silently drops `openai_key` from JSON |
+| After first save | `openai_key` is permanently absent from `~/.dictation_settings.json` |
+
+**User action required:** Re-enter the API key once in Settings → Cloud → Save Key. This writes it to macOS Keychain (`JarvisDictation-OpenAI` / `openai_key`). Never written to disk again.
+
+**Why no auto-migration:** Auto-migration would call `/usr/bin/security add-generic-password` during startup before the user consents — risking an unexpected Keychain permission dialog on first launch. Deliberate re-entry is a one-time action and is safer.
+
+### Keychain details
+- Service: `JarvisDictation-OpenAI`
+- Account: `openai_key`
+- Written via: `security add-generic-password -s … -a … -w <key> -U`
+- Read via: `security find-generic-password -s … -a … -w` (sidecar subprocess at transcription time)
+- Deleted via: `security delete-generic-password -s … -a …`
+
+### Protected invariants for this branch
+- Do NOT add more cloud providers (Deepgram, Groq, ElevenLabs, Claude, Gemini) until Phase 2 is scoped
+- Do NOT store the API key anywhere except macOS Keychain
+- Do NOT auto-migrate old plaintext keys without explicit user consent flow
+
+---
+
 ## Files Changed This Session
 
 | File | What Changed |
