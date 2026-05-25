@@ -1274,3 +1274,83 @@ pub fn get_diagnostics(state: State<SidecarState>, target: State<LastTargetApp>)
         paste_target,
     }
 }
+
+// ── Keychain (macOS /usr/bin/security) ───────────────────────────────────────
+//
+// The API key is written to macOS Keychain via the `security` CLI so it is never
+// stored in plaintext in ~/.dictation_settings.json.
+//
+// Service name: "JarvisDictation-OpenAI"
+// Account name: "openai_key"
+
+const KEYCHAIN_SERVICE: &str = "JarvisDictation-OpenAI";
+const KEYCHAIN_ACCOUNT: &str = "openai_key";
+
+/// Write (or update) the OpenAI API key in macOS Keychain.
+/// Called from the Cloud settings page when the user saves a new key.
+#[tauri::command]
+pub fn keychain_save_api_key(provider: String, key: String) -> Result<(), String> {
+    // Only "openai" supported in Phase 1.
+    if provider != "openai" {
+        return Err(format!("Unknown provider: {}", provider));
+    }
+    if key.trim().is_empty() {
+        return Err("API key must not be empty".into());
+    }
+    // -U = update if entry already exists (add-generic-password with -U).
+    let out = std::process::Command::new("/usr/bin/security")
+        .args(["add-generic-password",
+               "-s", KEYCHAIN_SERVICE,
+               "-a", KEYCHAIN_ACCOUNT,
+               "-w", key.trim(),
+               "-U"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        eprintln!("[keychain] API key saved for provider={}", provider);
+        Ok(())
+    } else {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(format!("Keychain write failed: {}", msg))
+    }
+}
+
+/// Delete the OpenAI API key from macOS Keychain.
+/// Called when the user clears the key field and saves.
+#[tauri::command]
+pub fn keychain_delete_api_key(provider: String) -> Result<(), String> {
+    if provider != "openai" {
+        return Err(format!("Unknown provider: {}", provider));
+    }
+    let out = std::process::Command::new("/usr/bin/security")
+        .args(["delete-generic-password",
+               "-s", KEYCHAIN_SERVICE,
+               "-a", KEYCHAIN_ACCOUNT])
+        .output()
+        .map_err(|e| e.to_string())?;
+    // Exit 44 = item not found — treat as success (idempotent delete).
+    if out.status.success() || out.status.code() == Some(44) {
+        eprintln!("[keychain] API key deleted for provider={}", provider);
+        Ok(())
+    } else {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(format!("Keychain delete failed: {}", msg))
+    }
+}
+
+/// Returns true if a key is present in Keychain for the given provider.
+/// Used by CloudPage to show the key-saved indicator without exposing the key.
+#[tauri::command]
+pub fn keychain_has_api_key(provider: String) -> bool {
+    if provider != "openai" { return false; }
+    let out = std::process::Command::new("/usr/bin/security")
+        .args(["find-generic-password",
+               "-s", KEYCHAIN_SERVICE,
+               "-a", KEYCHAIN_ACCOUNT,
+               "-w"])
+        .output();
+    match out {
+        Ok(o) => o.status.success() && !o.stdout.trim_ascii().is_empty(),
+        Err(_) => false,
+    }
+}

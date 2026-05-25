@@ -14,6 +14,21 @@ fn dirs_next() -> PathBuf {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    // ── Transcription engine ──────────────────────────────────────────────────
+    #[serde(default = "default_transcription_engine")]
+    pub transcription_engine: String,
+    #[serde(default = "default_transcription_provider")]
+    pub transcription_provider: String,
+    #[serde(default = "default_local_model")]
+    pub local_model: String,
+    #[serde(default = "default_cleanup_provider")]
+    pub cleanup_provider: String,
+    // Legacy fields — kept for migration only; openai_key no longer written back
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_mode: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_key: Option<String>,
+    // ── Audio / hardware ──────────────────────────────────────────────────────
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default)]
@@ -28,10 +43,6 @@ pub struct Settings {
     pub show_hud: bool,
     #[serde(default = "default_true")]
     pub toggle_mode: bool,
-    #[serde(default)]
-    pub cloud_mode: bool,
-    #[serde(default)]
-    pub openai_key: String,
     #[serde(default = "default_true")]
     pub context_format: bool,
     #[serde(default = "default_true")]
@@ -94,6 +105,10 @@ pub struct Settings {
     pub hud_y: i32,
 }
 
+fn default_transcription_engine()   -> String { "local".into() }
+fn default_transcription_provider() -> String { "openai".into() }
+fn default_local_model()            -> String { "small.en".into() }
+fn default_cleanup_provider()       -> String { "ollama".into() }
 fn default_model() -> String { "small.en".into() }
 fn default_sample_rate() -> u32 { 48000 }
 fn default_hotkey() -> String { "Right Option".into() }

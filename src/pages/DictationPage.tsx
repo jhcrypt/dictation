@@ -345,7 +345,14 @@ export default function DictationPage() {
             {/* Detail rows */}
             <TimingRow label="Recording duration"  value={fmtMs(dictTiming.recordingMs, true)} />
             <TimingRow label="Stop processing"     value={fmtMs(dictTiming.stopMs)} />
-            <TimingRow label="Transcription"       value={fmtMs(dictTiming.transcriptionMs)} />
+            <TimingRow
+              label="Transcription"
+              value={
+                dictTiming.transcriptionMs !== undefined
+                  ? `${fmtMs(dictTiming.transcriptionMs)} · ${dictTiming.transcriptionEngine ?? "local"}`
+                  : "—"
+              }
+            />
             <TimingRow
               label="Cleanup"
               value={

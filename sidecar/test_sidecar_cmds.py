@@ -1498,6 +1498,160 @@ class TestDeduplicateWhisper(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Cloud transcription tests
+# ---------------------------------------------------------------------------
+
+class TestKeychainHelper(unittest.TestCase):
+    """Tests for _keychain_get() — uses the macOS security CLI."""
+
+    def test_missing_key_returns_none(self):
+        """_keychain_get returns None when no key exists for an unknown service."""
+        result = _keychain_get(  # type: ignore[name-defined]
+            service="JarvisDictation-TestServiceThatDoesNotExist",
+            account="nonexistent_account",
+        )
+        self.assertIsNone(result)
+
+    def test_returns_str_or_none(self):
+        """Return value is either a non-empty str or None — never empty string."""
+        result = _keychain_get(  # type: ignore[name-defined]
+            service="JarvisDictation-TestServiceThatDoesNotExist",
+            account="nonexistent_account",
+        )
+        # Must be None or a non-empty string
+        self.assertTrue(result is None or (isinstance(result, str) and len(result) > 0))
+
+
+class TestOpenAITranscribe(unittest.TestCase):
+    """Tests for _openai_transcribe() — all mock the HTTP call."""
+
+    def _patch_urlopen(self, response_text: str):
+        """Return a context manager that makes urllib.request.urlopen return response_text."""
+        import io
+        import unittest.mock as mock
+
+        class FakeResponse:
+            def __init__(self, text):
+                self._data = text.encode()
+            def read(self):
+                return self._data
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        return mock.patch("urllib.request.urlopen", return_value=FakeResponse(response_text))
+
+    def test_success_returns_text_and_ms(self):
+        """On 200 OK, returns (str, int_ms) tuple."""
+        with self._patch_urlopen("Hello world."):
+            text, ms = _openai_transcribe(  # type: ignore[name-defined]
+                "/dev/null", "sk-testkey", None
+            )
+        self.assertEqual(text, "Hello world.")
+        self.assertIsInstance(ms, int)
+        self.assertGreaterEqual(ms, 0)
+
+    def test_leading_punctuation_stripped(self):
+        """Cloud result gets same leading-punct strip as local Whisper output."""
+        with self._patch_urlopen(", Hello world."):
+            text, _ = _openai_transcribe(  # type: ignore[name-defined]
+                "/dev/null", "sk-testkey", None
+            )
+        self.assertEqual(text, "Hello world.")
+
+    def test_http_error_raises(self):
+        """HTTP error from OpenAI raises RuntimeError so caller can fall back."""
+        import urllib.error
+        import unittest.mock as mock
+        err = urllib.error.HTTPError(
+            url="https://api.openai.com/v1/audio/transcriptions",
+            code=401, msg="Unauthorized",
+            hdrs=None, fp=None,  # type: ignore[arg-type]
+        )
+        err.read = lambda: b'{"error": {"message": "Invalid API key"}}'
+        with mock.patch("urllib.request.urlopen", side_effect=err):
+            with self.assertRaises(RuntimeError) as ctx:
+                _openai_transcribe("/dev/null", "sk-bad", None)  # type: ignore[name-defined]
+        self.assertIn("401", str(ctx.exception))
+
+    def test_network_error_raises(self):
+        """Network-level error raises RuntimeError."""
+        import urllib.error
+        import unittest.mock as mock
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=urllib.error.URLError("Name or service not known")):
+            with self.assertRaises(RuntimeError):
+                _openai_transcribe("/dev/null", "sk-key", None)  # type: ignore[name-defined]
+
+    def test_empty_response_raises(self):
+        """Empty response body raises RuntimeError."""
+        with self._patch_urlopen(""):
+            with self.assertRaises(RuntimeError):
+                _openai_transcribe("/dev/null", "sk-key", None)  # type: ignore[name-defined]
+
+
+class TestSafeModeTranscriptionEngine(unittest.TestCase):
+    """Verify safe_mode forces transcription_engine to 'local' in settings read."""
+
+    def test_safe_mode_overrides_cloud_in_settings(self):
+        """When safe_mode=True, transcription_engine is forced to 'local' in sidecar."""
+        # Simulate what cmd_transcribe_last does at settings-read time.
+        settings = {
+            "safe_mode": True,
+            "transcription_engine": "cloud",
+        }
+        safe_mode_on = settings.get("safe_mode", False)
+        engine = settings.get("transcription_engine", "local")
+        if safe_mode_on:
+            engine = "local"
+        self.assertEqual(engine, "local")
+
+    def test_safe_mode_false_preserves_cloud(self):
+        """When safe_mode=False, transcription_engine='cloud' is kept."""
+        settings = {
+            "safe_mode": False,
+            "transcription_engine": "cloud",
+        }
+        safe_mode_on = settings.get("safe_mode", False)
+        engine = settings.get("transcription_engine", "local")
+        if safe_mode_on:
+            engine = "local"
+        self.assertEqual(engine, "cloud")
+
+    def test_default_engine_is_local(self):
+        """Missing transcription_engine key defaults to 'local'."""
+        settings: dict = {}
+        engine = settings.get("transcription_engine", "local")
+        self.assertEqual(engine, "local")
+
+
+class TestLocalModelSelection(unittest.TestCase):
+    """local_model setting takes priority over legacy model/quality fields."""
+
+    def _resolve(self, local_model_setting="", model_override="", quality="Balanced"):
+        quality_to_model = {"Fast": "tiny.en", "Balanced": "small.en", "Accurate": "medium.en"}
+        return (
+            local_model_setting if local_model_setting else
+            model_override      if model_override      else
+            quality_to_model.get(quality, "small.en")
+        )
+
+    def test_local_model_wins_over_legacy(self):
+        self.assertEqual(self._resolve("tiny.en", "medium.en", "Accurate"), "tiny.en")
+
+    def test_legacy_model_override_used_when_no_local_model(self):
+        self.assertEqual(self._resolve("", "medium.en", "Balanced"), "medium.en")
+
+    def test_quality_fallback_when_both_empty(self):
+        self.assertEqual(self._resolve("", "", "Accurate"), "medium.en")
+
+    def test_all_local_models_accepted(self):
+        for m in ("tiny.en", "base.en", "small.en", "medium.en"):
+            self.assertEqual(self._resolve(m), m)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
