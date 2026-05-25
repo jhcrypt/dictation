@@ -18,6 +18,7 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 ctranslate2_datas, ctranslate2_binaries, ctranslate2_hiddenimports = collect_all('ctranslate2')
 openwakeword_datas, openwakeword_binaries, openwakeword_hiddenimports = collect_all('openwakeword')
 ort_datas, ort_binaries, ort_hiddenimports = collect_all('onnxruntime')
+av_datas, av_binaries, av_hiddenimports = collect_all('av')
 
 # sounddevice ships PortAudio as package data — must be collected explicitly
 sd_datas = collect_data_files('_sounddevice_data')
@@ -28,12 +29,13 @@ sym_datas = collect_data_files('symspellpy')
 a = Analysis(
     ['jarvis_sidecar.py'],
     pathex=[],
-    binaries=ctranslate2_binaries + openwakeword_binaries + ort_binaries,
-    datas=ctranslate2_datas + openwakeword_datas + ort_datas + sd_datas + sym_datas,
+    binaries=ctranslate2_binaries + openwakeword_binaries + ort_binaries + av_binaries,
+    datas=ctranslate2_datas + openwakeword_datas + ort_datas + sd_datas + sym_datas + av_datas,
     hiddenimports=(
         ctranslate2_hiddenimports
         + openwakeword_hiddenimports
         + ort_hiddenimports
+        + av_hiddenimports
         + [
             # faster_whisper submodules
             'faster_whisper',
@@ -69,7 +71,6 @@ a = Analysis(
         'pandas',
         'torch', 'torchvision', 'torchaudio',
         'transformers',
-        'av',
         'tensorflow', 'keras',
         'IPython', 'jupyter', 'notebook',
         'tkinter', '_tkinter',
