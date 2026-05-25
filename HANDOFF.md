@@ -10,25 +10,37 @@ Session engineer: Claude (Anthropic)
 | Item | Detail |
 |---|---|
 | **Branch** | `master` |
-| **Latest commit** | `535da9b` — AI Cleanup page layout reorder |
+| **Latest commit** | `b0ec4d0` — Remove unused spawn_sidecar import |
 | **GitHub** | Pushed — `https://github.com/jhcrypt/dictation` |
-| **Release build** | ✅ Clean (`cargo build --release`, 2026-05-25) |
-| **Manual smoke test** | ✅ All 9 items passed (2026-05-25) |
+| **Release build** | ✅ Clean (`npm run tauri build -- --no-bundle`, 2026-05-25) |
+| **Packaged QA** | ✅ All 9 items passed from clean ZIP unzip (2026-05-25) |
+| **Distribution ZIP** | `~/Desktop/Jarvis-Dictation-Tauri-v2.zip` — 97MB, self-contained |
 | **Transcription default** | Local Whisper (`transcription_engine = "local"`) |
 | **Cloud Phase 1** | ✅ Merged — OpenAI Whisper API via Keychain key |
 | **Inline punctuation** | ⚠️ Deferred — built but disabled in pipeline |
 | **App bundle** | `src-tauri/target/release/bundle/macos/Jarvis Dictation Tauri.app` |
 
-### Smoke test items confirmed passing (2026-05-25)
+### ⚠️ Critical build rule — NEVER use `cargo build --release` for distribution
+Running `cargo build --release` directly sets `cargo:rustc-cfg=dev` via Tauri's build system.
+This makes the webview load from `devUrl = "http://localhost:5173"` at runtime — blank window.
+Always use: **`npm run tauri build -- --no-bundle`** for release binaries.
+
+### Packaged-app QA items confirmed passing (2026-05-25, from clean ZIP unzip)
+- ✅ App window opens (full UI, not blank)
+- ✅ App icon appears in Dock
+- ✅ Engine Status — sidecar connects
 - ✅ Local dictation
-- ✅ Cloud dictation
-- ✅ Bad key fallback (HUD warning + local fallback)
-- ✅ Safe Mode forces local
-- ✅ Wake word dictation
 - ✅ Clipboard preservation
-- ✅ Custom commands
-- ✅ Email command
-- ✅ Ollama cleanup
+- ✅ Wake word
+- ✅ Custom commands page
+- ✅ Cloud (AI Cleanup) page
+- ✅ App quits cleanly
+
+### Sidecar packaging
+- Frozen PyInstaller binary (`jarvis-sidecar/jarvis-sidecar` + `_internal/`) bundled inside .app
+- No Python or conda required on tester machines
+- Whisper model weights still download on first dictation (~74MB tiny / ~464MB small.en)
+- Rebuild sidecar: `cd sidecar && pyinstaller jarvis_sidecar.spec` then copy `dist/jarvis-sidecar/` into bundle
 
 ---
 
