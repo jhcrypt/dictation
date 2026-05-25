@@ -4,7 +4,7 @@ import Card from "../components/ui/Card";
 import Toggle from "../components/ui/Toggle";
 import SaveButton from "../components/ui/SaveButton";
 import { useSettings } from "../context/SettingsContext";
-import type { LocalModel, CleanupProvider } from "../types/settings";
+import type { CleanupProvider } from "../types/settings";
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -142,36 +142,15 @@ export default function CloudPage() {
         />
       </Card>
 
-      {/* ── Local Model ─────────────────────────────────────────────────── */}
+      {/* ── Local Model (read-only hint) ────────────────────────────────── */}
       {!isCloud && (
-        <Card title="Local Model">
-          <RadioGroup<LocalModel>
-            value={settings.local_model}
-            onChange={(v) => updateSetting("local_model", v)}
-            options={[
-              {
-                value: "tiny.en",
-                label: "tiny.en — Fast",
-                description: "Fastest, least accurate. Good for quick notes.",
-              },
-              {
-                value: "base.en",
-                label: "base.en — Faster",
-                description: "Better than tiny, still very fast.",
-              },
-              {
-                value: "small.en",
-                label: "small.en — Balanced (default)",
-                description: "Recommended. Good accuracy with reasonable speed.",
-              },
-              {
-                value: "medium.en",
-                label: "medium.en — Accurate",
-                description: "Best accuracy, slowest. Good for technical or complex dictation.",
-              },
-            ]}
-          />
-        </Card>
+        <div className="px-3 py-2.5 rounded-lg border border-jarvis-border bg-jarvis-surface text-xs text-jarvis-muted">
+          Local model: <span className="text-jarvis-text font-medium">
+            {settings.model || `${settings.dictation_quality === "Fast" ? "tiny" : settings.dictation_quality === "Accurate" ? "medium" : "small"}.en`}
+          </span>
+          {" — "}
+          <span className="text-jarvis-hint">change in Audio &amp; Language</span>
+        </div>
       )}
 
       {/* ── Cloud Provider / API Key ─────────────────────────────────────── */}

@@ -1627,28 +1627,32 @@ class TestSafeModeTranscriptionEngine(unittest.TestCase):
 
 
 class TestLocalModelSelection(unittest.TestCase):
-    """local_model setting takes priority over legacy model/quality fields."""
+    """Canonical model resolution: model override (AudioPage) → dictation_quality mapping.
 
-    def _resolve(self, local_model_setting="", model_override="", quality="Balanced"):
+    local_model is removed. The single source of truth is dictation_quality + model.
+    """
+
+    def _resolve(self, model_override="", quality="Balanced"):
+        """Mirror the sidecar's model_name resolution exactly."""
         quality_to_model = {"Fast": "tiny.en", "Balanced": "small.en", "Accurate": "medium.en"}
-        return (
-            local_model_setting if local_model_setting else
-            model_override      if model_override      else
-            quality_to_model.get(quality, "small.en")
-        )
+        return model_override if model_override else quality_to_model.get(quality, "small.en")
 
-    def test_local_model_wins_over_legacy(self):
-        self.assertEqual(self._resolve("tiny.en", "medium.en", "Accurate"), "tiny.en")
+    def test_model_override_wins_over_quality(self):
+        """Explicit model override takes precedence over dictation_quality."""
+        self.assertEqual(self._resolve("medium.en", "Fast"), "medium.en")
 
-    def test_legacy_model_override_used_when_no_local_model(self):
-        self.assertEqual(self._resolve("", "medium.en", "Balanced"), "medium.en")
+    def test_quality_fast_maps_to_tiny(self):
+        self.assertEqual(self._resolve("", "Fast"), "tiny.en")
 
-    def test_quality_fallback_when_both_empty(self):
-        self.assertEqual(self._resolve("", "", "Accurate"), "medium.en")
+    def test_quality_balanced_maps_to_small(self):
+        self.assertEqual(self._resolve("", "Balanced"), "small.en")
 
-    def test_all_local_models_accepted(self):
-        for m in ("tiny.en", "base.en", "small.en", "medium.en"):
-            self.assertEqual(self._resolve(m), m)
+    def test_quality_accurate_maps_to_medium(self):
+        self.assertEqual(self._resolve("", "Accurate"), "medium.en")
+
+    def test_empty_override_uses_quality_default(self):
+        """Missing dictation_quality defaults to small.en."""
+        self.assertEqual(self._resolve("", ""), "small.en")
 
 
 # ---------------------------------------------------------------------------

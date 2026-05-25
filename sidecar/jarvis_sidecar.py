@@ -2475,7 +2475,6 @@ def cmd_transcribe_last(cmd: dict) -> dict:
     # ── Transcription engine / provider settings ───────────────────────────
     safe_mode_transcribe = settings.get("safe_mode", False)
     transcription_engine = settings.get("transcription_engine", "local")
-    local_model_setting  = settings.get("local_model", "")   # new field
     # Safe Mode always forces local regardless of UI setting
     if safe_mode_transcribe:
         transcription_engine = "local"
@@ -2488,12 +2487,9 @@ def cmd_transcribe_last(cmd: dict) -> dict:
     if auto_detect or (language and language != "en"):
         quality_to_model = {"Fast": "tiny", "Balanced": "small", "Accurate": "medium"}
 
-    # local_model (new setting) → model_override (legacy) → quality mapping
-    model_name = (
-        local_model_setting if local_model_setting else
-        model_override      if model_override      else
-        quality_to_model.get(quality, "small.en")
-    )
+    # model override (AudioPage "Advanced Speech Model") → quality mapping (AudioPage "Dictation Quality")
+    # Canonical source of truth: dictation_quality, overridable via model field.
+    model_name = model_override if model_override else quality_to_model.get(quality, "small.en")
 
     with _audio_lock:
         frames = list(_audio_frames)

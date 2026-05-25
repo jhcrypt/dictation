@@ -15,12 +15,11 @@ fn dirs_next() -> PathBuf {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     // ── Transcription engine ──────────────────────────────────────────────────
+    // Local Whisper model is owned by audio settings (dictation_quality + model).
     #[serde(default = "default_transcription_engine")]
     pub transcription_engine: String,
     #[serde(default = "default_transcription_provider")]
     pub transcription_provider: String,
-    #[serde(default = "default_local_model")]
-    pub local_model: String,
     #[serde(default = "default_cleanup_provider")]
     pub cleanup_provider: String,
     // Legacy fields — kept for migration only; openai_key no longer written back
@@ -107,7 +106,6 @@ pub struct Settings {
 
 fn default_transcription_engine()   -> String { "local".into() }
 fn default_transcription_provider() -> String { "openai".into() }
-fn default_local_model()            -> String { "small.en".into() }
 fn default_cleanup_provider()       -> String { "ollama".into() }
 fn default_model() -> String { "small.en".into() }
 fn default_sample_rate() -> u32 { 48000 }

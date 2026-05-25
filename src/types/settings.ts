@@ -9,15 +9,16 @@ export type HotkeyLabel = "Right Option" | "F13" | "F14" | "F15";
 // ── Transcription engine / provider ──────────────────────────────────────────
 export type TranscriptionEngine   = "local" | "cloud";
 export type TranscriptionProvider = "openai";          // Phase 1 only; future: "deepgram" etc.
-export type LocalModel = "tiny.en" | "base.en" | "small.en" | "medium.en";
 export type CleanupProvider = "off" | "ollama";        // future: "claude", "groq" etc.
+// Local Whisper model is owned by Audio & Language (dictation_quality + model fields).
+// Do not add a separate local_model field here — use dictation_quality as the source of truth.
 
 export interface Settings {
   // ── Transcription engine ─────────────────────────────────────────────────
   transcription_engine:   TranscriptionEngine;
   transcription_provider: TranscriptionProvider;
-  local_model:            LocalModel;
   cleanup_provider:       CleanupProvider;
+  // Local Whisper model → use dictation_quality (AudioPage) + model override (AudioPage).
   // ── Legacy (kept for migration path only — do not write new code against these) ──
   /** @deprecated use transcription_engine instead */
   cloud_mode?: boolean;
@@ -67,7 +68,6 @@ export const DEFAULT_SETTINGS: Settings = {
   // Transcription engine
   transcription_engine:   "local",
   transcription_provider: "openai",
-  local_model:            "small.en",
   cleanup_provider:       "ollama",
   // Audio / hardware
   model: "small.en",
