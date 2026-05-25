@@ -114,7 +114,32 @@ impl SidecarState {
     }
 }
 
+/// Start the sidecar process.
+///
+/// Resolution order:
+///   1. Frozen PyInstaller binary — `<exe_dir>/jarvis-sidecar/jarvis-sidecar`
+///      This is the path used in a packaged .app (Contents/MacOS/).
+///   2. Dev fallback — `~/jarvis-tauri/sidecar/jarvis_sidecar.py` run with the
+///      conda Python.  Only works on the developer machine; never ships.
 pub fn start_sidecar_process() -> Result<SidecarProcess, String> {
+    // ── 1. Frozen binary (packaged .app or dev-built PyInstaller output) ──────
+    //
+    // Layout inside the .app bundle:
+    //   Contents/MacOS/jarvis-dictation          ← Tauri main binary (current_exe)
+    //   Contents/MacOS/jarvis-sidecar/
+    //     jarvis-sidecar                         ← frozen sidecar executable
+    //     _internal/                             ← Python + all dylibs
+    let frozen_bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("jarvis-sidecar").join("jarvis-sidecar")));
+
+    if let Some(bin) = frozen_bin.filter(|p| p.exists()) {
+        eprintln!("[sidecar] launching frozen binary: {}", bin.display());
+        return spawn_sidecar_bin(&bin).map_err(|e| e.to_string());
+    }
+
+    // ── 2. Dev fallback: repo checkout + conda environment ────────────────────
+    eprintln!("[sidecar] frozen binary not found — falling back to dev Python");
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let python_candidates = [
         format!("{}/miniconda3/envs/dictation/bin/python", home),
@@ -127,15 +152,43 @@ pub fn start_sidecar_process() -> Result<SidecarProcess, String> {
     let python_path = python_candidates
         .iter()
         .find(|p| std::path::Path::new(p).exists())
-        .ok_or_else(|| "No Python found".to_string())?;
+        .ok_or_else(|| {
+            "Sidecar not available: frozen binary not found and no Python discovered. \
+             Build the frozen sidecar with PyInstaller or run from the developer repo."
+                .to_string()
+        })?;
 
     if !std::path::Path::new(&sidecar_script).exists() {
-        return Err(format!("Sidecar script not found: {}", sidecar_script));
+        return Err(format!(
+            "Sidecar script not found at {}. \
+             Build the frozen sidecar with PyInstaller for a packaged build.",
+            sidecar_script
+        ));
     }
 
     spawn_sidecar(python_path, &sidecar_script).map_err(|e| e.to_string())
 }
 
+/// Launch a pre-built frozen sidecar binary (no Python interpreter argument).
+pub fn spawn_sidecar_bin(bin_path: &std::path::Path) -> anyhow::Result<SidecarProcess> {
+    let mut child = Command::new(bin_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let stdin  = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin"))?;
+    let stdout = BufReader::new(child.stdout.take().ok_or_else(|| anyhow::anyhow!("no stdout"))?);
+
+    Ok(SidecarProcess {
+        child,
+        python_path: bin_path.to_string_lossy().into_owned(),
+        stdin,
+        stdout,
+    })
+}
+
+/// Launch the sidecar via a Python interpreter + script path (dev mode only).
 pub fn spawn_sidecar(python_path: &str, script_path: &str) -> anyhow::Result<SidecarProcess> {
     let mut child = Command::new(python_path)
         .arg(script_path)
@@ -144,7 +197,7 @@ pub fn spawn_sidecar(python_path: &str, script_path: &str) -> anyhow::Result<Sid
         .stderr(Stdio::null())
         .spawn()?;
 
-    let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin"))?;
+    let stdin  = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin"))?;
     let stdout = BufReader::new(child.stdout.take().ok_or_else(|| anyhow::anyhow!("no stdout"))?);
 
     Ok(SidecarProcess { child, python_path: python_path.to_string(), stdin, stdout })

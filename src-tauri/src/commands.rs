@@ -151,27 +151,8 @@ fn try_restart_on_broken_pipe(guard: &mut Option<crate::sidecar::SidecarProcess>
 #[tauri::command]
 pub fn sidecar_start(state: State<SidecarState>) -> Result<String, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-
-    // Find Python and sidecar script
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let python_candidates = [
-        format!("{}/miniconda3/envs/dictation/bin/python", home),
-        format!("{}/miniconda3/bin/python", home),
-        "/usr/local/bin/python3".to_string(),
-        "/usr/bin/python3".to_string(),
-    ];
-    let sidecar_script = format!("{}/jarvis-tauri/sidecar/jarvis_sidecar.py", home);
-
-    let python_path = python_candidates
-        .iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .ok_or_else(|| "No Python found".to_string())?;
-
-    if !std::path::Path::new(&sidecar_script).exists() {
-        return Err(format!("Sidecar script not found: {}", sidecar_script));
-    }
-
-    let proc = spawn_sidecar(python_path, &sidecar_script).map_err(|e| e.to_string())?;
+    // Delegate to the shared launcher — frozen binary first, dev Python fallback.
+    let proc = crate::sidecar::start_sidecar_process()?;
     *guard = Some(proc);
     Ok("started".into())
 }

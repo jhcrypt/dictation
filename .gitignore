@@ -6,3 +6,7 @@ src-tauri/gen/
 .DS_Store
 __pycache__/
 *.pyc
+
+# PyInstaller frozen sidecar build artifacts
+sidecar/dist/
+sidecar/build/
