@@ -317,9 +317,19 @@ export default function AiCleanupPage() {
         </p>
       </div>
 
-      {/* Ollama readiness — always first */}
+      {/* Ollama readiness */}
       <LocalAiExplanationCard />
       <OllamaReadinessCard />
+
+      {/* Enable Ollama master toggle — immediately after status card */}
+      <Card title="Ollama">
+        <Toggle
+          checked={settings.use_ollama}
+          onChange={(v) => updateSetting("use_ollama", v)}
+          label="Enable Ollama"
+          description="Use local Ollama for AI cleanup when available."
+        />
+      </Card>
 
       {/* AI Cleanup Mode — full 3-line explanation always visible, matches Python helper_text */}
       <Card title="Local AI Cleanup Mode">
@@ -339,7 +349,7 @@ export default function AiCleanupPage() {
           ))}
         </div>
         {/* All three descriptions always shown — matches Python helper_text block */}
-        <div className="text-xs text-jarvis-hint leading-relaxed space-y-1 font-mono">
+        <div className="text-xs text-jarvis-hint leading-relaxed space-y-1">
           <p>
             <span className={settings.ai_cleanup_mode === "auto" ? "text-jarvis-text font-semibold" : ""}>auto</span>
             {" — "}use Local AI Cleanup if available, skip silently if not{" "}
@@ -382,16 +392,9 @@ export default function AiCleanupPage() {
         </p>
       </Card>
 
-      {/* Ollama toggles */}
-      <Card title="Ollama">
+      {/* Advanced settings */}
+      <Card title="Advanced">
         <div className="flex flex-col gap-3">
-          <Toggle
-            checked={settings.use_ollama}
-            onChange={(v) => updateSetting("use_ollama", v)}
-            label="Enable Ollama"
-            description="Requires Ollama running locally with qwen2.5:3b"
-          />
-          <div className="border-t border-jarvis-border" />
           {/* Safe Mode description matches Python: "Pure dictation: disables Local AI Cleanup…" */}
           <Toggle
             checked={settings.safe_mode}
