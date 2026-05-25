@@ -5,6 +5,33 @@ Session engineer: Claude (Anthropic)
 
 ---
 
+## 🚀 Current Build Status
+
+| Item | Detail |
+|---|---|
+| **Branch** | `master` |
+| **Latest commit** | `535da9b` — AI Cleanup page layout reorder |
+| **GitHub** | Pushed — `https://github.com/jhcrypt/dictation` |
+| **Release build** | ✅ Clean (`cargo build --release`, 2026-05-25) |
+| **Manual smoke test** | ✅ All 9 items passed (2026-05-25) |
+| **Transcription default** | Local Whisper (`transcription_engine = "local"`) |
+| **Cloud Phase 1** | ✅ Merged — OpenAI Whisper API via Keychain key |
+| **Inline punctuation** | ⚠️ Deferred — built but disabled in pipeline |
+| **App bundle** | `src-tauri/target/release/bundle/macos/Jarvis Dictation Tauri.app` |
+
+### Smoke test items confirmed passing (2026-05-25)
+- ✅ Local dictation
+- ✅ Cloud dictation
+- ✅ Bad key fallback (HUD warning + local fallback)
+- ✅ Safe Mode forces local
+- ✅ Wake word dictation
+- ✅ Clipboard preservation
+- ✅ Custom commands
+- ✅ Email command
+- ✅ Ollama cleanup
+
+---
+
 ## ✅ Manual QA Results — Confirmed Fixed
 
 | Blocker | Status | Confirmed |
@@ -285,15 +312,15 @@ When revisiting, options in priority order:
 ## Cloud Phase 1 — `feature/cloud-transcription` (2026-05-25)
 
 ### Status
-Pending manual QA. Do NOT merge into master until all QA items below pass.
+✅ **Merged into master and released.** All QA items passed. Smoke test confirmed 2026-05-25.
 
-### QA checklist (must all pass before merge)
-- [ ] Local mode — normal dictation works, timing card shows `· local`
-- [ ] Cloud mode — valid OpenAI key → timing shows `· cloud`, transcription correct
-- [ ] Bad key fallback — HUD warning appears, timing shows `· local (fallback)`, paste still works
-- [ ] Safe Mode — cloud configured but forced to local; timing shows `· local`
-- [ ] Settings file — `~/.dictation_settings.json` contains no `openai_key` field after saving
-- [ ] Regression — Wake word, clipboard preserve, Ollama cleanup, custom commands all still work
+### QA checklist — all passed
+- [x] Local mode — normal dictation works, timing card shows `· local`
+- [x] Cloud mode — valid OpenAI key → timing shows `· cloud`, transcription correct
+- [x] Bad key fallback — HUD warning appears, timing shows `· local (fallback)`, paste still works
+- [x] Safe Mode — cloud configured but forced to local; timing shows `· local`
+- [x] Settings file — `~/.dictation_settings.json` contains no `openai_key` field after saving
+- [x] Regression — Wake word, clipboard preserve, Ollama cleanup, custom commands all still work
 
 ### API key migration behavior (intentional — document for future sessions)
 
