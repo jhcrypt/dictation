@@ -236,7 +236,9 @@ _OLLAMA_SYSTEM_PROMPT = (
     "Do not rewrite the text unless it is clearly needed. "
     "Fix obvious speech-to-text errors, punctuation, capitalization, grammar, and spacing. "
     "If the input is already clear, return it unchanged. "
-    "Return only the corrected dictation text."
+    "Return ONLY the corrected dictation text with no commentary, "
+    "no explanations, no annotations, no parenthetical remarks, "
+    "and no evaluation of whether changes were needed."
 )
 
 # ── Word-to-digit map ─────────────────────────────────────────────────────────
@@ -747,6 +749,110 @@ def apply_inline_linebreaks(text: str) -> str:
     return text.strip()
 
 
+# ── Inline punctuation substitution ──────────────────────────────────────────
+#
+# Maps spoken punctuation words → symbols for inline use inside dictated text.
+# Sorted longest-phrase-first so multi-word phrases ("exclamation mark") are
+# matched before any single-word sub-phrase could shadow them.
+#
+# Standalone commands ("period" alone) are caught by _cmd_detect *before* text
+# reaches this pipeline and are routed as paste_text actions with text=".".
+# The guard below is belt-and-suspenders.
+#
+# Guardrails:
+#   - Developer / Verbatim profile  → skip (code dictation must not be mangled)
+#   - _CODE_RE match                → skip (paths, URLs, identifiers)
+#   - Entire text == a punct phrase → skip (standalone command, handled upstream)
+_INLINE_PUNCT_MAP: list[tuple[str, str]] = sorted(
+    [
+        ("exclamation point", "!"),
+        ("exclamation mark",  "!"),
+        ("question mark",     "?"),
+        ("full stop",         "."),
+        ("open paren",        "("),
+        ("close paren",       ")"),
+        ("ellipsis",          "..."),
+        ("semicolon",         ";"),
+        ("period",            "."),
+        ("comma",             ","),
+        ("colon",             ":"),
+        ("hyphen",            "-"),
+        ("dash",              " — "),
+    ],
+    key=lambda kv: len(kv[0]),
+    reverse=True,   # longest phrase wins when patterns overlap
+)
+
+# Standalone-command guard set — the exact phrases _cmd_detect already handles.
+_INLINE_PUNCT_STANDALONE: frozenset[str] = frozenset(
+    phrase for phrase, _ in _INLINE_PUNCT_MAP
+)
+
+# Pre-compiled regexes — built once at module load, not per-call.
+_INLINE_PUNCT_RES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'\b' + re.escape(phrase) + r'\b', re.IGNORECASE), symbol)
+    for phrase, symbol in _INLINE_PUNCT_MAP
+]
+
+
+def apply_inline_punctuation(text: str, profile: str = "General") -> str:
+    """Replace spoken punctuation words with their symbols inside dictated text.
+
+    "hello period come again period"  → "Hello. Come again."
+    "hello comma Bob"                 → "Hello, Bob"
+    "open paren test close paren"     → "(test)"
+    "see you later exclamation mark question mark" → "See you later!?"
+
+    Called from the text cleanup pipeline after apply_inline_linebreaks.
+    Only runs on English-profile, non-code dictation; all other text passes
+    through unchanged.
+
+    Spacing cleanup applied after substitution:
+      1. Remove space before  . , ! ? : ; )
+      2. Remove space after   (
+      3. After sentence-ending . ! ?  — capitalize next word
+      4. Collapse multiple spaces to one
+      5. Capitalize the very first character
+    """
+    if not text or not text.strip():
+        return text
+    # Profile guard: never mangle code / verbatim dictation.
+    if profile in ("Developer", "Verbatim"):
+        return text
+    # Code-pattern guard: paths, identifiers, shell commands, URLs, etc.
+    if _CODE_RE.search(text):
+        return text
+    # Standalone-command guard: if the *entire* text is one punct phrase,
+    # _cmd_detect already returned it as a command.  Leave it alone here.
+    if text.strip().lower() in _INLINE_PUNCT_STANDALONE:
+        return text
+
+    # ── Apply substitutions (longest phrase first) ─────────────────────────
+    for pattern, symbol in _INLINE_PUNCT_RES:
+        text = pattern.sub(symbol, text)
+
+    # ── Spacing cleanup ────────────────────────────────────────────────────
+    # 1. Remove space immediately before closing/sentence punctuation.
+    text = re.sub(r'\s+([.,!?:;)])', r'\1', text)
+    # 2. Remove space immediately after open paren.
+    text = re.sub(r'\(\s+', '(', text)
+    # 3. Capitalize the first letter following a sentence-ending . ! ?
+    text = re.sub(
+        r'([.!?])\s+([a-z])',
+        lambda m: m.group(1) + ' ' + m.group(2).upper(),
+        text,
+    )
+    # 4. Collapse any double-spaces left by em-dash padding or other subs.
+    text = re.sub(r'  +', ' ', text)
+    # 5. Capitalize the very first character of the result.
+    text = text.strip()
+    if text and text[0].islower():
+        text = text[0].upper() + text[1:]
+
+    return text
+
+
+
 # ── Personal corrections (vocab["corrections"]) ───────────────────────────────
 
 def apply_corrections(text: str) -> str:
@@ -935,8 +1041,12 @@ def _deduplicate_whisper(text: str) -> str:
         while i + window <= len(words) and words[i:i + window] == chunk:
             repeats += 1
             i += window
-        if repeats >= 3:
-            _log(f"[dedup] hallucination collapsed: {len(words)} words → {window}")
+        # Whisper's typical hallucination is 2× repetition for multi-word chunks.
+        # Require 3 repeats only for 1-2 word windows (avoids over-collapsing
+        # short common phrases); for windows of 3+ words, 2 repeats is enough.
+        threshold = 3 if window < 3 else 2
+        if repeats >= threshold:
+            _log(f"[dedup] hallucination collapsed: {len(words)} words → {window} (threshold={threshold})")
             return " ".join(chunk)
 
     # ── Pass 2: sentence-level dedup (punctuation-delimited repetitions) ──────
@@ -1481,10 +1591,15 @@ def cmd_get_status(_cmd: dict) -> dict:
 
     recording_rms : float | None — raw RMS of the most recent audio frame.
                     Drives subtle waveform movement even during background noise.
+                    The wake monitor uses this (not voice_active) for silence
+                    detection, matching the Python reference _silence_stop_monitor.
     voice_active  : bool — True only when RMS is clearly above the rolling noise
-                    floor (speech, not fan/AC).  Used by:
-                      • HudApp.tsx  — scales waveform bars up only during speech
-                      • useGlobalHotkey.ts wake monitor — resets silence window
+                    floor (speech, not fan/AC).  Used by HudApp.tsx to scale
+                    waveform bars.
+    noise_floor   : float — current adaptive noise floor value.  Exposed so the
+                    JS wake monitor can log it for QA/debugging.
+    vad_threshold : float — the effective VAD threshold (max(floor*2.5, 0.012)).
+                    Logged by the wake monitor to verify VAD isn't too aggressive.
     """
     return {
         "ok": True,
@@ -1492,6 +1607,8 @@ def cmd_get_status(_cmd: dict) -> dict:
         "has_audio": len(_audio_frames) > 0,
         "recording_rms": _live_audio_rms if _recording else None,
         "voice_active":  _voice_active  if _recording else False,
+        "noise_floor":   _noise_floor,
+        "vad_threshold": max(_noise_floor * 2.5, 0.012),
     }
 
 
@@ -2522,6 +2639,11 @@ def cmd_transcribe_last(cmd: dict) -> dict:
         # Inline linebreaks: "next line" / "next paragraph" → real newlines.
         # Runs for all languages.
         text = apply_inline_linebreaks(text)
+
+        # Inline punctuation: "hello period come again" → "Hello. Come again."
+        # Skipped for Developer/Verbatim profiles and code-like text.
+        # Runs for all languages (spoken punct commands are always English).
+        text = apply_inline_punctuation(text, profile)
 
         # Personal corrections from vocab["corrections"]: user-defined wrong→right.
         # Runs for all languages — user controls the mappings.

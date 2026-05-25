@@ -768,6 +768,271 @@ class TestLearnFromTextRobustness(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _deduplicate_whisper regression tests
+# ---------------------------------------------------------------------------
+
+class TestApplyInlinePunctuation(unittest.TestCase):
+    """Regression tests for apply_inline_punctuation.
+
+    Protected invariants:
+    - Spoken punct words inside dictation are replaced with symbols
+    - Spacing is cleaned up (no space before . , ! ? etc.)
+    - Sentence-starting words are capitalised after . ! ?
+    - Standalone punct phrases are returned unchanged (handled upstream)
+    - Developer / Verbatim profile → text returned unchanged
+    - Code-like text → text returned unchanged
+    """
+
+    def punct(self, text, profile="General"):
+        return apply_inline_punctuation(text, profile)  # type: ignore[name-defined]
+
+    # ── Core substitutions ────────────────────────────────────────────────────
+
+    def test_period_at_end(self):
+        self.assertEqual(self.punct("hello period"), "Hello.")
+
+    def test_period_inline(self):
+        self.assertEqual(
+            self.punct("hello period come again period"),
+            "Hello. Come again."
+        )
+
+    def test_full_stop_synonym(self):
+        self.assertEqual(self.punct("hello full stop"), "Hello.")
+
+    def test_exclamation_mark(self):
+        self.assertEqual(self.punct("see you later exclamation mark"), "See you later!")
+
+    def test_exclamation_point(self):
+        self.assertEqual(self.punct("see you later exclamation point"), "See you later!")
+
+    def test_question_mark(self):
+        self.assertEqual(self.punct("how are you question mark"), "How are you?")
+
+    def test_comma(self):
+        self.assertEqual(self.punct("hello comma Bob"), "Hello, Bob")
+
+    def test_colon(self):
+        self.assertEqual(self.punct("ingredients colon flour"), "Ingredients: flour")
+
+    def test_semicolon(self):
+        result = self.punct("first item semicolon second item")
+        self.assertIn(";", result)
+        self.assertNotIn(" ;", result)
+
+    def test_ellipsis(self):
+        self.assertEqual(self.punct("he said ellipsis"), "He said...")
+
+    def test_open_close_paren(self):
+        self.assertEqual(self.punct("open paren test close paren"), "(test)")
+
+    def test_hyphen(self):
+        result = self.punct("twenty hyphen five")
+        self.assertIn("-", result)
+        self.assertNotIn("hyphen", result)
+
+    def test_dash(self):
+        result = self.punct("hello dash world")
+        self.assertIn("—", result)
+        self.assertNotIn("dash", result)
+
+    # ── Task acceptance tests (from task description) ─────────────────────────
+
+    def test_task_full_sentence(self):
+        """Task example: hello period come again period see you later exclamation mark question mark"""
+        result = self.punct(
+            "hello period come again period see you later exclamation mark question mark"
+        )
+        self.assertEqual(result, "Hello. Come again. See you later!?")
+
+    def test_task_comma_name(self):
+        """Task example: hello comma Bob"""
+        self.assertEqual(self.punct("hello comma Bob"), "Hello, Bob")
+
+    def test_task_parens(self):
+        """Task example: open paren test close paren → (test)"""
+        self.assertEqual(self.punct("open paren test close paren"), "(test)")
+
+    # ── Spacing cleanup ───────────────────────────────────────────────────────
+
+    def test_no_space_before_period(self):
+        """No space before period after substitution."""
+        result = self.punct("hello period")
+        self.assertNotIn(" .", result)
+
+    def test_no_space_inside_parens(self):
+        """No space after ( or before )."""
+        result = self.punct("open paren hello close paren")
+        self.assertFalse(result.startswith("( "))
+        self.assertFalse(result.endswith(" )"))
+
+    def test_capitalise_after_period(self):
+        """Word after period is capitalised."""
+        result = self.punct("hello period world")
+        self.assertIn(". W", result)
+
+    def test_capitalise_first_word(self):
+        """First word of output is always capitalised."""
+        result = self.punct("hello period")
+        self.assertTrue(result[0].isupper())
+
+    # ── Guardrails ────────────────────────────────────────────────────────────
+
+    def test_standalone_period_unchanged(self):
+        """Standalone 'period' returns unchanged — command routing handles it."""
+        self.assertEqual(self.punct("period"), "period")
+
+    def test_standalone_question_mark_unchanged(self):
+        self.assertEqual(self.punct("question mark"), "question mark")
+
+    def test_standalone_exclamation_mark_unchanged(self):
+        self.assertEqual(self.punct("exclamation mark"), "exclamation mark")
+
+    def test_standalone_full_stop_unchanged(self):
+        self.assertEqual(self.punct("full stop"), "full stop")
+
+    def test_developer_profile_unchanged(self):
+        """Developer profile: text returned verbatim."""
+        text = "hello period world"
+        self.assertEqual(self.punct(text, profile="Developer"), text)
+
+    def test_verbatim_profile_unchanged(self):
+        """Verbatim profile: text returned verbatim."""
+        text = "hello period world"
+        self.assertEqual(self.punct(text, profile="Verbatim"), text)
+
+    def test_code_text_unchanged(self):
+        """Code-like text (contains import/function/etc) is returned unchanged."""
+        text = "import period os"
+        result = self.punct(text)
+        # _CODE_RE should match 'import' and skip substitution
+        self.assertEqual(result, text)
+
+    def test_empty_string(self):
+        """Empty string returns empty string."""
+        self.assertEqual(self.punct(""), "")
+
+    def test_no_false_match_in_periodic(self):
+        """'periodic' must not be partially matched as 'period' — word boundary guard."""
+        result = self.punct("periodic table of elements")
+        self.assertNotIn(".", result)
+        # The word is preserved (possibly title-cased by capitalize-first), not replaced.
+        self.assertIn("eriodic", result)  # suffix 'eriodic' survives regardless of capitalisation
+
+    def test_no_false_match_in_hyphenated_word(self):
+        """'hyphenated' must not be partially matched as 'hyphen' — word boundary guard."""
+        result = self.punct("hyphenated words are common")
+        # The word is preserved (possibly title-cased), not replaced with '-'.
+        self.assertNotIn(" - ", result)
+        self.assertIn("yphenated", result)  # suffix survives regardless of capitalisation
+
+
+class TestDeduplicateWhisper(unittest.TestCase):
+    """Regression tests for _deduplicate_whisper.
+
+    Protected invariants:
+    - 3× repetition of ANY window size → collapse (existing behavior, must not break)
+    - 2× repetition of 3+-word window → collapse (Issue 6 fix: catch Whisper hallucination)
+    - 2× repetition of 1- or 2-word window → do NOT collapse (avoid false positives)
+    - sentence-level dedup via Pass 2 still fires for punctuation-delimited repetitions
+    - code/non-sentence text with 2× repetition of 3+ words → collapsed
+    """
+
+    def dedup(self, text):
+        return _deduplicate_whisper(text)  # type: ignore[name-defined]
+
+    # ── 3× repeats (original behavior must be preserved) ─────────────────────
+
+    def test_three_repeats_single_word_collapsed(self):
+        """testing testing testing → testing"""
+        self.assertEqual(self.dedup("testing testing testing"), "testing")
+
+    def test_three_repeats_two_word_window_collapsed(self):
+        """three-word phrase × 3 → single phrase"""
+        result = self.dedup("hello world hello world hello world")
+        self.assertEqual(result, "hello world")
+
+    def test_three_repeats_multi_word_collapsed(self):
+        """Jarvis is not working × 3 → single phrase"""
+        result = self.dedup("Jarvis is not working Jarvis is not working Jarvis is not working")
+        self.assertEqual(result, "Jarvis is not working")
+
+    # ── 2× repeats: 3+-word windows MUST collapse (Issue 6 fix) ─────────────
+
+    def test_two_repeats_three_word_window_collapsed(self):
+        """Why is this × 2 → Why is this  (3-word window, threshold=2)"""
+        result = self.dedup("Why is this Why is this")
+        self.assertEqual(result, "Why is this")
+
+    def test_two_repeats_five_word_window_collapsed(self):
+        """'I'll print up your dictation' × 2 → collapsed"""
+        phrase = "I'll print up your dictation"
+        result = self.dedup(f"{phrase} {phrase}")
+        # Should collapse to the first occurrence
+        self.assertEqual(result.strip(), phrase.strip())
+
+    def test_two_repeats_code_path_collapsed(self):
+        """path = Path('/mnt/data') × 2 → collapsed (no sentence punctuation needed)"""
+        phrase = "path = Path mnt data"  # as Whisper would transcribe it
+        result = self.dedup(f"{phrase} {phrase}")
+        self.assertEqual(result, phrase)
+
+    def test_two_repeats_long_sentence_no_punctuation_not_collapsed_by_pass1(self):
+        """Phrases > 8 words without punctuation are NOT caught by Pass 1
+        (window range is 1-8).  They are caught instead by the JS lastPasteRef
+        guard in useGlobalHotkey.ts (5-second consecutive-duplicate suppression).
+        This test documents that known limitation so it is not accidentally 'fixed'
+        by raising the window ceiling and breaking other behavior."""
+        phrase = "The cow ran up the hill to drink a bottle of water"  # 11 words
+        result = self.dedup(f"{phrase} {phrase}")
+        # Pass 1 cannot collapse this (window max = 8, phrase = 11 words)
+        # Pass 2 cannot collapse this (no sentence-ending punctuation)
+        # Result is unchanged — the JS guard is the backstop for this case.
+        self.assertEqual(result, f"{phrase} {phrase}")
+
+    # ── 2× repeats: 1- or 2-word windows must NOT collapse ───────────────────
+
+    def test_two_repeats_single_word_not_collapsed(self):
+        """'testing testing' must NOT be collapsed (1-word window, threshold=3)"""
+        result = self.dedup("testing testing")
+        self.assertEqual(result, "testing testing")
+
+    def test_two_repeats_two_word_window_not_collapsed(self):
+        """'hello world hello world' must NOT be collapsed (2-word window, threshold=3)"""
+        result = self.dedup("hello world hello world")
+        self.assertEqual(result, "hello world hello world")
+
+    # ── Pass 2: sentence-level dedup ─────────────────────────────────────────
+
+    def test_sentence_level_dedup_with_punctuation(self):
+        """Punctuation-delimited sentence repetition → collapsed by Pass 2"""
+        result = self.dedup(
+            "Why is my dictation coming out like this? "
+            "Why is my dictation coming out like this?"
+        )
+        # Should contain only one copy of the sentence
+        self.assertNotIn(
+            "Why is my dictation coming out like this? Why is my dictation coming out like this?",
+            result
+        )
+
+    def test_no_false_collapse_different_sentences(self):
+        """Two different sentences must both survive"""
+        text = "The quick brown fox. The lazy dog sat."
+        result = self.dedup(text)
+        self.assertIn("quick brown fox", result)
+        self.assertIn("lazy dog", result)
+
+    def test_empty_string_passthrough(self):
+        """Empty string returns empty string"""
+        self.assertEqual(self.dedup(""), "")
+
+    def test_single_word_passthrough(self):
+        """Single word returns unchanged"""
+        self.assertEqual(self.dedup("hello"), "hello")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
