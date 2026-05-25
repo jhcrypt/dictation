@@ -3,7 +3,7 @@ import Card from "../components/ui/Card";
 
 interface WorkflowCardProps {
   title: string;
-  status: "Available" | "Requires Jarvis Commands" | "Deferred";
+  status: "Available" | "Requires Commands Enabled" | "Deferred";
   examples: string[];
   note: string;
 }
@@ -12,15 +12,15 @@ function WorkflowCard({ title, status, examples, note }: WorkflowCardProps) {
   const statusClass =
     status === "Available"
       ? "bg-jarvis-accent/10 text-jarvis-accent"
-      : status === "Requires Jarvis Commands"
+      : status === "Requires Commands Enabled"
         ? "bg-purple-500/10 text-purple-300 border border-purple-500/20"
         : "bg-jarvis-surface text-jarvis-muted border border-jarvis-border";
 
   const statusLabel =
     status === "Available"
       ? "Available"
-      : status === "Requires Jarvis Commands"
-        ? "Requires Jarvis Commands"
+      : status === "Requires Commands Enabled"
+        ? "Requires Commands Enabled"
         : "Deferred";
 
   return (
@@ -55,7 +55,8 @@ export default function WorkflowsPage() {
         <p className="text-sm text-jarvis-hint mt-1 leading-relaxed">
           Workflows are voice-triggered actions beyond plain dictation — opening apps, composing emails,
           controlling volume, taking screenshots, and more. Most are available now. Commands marked
-          "Requires Jarvis Commands" only activate when Jarvis Commands is enabled in the Jarvis settings page.
+          "Requires Commands Enabled" work from the record button, hotkey, or wake word — they just need
+          Commands to be turned on in the Jarvis settings page.
         </p>
       </div>
 
@@ -160,7 +161,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Custom Commands"
-        status="Requires Jarvis Commands"
+        status="Requires Commands Enabled"
         examples={[
           "open my email",
           "open client portal",
@@ -171,7 +172,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Open Apps & Websites"
-        status="Requires Jarvis Commands"
+        status="Requires Commands Enabled"
         examples={[
           "open Safari",
           "open Terminal",
@@ -185,7 +186,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Web Search"
-        status="Requires Jarvis Commands"
+        status="Requires Commands Enabled"
         examples={[
           "search for machine learning",
           "google Python tutorials",
@@ -197,7 +198,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="System Volume"
-        status="Requires Jarvis Commands"
+        status="Requires Commands Enabled"
         examples={[
           "volume up",
           "volume down",
@@ -210,7 +211,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Reminders"
-        status="Requires Jarvis Commands"
+        status="Requires Commands Enabled"
         examples={[
           "remind me to call Jack",
           "set a reminder to buy milk",
@@ -221,7 +222,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Email Drafts"
-        status="Requires Jarvis Commands"
+        status="Requires Commands Enabled"
         examples={[
           "email Jack",
           "send email to Val",
@@ -232,7 +233,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Screenshots"
-        status="Requires Jarvis Commands"
+        status="Requires Commands Enabled"
         examples={[
           "screenshot",
           "capture window",
@@ -245,7 +246,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Spotify & Playlists"
-        status="Requires Jarvis Commands"
+        status="Requires Commands Enabled"
         examples={[
           "play lo-fi music on Spotify",
           "play coding playlist",
@@ -257,7 +258,7 @@ export default function WorkflowsPage() {
 
       <WorkflowCard
         title="Close & Quit Apps"
-        status="Requires Jarvis Commands"
+        status="Requires Commands Enabled"
         examples={[
           "close Safari",
           "quit Chrome",
