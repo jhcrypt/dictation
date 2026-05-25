@@ -117,21 +117,32 @@ impl SidecarState {
 /// Start the sidecar process.
 ///
 /// Resolution order:
-///   1. Frozen PyInstaller binary — `<exe_dir>/jarvis-sidecar/jarvis-sidecar`
-///      This is the path used in a packaged .app (Contents/MacOS/).
+///   1. Frozen PyInstaller binary — `Contents/Helpers/jarvis-sidecar/jarvis-sidecar`
+///      Stored in Contents/Helpers/ (not MacOS/) so codesign --deep does not
+///      traverse _internal/*.dist-info and can sign the bundle cleanly.
 ///   2. Dev fallback — `~/jarvis-tauri/sidecar/jarvis_sidecar.py` run with the
 ///      conda Python.  Only works on the developer machine; never ships.
 pub fn start_sidecar_process() -> Result<SidecarProcess, String> {
-    // ── 1. Frozen binary (packaged .app or dev-built PyInstaller output) ──────
+    // ── 1. Frozen binary (packaged .app) ──────────────────────────────────────
     //
     // Layout inside the .app bundle:
-    //   Contents/MacOS/jarvis-dictation          ← Tauri main binary (current_exe)
-    //   Contents/MacOS/jarvis-sidecar/
-    //     jarvis-sidecar                         ← frozen sidecar executable
-    //     _internal/                             ← Python + all dylibs
+    //   Contents/MacOS/jarvis-dictation           ← Tauri main binary (current_exe)
+    //   Contents/Resources/jarvis-sidecar/
+    //     jarvis-sidecar                          ← frozen sidecar executable
+    //     _internal/                              ← Python + all dylibs
+    //
+    // Stored in Resources/ (not MacOS/ or Helpers/) so that codesign seals the
+    // sidecar's files as data resources rather than recursing into _internal/ as
+    // nested code — which would choke on .dist-info and python3.11/ directories.
+    //
+    // Path: current_exe parent = Contents/MacOS  →  ../Resources/jarvis-sidecar/jarvis-sidecar
     let frozen_bin = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("jarvis-sidecar").join("jarvis-sidecar")));
+        .and_then(|p| {
+            p.parent()                  // Contents/MacOS
+             .and_then(|d| d.parent()) // Contents
+             .map(|d| d.join("Resources").join("jarvis-sidecar").join("jarvis-sidecar"))
+        });
 
     if let Some(bin) = frozen_bin.filter(|p| p.exists()) {
         eprintln!("[sidecar] launching frozen binary: {}", bin.display());
