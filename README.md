@@ -1,179 +1,268 @@
 # Jarvis Dictation
 
-Private, Mac-first voice dictation with local Whisper transcription, optional Ollama cleanup, writing profiles, snippets/history, and Jarvis-style commands.
+> **Private, Mac-first voice dictation** with local Whisper transcription, optional Ollama AI cleanup, writing profiles, wake word support, and a native menu bar controller.
+
+[![Platform](https://img.shields.io/badge/Platform-macOS-black?style=flat-square&logo=apple)]()
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python)]()
+[![Whisper](https://img.shields.io/badge/Transcription-faster--whisper-orange?style=flat-square)]()
+[![Ollama](https://img.shields.io/badge/AI%20Cleanup-Ollama%20(optional)-blueviolet?style=flat-square)]()
+[![License](https://img.shields.io/badge/License-See%20LICENSE-lightgrey?style=flat-square)]()
+
+---
+
+## Table of Contents
+
+- [What It Does](#what-it-does)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Writing Profiles](#writing-profiles)
+- [Jarvis Commands](#jarvis-commands)
+- [Hotkeys](#hotkeys)
+- [Project Structure](#project-structure)
+- [Version History](#version-history)
+- [Contributing](#contributing)
+- [Security](#security)
+
+---
+
+## What It Does
+
+Jarvis Dictation is a fully local, privacy-first voice dictation app for macOS. Everything runs on your machine — no cloud, no subscription, no data leaving your computer.
+
+You press a hotkey, speak, release, and your words are transcribed and typed directly into whatever app is in focus. Optionally, a local Ollama model can clean up the transcript (punctuation, formatting, grammar) before it's inserted.
+
+It lives in your Mac menu bar and stays out of the way until you need it.
 
 ---
 
 ## Features
 
-- **Right Option push-to-dictate** — hold to record, release to transcribe and type
-- **Local Whisper transcription** — fully offline, no cloud required
-- **Optional Ollama cleanup** — local AI polishing with configurable writing profiles
-- **Writing Profiles** — General, Professional, Email, Developer, Medical, Legal, Sales, Notes, Creative, and Verbatim
-- **Jarvis wake-word dictation** — say "Hey Jarvis" for hands-free recording
-- **Snippets** — store and insert reusable text blocks by voice
-- **Dictation history** — browse and reuse past transcriptions
-- **Safe Mode** — bypass AI cleanup when you need raw output
-- **macOS menu bar utility** — lives in the menu bar, out of your way
-- **Private by default** — no data leaves your Mac unless you enable cloud mode
-
----
-
-## Screenshots
-
-_Coming soon._
+- 🎙️ **Local transcription** via `faster-whisper` — no internet required
+- 🍎 **Native macOS menu bar** controller with status icons
+- ✍️ **10 writing profiles** — auto-switches based on the frontmost app
+- 🤖 **Optional Ollama AI cleanup** — grammar, punctuation, formatting via local LLM
+- 🔔 **Wake word detection** via `openwakeword` — hands-free trigger
+- ⌨️ **Jarvis voice commands** — formatting and editing by voice
+- 📜 **Dictation history** — searchable log of past transcriptions
+- 🔒 **100% private** — everything stays on device
+- 🛠️ **Packagable as `.app`** — run it like a native Mac application
 
 ---
 
 ## Requirements
 
-- macOS 12 Monterey or later (Intel Mac)
-- Python 3.11
-- Conda (Miniconda or Anaconda)
-- [Ollama](https://ollama.com) (optional — for AI cleanup)
+| Requirement | Version / Notes |
+|---|---|
+| **macOS** | Required (uses Quartz HID, PyObjC, menu bar APIs) |
+| **Python** | 3.11 (strictly — other versions not tested) |
+| **conda** | Recommended — use the `dictation` environment |
+| **Ollama** | Optional — install from [ollama.com](https://ollama.com) for AI cleanup |
+| **Microphone** | Any input device; Right Option key recommended as hotkey |
 
 ---
 
 ## Installation
 
-### 1. Install Miniconda
+### 1. Clone the repo
 
 ```bash
-curl -O https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh
-bash Miniconda3-latest-MacOSX-x86_64.sh
-```
-
-Restart your terminal after installing.
-
-### 2. Clone the repo
-
-```bash
-git clone https://github.com/jhcrypt/dictation
+git clone https://github.com/jhcrypt/dictation.git
 cd dictation
 ```
 
-### 3. Create the conda environment
+### 2. Create the conda environment
 
 ```bash
 conda create -n dictation python=3.11
 conda activate dictation
 ```
 
-### 4. Install dependencies
+### 3. Install dependencies
 
 ```bash
-pip install faster-whisper sounddevice numpy openwakeword onnxruntime \
-            Pillow symspellpy keyring pyobjc ollama
+pip install -r requirements.txt
 ```
 
-### 5. Download wake word models
+### 4. (Optional) Install Ollama for AI cleanup
+
+Download and install from [https://ollama.com](https://ollama.com), then pull a model:
 
 ```bash
-python -c "from openwakeword.utils import download_models; download_models()"
+ollama pull llama3
 ```
 
-### 6. Grant macOS permissions
-
-Go to **System Settings → Privacy & Security** and grant:
-
-- **Microphone** — to your terminal app (iTerm2, Terminal, etc.)
-- **Accessibility** — to your terminal app
-- **Input Monitoring** — to your terminal app
-
-See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for full details.
-
----
-
-## Running from Source
+### 5. Run
 
 ```bash
-conda activate dictation
 python src/jarvis_dictation.py
 ```
 
-The app appears in your menu bar. No Dock icon.
+The app will appear in your macOS menu bar.
 
 ---
 
-## Building the Mac App
+## Usage
 
-See [docs/INSTALL.md](docs/INSTALL.md) for detailed instructions.
+### Basic dictation
 
-Quick start:
+1. Make sure your target app is in focus (VS Code, Notes, browser, etc.)
+2. **Hold** the hotkey (default: **Right Option**)
+3. **Speak** your text
+4. **Release** the key
+5. Transcription types automatically into the focused app
 
-```bash
-conda activate dictation
-pip install pyinstaller
-cd packaging/mac
-chmod +x build_mac_app.sh
-./build_mac_app.sh
-```
+### Menu bar
 
-The built app will be at `packaging/mac/dist/JarvisDictation.app`.
-
-> After building, grant Microphone, Accessibility, and Input Monitoring permissions to **JarvisDictation.app** separately in System Settings.
-
----
-
-## macOS Permissions
-
-| Permission | Why |
-|---|---|
-| Microphone | Records your voice |
-| Accessibility | Types transcribed text into other apps |
-| Input Monitoring | Detects the global record hotkey |
-| Automation | Controls apps like Reminders, Spark, Spotify |
-
-See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
+Click the menu bar icon to access:
+- Recording status
+- Writing profile selection
+- Settings (hotkey, Ollama model, cleanup toggle)
+- Dictation history
+- About / Quit
 
 ---
 
 ## Writing Profiles
 
-Select a writing profile in Settings or via the menu bar. The AI cleanup will match the style to your profile:
+Profiles adjust how Jarvis formats and cleans up your dictation. The app can **auto-detect the active profile** based on the frontmost application.
 
-| Profile | Best For |
+| Profile | Best For | Auto-detected Apps |
+|---|---|---|
+| **General** | Everyday dictation | Default fallback |
+| **Professional** | Formal documents, reports | Word, Pages, Google Docs |
+| **Email** | Email composition | Mail, Outlook, Gmail |
+| **Developer** | Code comments, docs, commit messages | VS Code, Xcode, Terminal |
+| **Medical** | Clinical notes, terminology | Medical apps |
+| **Legal** | Legal documents, contracts | Legal apps |
+| **Sales** | CRM notes, outreach | Salesforce, HubSpot |
+| **Notes** | Quick notes, lists | Notes, Notion, Bear |
+| **Creative** | Creative writing, storytelling | Ulysses, Scrivener |
+| **Verbatim** | Exact transcription, no cleanup | Any app |
+
+You can also manually select a profile from the menu bar at any time.
+
+---
+
+## Jarvis Commands
+
+Voice commands for formatting and navigation, triggered mid-dictation:
+
+| Command | Action |
 |---|---|
-| General | Everyday dictation |
-| Professional | Business writing |
-| Email | Email composition |
-| Developer | Code notes, technical writing |
-| Medical | Clinical documentation |
-| Legal | Legal memos and briefs |
-| Sales | Sales emails, pitches |
-| Notes | Quick bullet notes |
-| Creative | Stories, creative writing |
-| Verbatim | Exact transcription, no cleanup |
+| `"new line"` | Insert newline |
+| `"new paragraph"` | Insert double newline |
+| `"period"` / `"full stop"` | Insert `.` |
+| `"comma"` | Insert `,` |
+| `"question mark"` | Insert `?` |
+| `"exclamation mark"` | Insert `!` |
+| `"open bracket"` / `"close bracket"` | Insert `(` / `)` |
+| `"delete that"` | Delete last dictated word |
+| `"scratch that"` | Delete entire last utterance |
+| `"caps on"` / `"caps off"` | Toggle capitalization mode |
+
+> Commands work in **dual-mode** — they function in both dictation and command mode (added in v6.1.10+).
 
 ---
 
 ## Hotkeys
 
-| Action | Key |
+| Key | Role |
 |---|---|
-| Start / stop recording | **Right Option** (recommended) |
-| Cancel recording | **Escape** |
-| Undo last dictation | **Ctrl+Z** |
-| Open Settings | **Ctrl+,** |
+| **Right Option** *(recommended)* | Hold to record, release to transcribe |
+| **F13** | Alternative record key |
+| **F14** | Alternative record key |
+| **F15** | Alternative record key |
 
-**Optional record keys:** F13, F14, F15
+> Left-side modifier keys (Left Option, Command, Control) are **not supported** — the Quartz HID tap architecture requires right-side keys to avoid system conflicts and SIGILL crashes.
 
-Change the record key anytime from Settings.
-
----
-
-## Troubleshooting
-
-See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+Hotkey can be changed in Settings from the menu bar.
 
 ---
 
-## Roadmap
+## Project Structure
 
-See [docs/ROADMAP.md](docs/ROADMAP.md).
+```
+dictation/
+│
+├── 📁 src/                              # Main application source
+│   ├── jarvis_dictation.py              # ← Current production entry point
+│   ├── dictate_icon.png                 # Menu bar icon — idle state
+│   ├── icon_idle.png                    # Menu bar icon — idle
+│   ├── icon_recording.png               # Menu bar icon — recording
+│   └── icon_transcribing.png            # Menu bar icon — transcribing
+│
+├── 📁 docs/                             # Documentation
+│
+├── 📁 packaging/mac/                    # macOS .app bundle build kit
+│
+├── 📁 tools/                            # Dev utilities and helper scripts
+│
+├── 📄 dictate_v4.py                     # Legacy — v4 baseline
+├── 📄 dictate_v5.7.1.py                 # Legacy — v5.7.1
+├── 📄 dictate_v5.7.3.py                 # Legacy — v5.7.3
+├── 📄 dictate_v5_9_3_safety_history_professional.py  # Legacy — v5.9.3
+├── 📄 dictate_v6_0_4_history_transparency.py         # Legacy — v6.0.4
+├── 📄 jarvis_dictation.py               # Legacy root copy (use src/ version)
+├── 📄 jarvis_dictation_v6_1_17_icon_restore.py       # Legacy — v6.1.17
+├── 📄 jarvis_dictation_v6_1_18_spark_desktop.py      # Legacy — v6.1.18
+├── 📄 v6_1_18_spark_desktop.patch       # Patch file for v6.1.18
+│
+├── 📄 frequency_dictionary_en_82_765.txt  # SymSpell dictionary for spell correction
+├── 📄 icnsFile_...Gnome_Sound_Recorder.icns  # macOS app icon
+│
+├── 📄 requirements.txt                  # Python dependencies
+├── 📄 CHANGELOG.md                      # Full version history
+├── 📄 CONTRIBUTING.md                   # Contribution rules and architecture notes
+├── 📄 SECURITY.md                       # Security policy
+├── 📄 LICENSE                           # License
+├── 📄 README.md                         # This file
+└── 📄 .gitignore                        # Excludes conda env, secrets, __pycache__
+```
+
+> **Use `src/jarvis_dictation.py` as the entry point.** Root-level `.py` files are versioned archives kept for reference.
 
 ---
 
-## License
+## Version History
 
-MIT License. See [LICENSE](LICENSE).
+| Version | Highlights |
+|---|---|
+| **v6.1.18** | Spark desktop integration |
+| **v6.1.17** | Icon restore fix |
+| **v6.1.10** | Hotkey UI cleanup — simplified to Right Option / F13–F15 |
+| **v6.1** | Writing profiles, app-based auto-detection, menu bar profile selection |
+| **v6.0** | macOS menu bar controller, `.app` packaging kit, professional settings UI |
+| **v5.9** | Ollama safety protections, short-phrase bypass, dictation history |
+| **v5.7** | Wake word detection, Ollama cleanup integration |
+| **v4** | Baseline — local Whisper, hotkey dictation |
+
+Full changelog in [`CHANGELOG.md`](CHANGELOG.md).
+
+---
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for full rules. Key points:
+
+- Use **Python 3.11** in the `dictation` conda environment
+- Test the terminal version before packaging: `python src/jarvis_dictation.py`
+- Syntax check before committing: `python -m py_compile src/jarvis_dictation.py`
+- **Do not call Tkinter directly from Quartz, PyObjC, or sounddevice callbacks** — use the queue/main-loop pattern
+- **Do not change the hotkey/input system** without careful testing — the Quartz HID tap architecture is the result of many crash-fixing iterations
+- Keep Right Option as the default recommended hotkey
+
+---
+
+## Security
+
+See [`SECURITY.md`](SECURITY.md) for the full security policy.
+
+All audio processing is 100% local. No data is transmitted externally. The optional Ollama cleanup also runs entirely on-device.
+
+---
+
+<div align="center">
+  <strong>Jarvis Dictation · Private by design · Mac-first · Built for speed</strong>
+</div>
