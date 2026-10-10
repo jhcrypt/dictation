@@ -114,6 +114,39 @@ impl SidecarState {
     }
 }
 
+// ── Diagnostics (additive; failures here must never affect the app) ─────────
+/// Folder for diagnostic logs: ~/Library/Logs/JarvisDictation/
+fn diag_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let dir = std::path::PathBuf::from(home).join("Library").join("Logs").join("JarvisDictation");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Append one timestamped line to app.log. Silently ignores any error.
+pub fn diag_log(msg: &str) {
+    use std::io::Write as _;
+    if let Some(dir) = diag_dir() {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("app.log")) {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = writeln!(f, "[{}] {}", secs, msg);
+        }
+    }
+}
+
+/// stderr target for the sidecar: sidecar_stderr.log if it can be opened, else null (old behavior).
+fn sidecar_stderr() -> Stdio {
+    if let Some(dir) = diag_dir() {
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("sidecar_stderr.log")) {
+            return Stdio::from(f);
+        }
+    }
+    Stdio::null()
+}
+
 /// Start the sidecar process.
 ///
 /// Resolution order:
@@ -146,11 +179,18 @@ pub fn start_sidecar_process() -> Result<SidecarProcess, String> {
 
     if let Some(bin) = frozen_bin.filter(|p| p.exists()) {
         eprintln!("[sidecar] launching frozen binary: {}", bin.display());
-        return spawn_sidecar_bin(&bin).map_err(|e| e.to_string());
+        diag_log(&format!("launching frozen sidecar: {}", bin.display()));
+        let r = spawn_sidecar_bin(&bin).map_err(|e| e.to_string());
+        match &r {
+            Ok(_)  => diag_log("sidecar process spawned OK"),
+            Err(e) => diag_log(&format!("sidecar spawn FAILED: {}", e)),
+        }
+        return r;
     }
 
     // ── 2. Dev fallback: repo checkout + conda environment ────────────────────
     eprintln!("[sidecar] frozen binary not found — falling back to dev Python");
+    diag_log(&format!("frozen sidecar NOT found (current_exe={:?}) — trying dev Python", std::env::current_exe().ok()));
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let python_candidates = [
         format!("{}/miniconda3/envs/dictation/bin/python", home),
@@ -185,7 +225,7 @@ pub fn spawn_sidecar_bin(bin_path: &std::path::Path) -> anyhow::Result<SidecarPr
     let mut child = Command::new(bin_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(sidecar_stderr())
         .spawn()?;
 
     let stdin  = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin"))?;
@@ -205,7 +245,7 @@ pub fn spawn_sidecar(python_path: &str, script_path: &str) -> anyhow::Result<Sid
         .arg(script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(sidecar_stderr())
         .spawn()?;
 
     let stdin  = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin"))?;

@@ -57,6 +57,51 @@ def _log(msg: str):
     except Exception:
         pass
 
+# ── Diagnostics (additive; every step is guarded so it can never break startup) ──
+def _diag_dir():
+    try:
+        d = os.path.expanduser("~/Library/Logs/JarvisDictation")
+        os.makedirs(d, exist_ok=True)
+        return d
+    except Exception:
+        return None
+
+def _diag(msg: str):
+    """Timestamped line to ~/Library/Logs/JarvisDictation/sidecar.log (also the legacy log)."""
+    try:
+        d = _diag_dir()
+        if d:
+            with open(os.path.join(d, "sidecar.log"), "a") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
+
+def _diag_startup():
+    try:
+        import platform
+        _diag(f"=== sidecar start | python {platform.python_version()} | "
+              f"{platform.platform()} | machine={platform.machine()} | "
+              f"frozen={getattr(sys, 'frozen', False)} | exe={sys.executable}")
+        # Native crashes (segfault / illegal instruction) dump a traceback here.
+        import faulthandler
+        d = _diag_dir()
+        if d:
+            global _fault_file
+            _fault_file = open(os.path.join(d, "sidecar_crash.log"), "a")
+            faulthandler.enable(file=_fault_file, all_threads=True)
+    except Exception:
+        pass
+
+_diag_startup()
+
+def _diag_exc(where: str):
+    """Log the current exception's full traceback."""
+    try:
+        import traceback
+        _diag(f"ERROR in {where}:\n{traceback.format_exc()}")
+    except Exception:
+        pass
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 SETTINGS_FILE         = os.path.expanduser("~/.dictation_settings.json")
 VOCAB_FILE            = os.path.expanduser("~/.dictation_vocabulary.json")
@@ -3181,6 +3226,7 @@ def main():
             else:
                 resp = {"ok": False, "error": f"unknown action: {action}"}
         except Exception as e:
+            _diag_exc(f"command handler ({line[:80]})")
             resp = {"ok": False, "error": str(e)}
 
         try:
@@ -3198,4 +3244,8 @@ def main():
     _log("Sidecar stdin closed, exiting")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException:
+        _diag_exc("main (fatal)")
+        raise
