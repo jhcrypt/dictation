@@ -35,6 +35,13 @@ export default function HelpPage() {
     setDiagBusy(false);
   }
 
+  async function openLogs() {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_logs_folder");
+    } catch (e) { setDiagError(String(e)); }
+  }
+
   async function clearVocab() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -150,6 +157,12 @@ export default function HelpPage() {
             className="px-4 py-2 bg-jarvis-accent hover:bg-jarvis-accent-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
           >
             {diagBusy ? "Running…" : "Run Diagnostics"}
+          </button>
+          <button
+            onClick={openLogs}
+            className="px-4 py-2 text-sm font-medium text-jarvis-muted hover:text-jarvis-text bg-jarvis-sidebar border border-jarvis-border rounded-lg hover:border-jarvis-muted transition-colors"
+          >
+            Open Logs
           </button>
           {diagError && <span className="text-xs text-red-400">{diagError}</span>}
         </div>

@@ -200,6 +200,7 @@ pub fn run() {
             install_ollama_model,
             // Native
             open_url,
+            open_logs_folder,
             open_app,
             set_system_volume,
             create_reminder,

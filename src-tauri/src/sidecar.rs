@@ -116,7 +116,7 @@ impl SidecarState {
 
 // ── Diagnostics (additive; failures here must never affect the app) ─────────
 /// Folder for diagnostic logs: ~/Library/Logs/JarvisDictation/
-fn diag_dir() -> Option<std::path::PathBuf> {
+pub fn diag_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let dir = std::path::PathBuf::from(home).join("Library").join("Logs").join("JarvisDictation");
     std::fs::create_dir_all(&dir).ok()?;

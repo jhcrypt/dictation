@@ -816,6 +816,17 @@ pub fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Reveal ~/Library/Logs/JarvisDictation/ in Finder so testers can send the logs.
+#[tauri::command]
+pub fn open_logs_folder() -> Result<(), String> {
+    let dir = crate::sidecar::diag_dir().ok_or_else(|| "Could not create the logs folder".to_string())?;
+    std::process::Command::new("open")
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn open_app(app_name: String) -> Result<(), String> {
     std::process::Command::new("open")
